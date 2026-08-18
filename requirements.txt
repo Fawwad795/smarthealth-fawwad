@@ -1,0 +1,26 @@
+# Week 1 dependencies. Versions are pinned so the image builds identically
+# for me today and for my mentor next month.
+
+# --- Web framework -----------------------------------------------------
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+
+# --- Database ----------------------------------------------------------
+sqlalchemy==2.0.36
+alembic==1.14.0
+psycopg[binary]==3.2.3        # the modern (v3) Postgres driver
+
+# --- Config / validation -----------------------------------------------
+pydantic==2.10.4
+pydantic-settings==2.7.0      # reads settings from env vars / .env
+
+# --- Auth (used from task 1.5 onward) ----------------------------------
+passlib[bcrypt]==1.7.4
+bcrypt==4.0.1                 # passlib 1.7.4 warns noisily against bcrypt>=4.1
+python-jose[cryptography]==3.3.0
+
+# --- Tests / tooling ---------------------------------------------------
+pytest==8.3.4
+httpx==0.28.1                 # FastAPI's TestClient needs this
+ruff==0.8.4
+black==24.10.0
