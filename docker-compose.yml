@@ -197,36 +197,33 @@ services:
       - "--storage.tsdb.retention.time=7d"
     restart: unless-stopped
 
-# ---------------------------------------------------------------------------
-# YOUR services go here. Sketch for reference — you write the real ones,
-# along with the Dockerfile they use.
-#
-#   api:
-#     build: .
-#     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-#     env_file: [.env]
-#     ports: ["8000:8000"]
-#     volumes: [".:/app"]
-#     depends_on:
-#       postgres: {condition: service_healthy}
-#       redis:    {condition: service_healthy}
-#
-#   worker:      # same image, different command
-#     build: .
-#     command: celery -A app.workers.celery_app worker --loglevel=info
-#     env_file: [.env]
-#     volumes: [".:/app"]
-#     depends_on: [redis, postgres]
-#
-#   consumer:    # your Kafka consumer loop
-#     build: .
-#     command: python -m app.events.consumer
-#     env_file: [.env]
-#     volumes: [".:/app"]
-#     profiles: ["week3"]
-#     depends_on:
-#       kafka: {condition: service_healthy}
-# ---------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # OUR services.
+  #
+  # Still to be added in later weeks (same image, different command):
+  #   temporal-worker  (Week 2)  python -m app.temporal.worker
+  #   worker           (Week 3)  celery -A app.workers.celery_app worker
+  #   consumer         (Week 3)  python -m app.events.consumer
+  # ---------------------------------------------------------------------------
+
+  # The FastAPI application.
+  api:
+    build: .                       # build from our Dockerfile, not a pulled image
+    container_name: app-api
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    env_file: [.env]
+    ports:
+      - "8000:8000"
+    volumes:
+      # Bind-mount the source so an edit on the laptop reloads the server
+      # inside the container. Development only.
+      - ".:/app"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
 
 volumes:
   postgres_data:
