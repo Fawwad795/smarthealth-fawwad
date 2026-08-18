@@ -1,0 +1,235 @@
+# App — starter infrastructure
+#
+# Copy this file to the root of YOUR repo and extend it. It gives you the
+# infrastructure only. You add your own services: `api`, `worker`, `consumer`.
+#
+# READ THIS FILE. You will be asked what each service does and why the Kafka
+# listener configuration looks the way it does.
+#
+# ---------------------------------------------------------------------------
+# Usage
+#
+#   Week 1 (Postgres + Redis only):
+#     docker compose up -d postgres redis
+#
+#   Week 2 (adds Temporal for the publishing workflow):
+#     docker compose up -d          # postgres, redis, temporal, temporal-ui
+#
+#   Weeks 3-5 (adds Kafka, Kafka UI, Prometheus):
+#     docker compose --profile week3 up -d
+#
+#   Stop everything (keeps data):        docker compose down
+#   Stop and wipe all data:              docker compose down -v
+#   Tail logs for one service:           docker compose logs -f kafka
+#
+# ---------------------------------------------------------------------------
+# Hostnames: FROM INSIDE a container   vs.   FROM YOUR LAPTOP
+#
+#   Postgres    postgres:5432                 localhost:5432
+#   Redis       redis:6379                    localhost:6379
+#   Temporal    temporal:7233                 localhost:7233
+#   Kafka       kafka:9092                    localhost:29092
+#   Prometheus  prometheus:9090               localhost:9090
+#   Kafka UI    -                             localhost:8080
+#   Temporal UI -                             localhost:8233
+#
+# If a connection fails, this table is the first thing to check. Using
+# `localhost` from inside a container is the single most common mistake.
+# ---------------------------------------------------------------------------
+
+name: app
+
+services:
+  # PostgreSQL. `pgvector/pgvector` is plain Postgres 16 plus the pgvector
+  # extension, so the same container works for Week 1 CRUD and Week 4 vectors.
+  # Enable it once per database with:  CREATE EXTENSION IF NOT EXISTS vector;
+  # (do this in an Alembic migration, not by hand).
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: app-postgres
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: app
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d app"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # Redis: Celery broker + result backend, response caching, idempotency keys,
+  # rate limiting. `--appendonly yes` keeps data across restarts.
+  redis:
+    image: redis:7-alpine
+    container_name: app-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # Temporal (Week 2+): durable workflow engine for the publishing / processing
+  # workflow. `auto-setup` starts the server and creates its schema inside the
+  # Postgres above (in its own `temporal` / `temporal_visibility` databases).
+  # Your app runs a Temporal *worker* (a separate process, like the Celery
+  # worker) that hosts your Workflow and Activity code and connects to
+  # temporal:7233.
+  temporal:
+    image: temporalio/auto-setup:1.24.2
+    container_name: app-temporal
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - DB=postgres12
+      - DB_PORT=5432
+      - POSTGRES_USER=app
+      - POSTGRES_PWD=app
+      - POSTGRES_SEEDS=postgres
+    ports:
+      - "7233:7233"
+    restart: unless-stopped
+
+  # Temporal Web UI: browse workflows, inspect histories, see where a workflow
+  # is running, retried or stuck. http://localhost:8233  Your best Temporal
+  # debugger — open it before you start guessing.
+  temporal-ui:
+    image: temporalio/ui:2.26.2
+    container_name: app-temporal-ui
+    depends_on:
+      - temporal
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+    ports:
+      - "8233:8080"
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Week 3+ services. Started only with:  --profile week3
+  # ---------------------------------------------------------------------------
+
+  # Kafka in KRaft mode (no ZooKeeper). Single broker, single partition
+  # defaults - fine for this assignment, not for production.
+  #
+  # Two listeners exist on purpose:
+  #   PLAINTEXT      (kafka:9092)      for other containers
+  #   PLAINTEXT_HOST (localhost:29092) for your laptop / a local script
+  # A broker advertises the address clients should use to reach it, which is
+  # why one physical broker needs two advertised addresses here.
+  kafka:
+    image: apache/kafka:3.7.0
+    container_name: app-kafka
+    profiles: ["week3"]
+    ports:
+      - "29092:29092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      CLUSTER_ID: app-local-cluster
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,PLAINTEXT_HOST://:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_NUM_PARTITIONS: 1
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+      start_period: 30s
+    restart: unless-stopped
+
+  # Browse topics, inspect messages, watch consumer lag: http://localhost:8080
+  # Your best debugging tool in Week 3. Use it before you start guessing.
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: app-kafka-ui
+    profiles: ["week3"]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      DYNAMIC_CONFIG_ENABLED: "true"
+    restart: unless-stopped
+
+  # Scrapes your API's /metrics endpoint. UI at http://localhost:9090
+  # Check http://localhost:9090/targets first — if your target is not UP,
+  # fix that before writing any dashboard.
+  #
+  # Requires ./prometheus/prometheus.yml in your repo (see the example
+  # alongside this file).
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: app-prometheus
+    profiles: ["week3"]
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=7d"
+    restart: unless-stopped
+
+# ---------------------------------------------------------------------------
+# YOUR services go here. Sketch for reference — you write the real ones,
+# along with the Dockerfile they use.
+#
+#   api:
+#     build: .
+#     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+#     env_file: [.env]
+#     ports: ["8000:8000"]
+#     volumes: [".:/app"]
+#     depends_on:
+#       postgres: {condition: service_healthy}
+#       redis:    {condition: service_healthy}
+#
+#   worker:      # same image, different command
+#     build: .
+#     command: celery -A app.workers.celery_app worker --loglevel=info
+#     env_file: [.env]
+#     volumes: [".:/app"]
+#     depends_on: [redis, postgres]
+#
+#   consumer:    # your Kafka consumer loop
+#     build: .
+#     command: python -m app.events.consumer
+#     env_file: [.env]
+#     volumes: [".:/app"]
+#     profiles: ["week3"]
+#     depends_on:
+#       kafka: {condition: service_healthy}
+# ---------------------------------------------------------------------------
+
+volumes:
+  postgres_data:
+  redis_data:
+  kafka_data:
+  prometheus_data:
