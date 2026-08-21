@@ -316,9 +316,23 @@ migrating rows that had already been created without it.
 | `slot.status = BLOCKED` for time off, not a separate entity | The status enum already models "not bookable"; a second table would need reconciling with the slots it overlaps | Time off can only be expressed where slots have been generated |
 | All FKs `ON DELETE RESTRICT` | Operations data is deactivated, never deleted — the same reason a cancelled appointment is transitioned rather than removed | Deleting test data by hand needs the right order |
 | `patients.contact` as JSONB | Contact details are a shifting bag of phone / email / preferred channel; the brief specifies JSONB and rules out a second database | Not queryable as columns; needs a Pydantic model at the schema layer or it becomes a junk drawer |
+| Enums stored as `VARCHAR` + `CHECK`, not a native Postgres `ENUM` type | Status values get added and renamed as the workflows are built, and a native enum has no clean reversal — Postgres has no `DROP VALUE`, so downgrading a value addition means recreating the type and re-casting the column. A check constraint is symmetric to add and drop, so migrations stay reversible | Slightly more storage; `ORDER BY status` sorts alphabetically rather than by lifecycle order; the vocabulary cannot be shared as one type across tables |
 | Integer identity primary keys | Event envelopes carry ids (`"appointment_id": 812`), which stay readable in logs and demos; integer joins are cheaper | Ids are enumerable, so access control must be real authorization, never obscurity |
 | Slots stored in UTC, schedules in clinic-local time | Naive local datetimes are on the assignment's list of common mistakes; a single stored timezone means one conversion point | Reading raw slot rows during a demo needs a mental offset |
 | 15-minute default slot duration | Confirmed with mentor for seed data | — |
+
+**Enum member names and values are kept identical** (`AVAILABLE = "AVAILABLE"`).
+SQLAlchemy persists a Python enum's `.name`, while a `str`-based enum serialises
+its `.value` through Pydantic — so if the two differ, the database holds one
+string and the API returns another, and a hand-written query in the runbook
+silently matches nothing.
+
+**The check constraint is not automatic.** SQLAlchemy's `Enum(...)` defaults to
+`create_constraint=False`, which produces an unconstrained `VARCHAR` — the enum
+would then guarantee nothing in the database, and a seed script or psql session
+could write any string at all. Every enum column is therefore built through one
+helper in `app/models/enums.py` that sets the flag, so it cannot be forgotten on
+one column out of three.
 
 **Known gap: there is no link between `providers` and `services.`** Nothing in the
 schema stops an appointment naming a dermatology service and a cardiologist. For
