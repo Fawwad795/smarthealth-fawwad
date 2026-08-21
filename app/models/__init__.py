@@ -23,4 +23,8 @@ but __all__ also states the package's public surface and gives one list to
 check against.
 """
 
-__all__: list[str] = []
+from app.models.clinic import Clinic
+from app.models.specialty import Specialty
+
+__all__: list[str] = ["Clinic",
+                      "Specialty"]
