@@ -1,10 +1,16 @@
 """The clinic: the physical site that owns departments."""
 
+from typing import TYPE_CHECKING
+
 from sqlalchemy import BigInteger, String
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 from app.models.mixins import TimestampMixin
+
+if TYPE_CHECKING:
+    from app.models.department import Department
+
 
 class Clinic(Base, TimestampMixin):
     """A physical site.
@@ -23,5 +29,8 @@ class Clinic(Base, TimestampMixin):
     name: Mapped[str] = mapped_column(String(150), nullable=False, unique=True)
 
     timezone: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    departments: Mapped[list["Department"]] = relationship(back_populates="clinic")
+
 
 

@@ -24,7 +24,12 @@ check against.
 """
 
 from app.models.clinic import Clinic
+from app.models.department import Department
+from app.models.service import Service
 from app.models.specialty import Specialty
 
+
 __all__: list[str] = ["Clinic",
+                      "Department",
+                      "Service",
                       "Specialty"]
