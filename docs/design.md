@@ -320,6 +320,9 @@ migrating rows that had already been created without it.
 | Integer identity primary keys | Event envelopes carry ids (`"appointment_id": 812`), which stay readable in logs and demos; integer joins are cheaper | Ids are enumerable, so access control must be real authorization, never obscurity |
 | Slots stored in UTC, schedules in clinic-local time | Naive local datetimes are on the assignment's list of common mistakes; a single stored timezone means one conversion point | Reading raw slot rows during a demo needs a mental offset |
 | 15-minute default slot duration | Confirmed with mentor for seed data | — |
+| Slot overlap prevented by a Postgres `EXCLUDE`, not only by `UNIQUE (provider_id, start_time)` | Two slots that overlap have *different* start times, so the unique constraint permits them; checking in the generator is the same check-then-act gap as SELECT-then-UPDATE. `EXCLUDE` is evaluated as part of the insert, so there is no window | Needs the `btree_gist` extension; its GiST index answers overlap questions but serves ordered range scans poorly, so the unique constraint is kept alongside it for that index |
+| Email uniqueness enforced on `lower(email)` | Postgres compares text byte-for-byte, so a plain unique constraint would let one person hold two accounts differing only in capitalisation, each with its own patient row and booking history. Enforcing it in the database means a seed script or psql session cannot bypass it | Every lookup must be written `WHERE lower(email) = :email` or the index is not used |
+| `weekday` is `0 = Monday`, matching Python's `date.weekday()` | The slot generator is Python walking dates; the Postgres `EXTRACT(DOW)` convention would put a `+1 % 7` in the hottest logic of Week 1, and an off-by-one there produces slots on the wrong days with no error at all | Disagrees with `EXTRACT(DOW)` if the column is ever read from raw SQL; guarded by `CHECK (weekday BETWEEN 0 AND 6)` and stated on the column |
 
 **Enum member names and values are kept identical** (`AVAILABLE = "AVAILABLE"`).
 SQLAlchemy persists a Python enum's `.name`, while a `str`-based enum serialises
@@ -340,6 +343,22 @@ Week 1 this is validated loosely in the service layer via the shared department.
 that proves too weak once appointments exist, the fix is a `provider_services` join
 table in Week 2 — a genuine many-to-many, at which point the constraint becomes
 real. Recorded rather than fixed because appointments do not exist yet.
+
+**Known gap: overlapping *schedule* windows for one provider are not prevented.**
+Mon 09:00–12:00 and Mon 11:00–14:00 can both be stored. Postgres ships no range
+type for `time`, and creating a custom one would be exactly the hand-maintained
+database object rejected when choosing enum storage. The invariant that matters
+— no provider double-booked — is enforced where it matters: overlapping windows
+can only cause harm by producing overlapping slots, and that insert is rejected
+by `ex_slots_no_overlap`. The cost is that the failure surfaces at generation
+time rather than at schedule-creation time; a service-layer check should point
+at the right place.
+
+**`status = 'PUBLISHED'` and `published_at IS NOT NULL` are not the same fact.**
+`published_at` means "when it last went live", not "it is live now" — an
+`INACTIVE` service keeps its timestamp. They are deliberately not tied together
+by a constraint. Always read `status` for liveness; never infer it from
+`published_at`.
 
 **Known gap: nothing at the database level ties `users.role` to which profile table
 a user has.** A user with `role = 'patient'` could in principle have a provider row
