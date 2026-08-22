@@ -27,7 +27,9 @@ from app.models.clinic import Clinic
 from app.models.department import Department
 from app.models.patient import Patient
 from app.models.provider import Provider
+from app.models.provider_schedule import ProviderSchedule
 from app.models.service import Service
+from app.models.slot import Slot
 from app.models.specialty import Specialty
 from app.models.user import User
 
@@ -36,8 +38,11 @@ __all__ = [
     "Department",
     "Patient",
     "Provider",
+    "ProviderSchedule",
     "Service",
+    "Slot",
     "Specialty",
     "User",
 ]
+
 
