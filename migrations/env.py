@@ -13,7 +13,13 @@ import app.models  # noqa: F401
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config
-config.set_main_option("sqlalchemy.url", settings.database_url)
+# Prefer a URL supplied by the caller -- the test suite sets one so migrations
+# run against the test database. alembic.ini deliberately has no sqlalchemy.url
+# (a connection string is a secret and that file is committed), so on the
+# command line this falls through to settings.
+url = config.get_main_option("sqlalchemy.url") or settings.database_url
+config.set_main_option("sqlalchemy.url", url)
+
 
 
 # Interpret the config file for Python logging.

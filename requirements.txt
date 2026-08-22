@@ -21,6 +21,7 @@ python-jose[cryptography]==3.3.0
 
 # --- Tests / tooling ---------------------------------------------------
 pytest==8.3.4
+pytest-cov==6.0.0
 httpx==0.28.1                 # FastAPI's TestClient needs this
 ruff==0.8.4
 black==24.10.0

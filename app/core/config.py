@@ -27,6 +27,12 @@ class Settings(BaseSettings):
     # because the API runs inside a container on the compose network.
     database_url: str
 
+    # --- Tests ---
+    # A separate database, dropped and recreated by the test suite on every
+    # run. It must never be the development database: the fixtures issue
+    # DROP DATABASE, and conftest refuses to start if the two match.
+    test_database_url: str = "postgresql+psycopg://app:app@postgres:5432/app_test"
+
     # --- Redis ---
     redis_url: str
 
