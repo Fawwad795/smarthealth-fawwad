@@ -1,10 +1,15 @@
 """Specialty: the controlled vocabulary of provider expertise."""
 
+from typing import TYPE_CHECKING
+
 from sqlalchemy import BigInteger, String
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 from app.models.mixins import TimestampMixin
+
+if TYPE_CHECKING:
+    from app.models.provider import Provider
 
 
 class Specialty(Base, TimestampMixin):
@@ -23,3 +28,6 @@ class Specialty(Base, TimestampMixin):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
 
     name: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
+
+    providers: Mapped[list["Provider"]] = relationship(back_populates="specialty")
+

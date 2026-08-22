@@ -25,11 +25,19 @@ check against.
 
 from app.models.clinic import Clinic
 from app.models.department import Department
+from app.models.patient import Patient
+from app.models.provider import Provider
 from app.models.service import Service
 from app.models.specialty import Specialty
+from app.models.user import User
 
+__all__ = [
+    "Clinic",
+    "Department",
+    "Patient",
+    "Provider",
+    "Service",
+    "Specialty",
+    "User",
+]
 
-__all__: list[str] = ["Clinic",
-                      "Department",
-                      "Service",
-                      "Specialty"]

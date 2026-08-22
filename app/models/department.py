@@ -13,6 +13,7 @@ from app.models.mixins import TimestampMixin
 # "Service" from its own class registry once every model has loaded.
 if TYPE_CHECKING:
     from app.models.clinic import Clinic
+    from app.models.provider import Provider    
     from app.models.service import Service
 
 class Department(Base, TimestampMixin):
@@ -49,3 +50,5 @@ class Department(Base, TimestampMixin):
 
     clinic: Mapped["Clinic"] = relationship(back_populates="departments")
     services: Mapped[list["Service"]] = relationship(back_populates="department")
+    providers: Mapped[list["Provider"]] = relationship(back_populates="department")
+
