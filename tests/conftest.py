@@ -17,6 +17,8 @@ from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.models import Clinic, Department, Provider, Specialty, User
+from app.models.enums import UserRole
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -105,3 +107,80 @@ def db_session(engine: Engine) -> Generator[Session, None, None]:
         if transaction.is_active:
             transaction.rollback()
         connection.close()
+
+
+# --- Domain fixtures -------------------------------------------------------
+# A slot needs a provider, which needs a user, a department and a specialty,
+# which needs a clinic. These are fixtures rather than a make_provider()
+# helper because fixtures compose: a test names only what it needs and pytest
+# builds the chain in the right order, so a test wanting only a clinic does
+# not pay for a provider.
+#
+# They flush rather than commit, so primary keys are assigned while the work
+# still lives inside the transaction db_session rolls back.
+
+
+@pytest.fixture()
+def clinic(db_session: Session) -> Clinic:
+    c = Clinic(name="MediNova Central", timezone="Asia/Karachi")
+    db_session.add(c)
+    db_session.flush()
+    return c
+
+
+@pytest.fixture()
+def specialty(db_session: Session) -> Specialty:
+    s = Specialty(name="Cardiology")
+    db_session.add(s)
+    db_session.flush()
+    return s
+
+
+@pytest.fixture()
+def department(db_session: Session, clinic: Clinic) -> Department:
+    d = Department(clinic_id=clinic.id, name="Cardiology", order_index=1)
+    db_session.add(d)
+    db_session.flush()
+    return d
+
+
+@pytest.fixture()
+def provider_user(db_session: Session) -> User:
+    u = User(
+        email="dr.khan@example.com",
+        password_hash="not-a-real-hash",
+        role=UserRole.PROVIDER,
+    )
+    db_session.add(u)
+    db_session.flush()
+    return u
+
+
+@pytest.fixture()
+def patient_user(db_session: Session) -> User:
+    u = User(
+        email="patient@example.com",
+        password_hash="not-a-real-hash",
+        role=UserRole.PATIENT,
+    )
+    db_session.add(u)
+    db_session.flush()
+    return u
+
+
+@pytest.fixture()
+def provider(
+    db_session: Session,
+    provider_user: User,
+    department: Department,
+    specialty: Specialty,
+) -> Provider:
+    p = Provider(
+        user_id=provider_user.id,
+        department_id=department.id,
+        specialty_id=specialty.id,
+        bio="Consultant cardiologist.",
+    )
+    db_session.add(p)
+    db_session.flush()
+    return p
