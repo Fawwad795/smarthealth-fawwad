@@ -41,7 +41,6 @@ class Service(Base, TimestampMixin):
     department_id: Mapped[int] = mapped_column(
         ForeignKey("departments.id", ondelete="RESTRICT"),
         nullable=False,
-        index=True,
     )
 
     name: Mapped[str] = mapped_column(String(150), nullable=False)
