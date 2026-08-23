@@ -7,6 +7,8 @@ from datetime import date
 
 from pydantic import BaseModel, EmailStr, Field
 
+from app.models.enums import UserRole
+
 
 class RegisterRequest(BaseModel):
     """Public registration is patient-only. Provider, front_desk and admin
@@ -33,4 +35,8 @@ class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
 
-    
+
+class UserMeResponse(BaseModel):
+    id: int
+    email: str
+    role: UserRole

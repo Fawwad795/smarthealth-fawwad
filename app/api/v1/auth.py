@@ -11,8 +11,11 @@ from app.schemas.auth import (
     RegisterRequest,
     RegisterResponse,
     TokenResponse,
+    UserMeResponse
 )
 from app.services import auth as auth_service
+from app.core.dependencies import get_current_user
+from app.models import User
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -27,3 +30,8 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)) -> RegisterRe
 def login(data: LoginRequest, db: Session = Depends(get_db)) -> TokenResponse:
     token = auth_service.login(db, data)
     return TokenResponse(access_token=token)
+
+
+@router.get("/me", response_model=UserMeResponse)
+def me(current_user: User = Depends(get_current_user)) -> UserMeResponse:
+    return UserMeResponse(id=current_user.id, email=current_user.email, role=current_user.role)
