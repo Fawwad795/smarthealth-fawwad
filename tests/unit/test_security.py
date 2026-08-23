@@ -1,8 +1,21 @@
-"""Password hashing. No database, no infrastructure -- these are pure
-functions wrapping passlib.
+"""Password hashing and JWT issue/verify. No database, no infrastructure --
+these are pure functions wrapping passlib and python-jose.
 """
 
-from app.core.security import hash_password, verify_password
+from datetime import datetime, timedelta, timezone
+
+import pytest
+from jose import jwt as jose_jwt
+
+from app.core.config import settings
+from app.core.exceptions import AppError
+from app.core.security import (
+    create_access_token,
+    decode_access_token,
+    hash_password,
+    verify_password,
+)
+
 
 
 def test_hashing_the_same_password_twice_yields_different_hashes() -> None:
@@ -45,3 +58,42 @@ def test_bcrypt_only_considers_the_first_72_bytes() -> None:
     hashed = hash_password("x" * 100)
     assert verify_password("x" * 72 + "one tail", hashed)
     assert verify_password("x" * 72 + "a different tail", hashed)
+
+
+def test_token_round_trip_returns_the_same_user_id() -> None:
+    token = create_access_token(42)
+    assert decode_access_token(token) == 42
+
+
+def test_tampered_token_is_rejected() -> None:
+    """Changing even one character invalidates the signature -- this is
+    the entire security model. Without this check, anyone could edit the
+    payload to claim to be a different user id.
+    """
+    token = create_access_token(42)
+    tampered = token[:-1] + ("a" if token[-1] != "a" else "b")
+    with pytest.raises(AppError) as exc_info:
+        decode_access_token(tampered)
+    assert exc_info.value.status_code == 401
+    assert exc_info.value.code == "INVALID_TOKEN"
+
+
+def test_expired_token_is_rejected() -> None:
+    """Crafted directly with jose rather than by sleeping past
+    access_token_expire_minutes -- a signature can be perfectly genuine
+    and still be too old to trust.
+    """
+    expired_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+    token = jose_jwt.encode(
+        {"sub": "42", "exp": expired_at},
+        settings.jwt_secret,
+        algorithm=settings.jwt_algorithm,
+    )
+    with pytest.raises(AppError) as exc_info:
+        decode_access_token(token)
+    assert exc_info.value.status_code == 401
+
+
+def test_garbage_token_is_rejected() -> None:
+    with pytest.raises(AppError):
+        decode_access_token("not.a.token")
