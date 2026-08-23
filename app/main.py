@@ -1,7 +1,4 @@
 """FastAPI application factory.
-
-Day 1 scope: the app boots, and /health proves it can reach Postgres.
-Routers, middleware and exception handlers are added in later tasks.
 """
 
 from fastapi import Depends, FastAPI
@@ -9,6 +6,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.error_handlers import register_exception_handlers
 from app.db.session import get_db
 
 
@@ -21,6 +19,9 @@ def create_app() -> FastAPI:
         description="Healthcare operations and patient engagement platform.",
         version="0.1.0",
     )
+
+    register_exception_handlers(app)
+
 
     @app.get("/health", tags=["health"])
     def health() -> dict[str, str]:
