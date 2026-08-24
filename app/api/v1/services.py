@@ -19,6 +19,12 @@ from app.schemas.service import (
     ServiceResponse,
     ServiceUpdate,
 )
+from app.schemas.service_search import (
+    PublicServiceListResponse,
+    ServiceSearchParams,
+    service_search_params,
+)
+from app.services import service_search as service_search_service
 from app.services import service as service_service
 
 router = APIRouter(prefix="/services", tags=["services"])
@@ -45,6 +51,29 @@ def list_services(
     items, total = service_service.list_services(db, pagination)
     return ServiceListResponse(
         items=[ServiceResponse.model_validate(s) for s in items],
+        total=total,
+        limit=pagination.limit,
+        offset=pagination.offset,
+    )
+
+
+@router.get("/search", response_model=PublicServiceListResponse)
+def search_services(
+    search: ServiceSearchParams = Depends(service_search_params),
+    pagination: PaginationParams = Depends(pagination_params),
+    db: Session = Depends(get_db),
+) -> PublicServiceListResponse:
+    """Public: no require_role dependency -- a prospective patient
+    browsing before they even register is the whole point of this route.
+
+    Declared here, before GET /{service_id} below, on purpose: Starlette
+    matches routes in declaration order, and /{service_id} would otherwise
+    swallow "/search" as an (invalid) service_id and 422 before this route
+    is ever reached.
+    """
+    items, total = service_search_service.search_services(db, search, pagination)
+    return PublicServiceListResponse(
+        items=items,
         total=total,
         limit=pagination.limit,
         offset=pagination.offset,
