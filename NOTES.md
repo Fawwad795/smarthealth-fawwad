@@ -260,6 +260,141 @@ Day 4's CRUD endpoints have something real to sit behind from their first line.
 
 ---
 
+### Day 4 — 2026-08-24
+
+**Goal:** everything task 1.7 asks for — department/service/provider CRUD
+and provider schedules with slot generation — plus task 1.8's public
+service search and task 1.10's seed script, so there is a real,
+demoable dataset sitting behind real endpoints by the end of the week.
+
+**Done**
+
+- Split task 1.7 into four reviewable pieces rather than one giant change:
+  - **1.7a** Department CRUD (`app/services/department.py`,
+    `app/api/v1/departments.py`) — the first use of the router → service →
+    schema pattern beyond auth, and the first use of `require_role`.
+  - **1.7b** Service CRUD, created `DRAFT` and staying there — `status`
+    and `published_at` are deliberately absent from every writable schema,
+    proven live by trying to inject `"status": "PUBLISHED"` through both
+    `POST` and `PATCH` and watching it get silently ignored.
+  - **1.7c** Provider CRUD — `create_provider` validates that a given
+    `user_id` both exists and already has `role == PROVIDER` before
+    attaching a profile to it; `ProviderUpdate` has no `user_id` field at
+    all, since moving a profile to a different account isn't an edit.
+  - **1.7d** Provider schedules + slot generation
+    (`app/services/provider_schedule.py`) — the piece the whole week was
+    building toward. `generate_slots` combines a bare clinic-local `time`,
+    a calendar date and `Clinic.timezone` into the UTC-aware `Slot` rows
+    Week 2's atomic reservation depends on. Exposed as its own action
+    endpoint (`POST /providers/{id}/schedules/generate-slots`), idempotent
+    by querying existing slots first and only inserting what's missing.
+  - Introduced `app/core/pagination.py` on the first piece (1.7a) so every
+    list endpoint this week — and 1.8 — shares one `{items, total, limit,
+    offset}` shape instead of four slightly different ones.
+- **Task 1.8**: `GET /services/search` — the patient-facing counterpart to
+  1.7b's staff-only listing. No auth required (a prospective patient
+  browsing before registering is the point), filters by name/department/
+  specialty/available-slots, all enforced as SQL `WHERE`/`EXISTS` clauses,
+  never in application code. Had to be added to the *same* router as the
+  staff CRUD and declared *before* `GET /{service_id}` — Starlette matches
+  routes in declaration order, and the wildcard route would otherwise
+  swallow `"/search"` as an invalid `service_id` and 422 first.
+- **Task 1.10**: `scripts/seed.py` — a clinic, 3 departments, 3
+  specialties, 3 provider profiles with Mon/Wed/Fri schedules, 2 weeks of
+  generated slots, 3 published services, and 3 synthetic patients, all in
+  one idempotent command. Appointments are not seeded — that model doesn't
+  exist until Week 2.
+- Every piece verified two ways before being called done: the automated
+  test file, and a live `curl` round-trip against the actually-running
+  `api` container (not just the test database) — including, for the seed
+  script, running it twice against the real dev database and inspecting
+  the actual row counts and generated UTC slot timestamps directly.
+- Suite grew from 40 tests to 82 across the day (7 + 8 + 7 + 11 + 7 + 2),
+  each subtask landing as its own pair of commits (schemas+service, then
+  router+tests), verified before the next one started.
+
+**Decisions and why**
+
+| Decision | Why | Tradeoff |
+|---|---|---|
+| `PaginationParams` (plain dataclass) split from `pagination_params` (the FastAPI dependency) | `Query(...)` objects only resolve to real values inside a request FastAPI is handling — `PaginationParams()` built directly, as every test does, would get the `Query` object itself as `limit` otherwise | One extra small function per shared concern |
+| Every uniqueness check is a `SELECT` before the `INSERT`, never a bare `except IntegrityError` | A single `IntegrityError` can't distinguish "duplicate name" from "the foreign key doesn't exist," and those need different status codes (409 vs 404) | An extra query on every create |
+| `has_available_slots` filters at the *provider* level | `Slot` has no `service_id` by design (a slot is provider time, chosen at booking) — a provider's one open slot legitimately makes every service they offer count as "available." Learned this the hard way in Step 4, see below | Can't express "this exact slot is held for this exact service" — not a real requirement, since the data model doesn't have that concept |
+| Search filters (`EXISTS` subqueries) instead of `JOIN`s | A service offered by three providers would appear three times in a joined result set; correlated `EXISTS` avoids the fanout entirely, so no `DISTINCT` is needed anywhere | Slightly less obvious to a reader than a plain join |
+| Seed script run as `python -m scripts.seed`, never `python scripts/seed.py` | Same "script's own directory lands on `sys.path[0]`" problem Day 3 already hit — `-m` puts the working directory (`/app`) on the path instead, so no `PYTHONPATH` juggling needed | One more thing to remember when documenting how to run it |
+| Seed script uses `get_or_create_*` (query first, insert only if missing) everywhere, never catches the service layer's own `AppError` | Re-running it against a database that already has seed data must be a no-op, not a crash — matters for demo day | More boilerplate than "just insert and let it fail" |
+
+**What confused me / cost time**
+
+- Docker Desktop stopped responding mid-session (`failed to connect to the
+  docker API`) — same class of problem as Day 1's PATH issue, just later.
+  Restarting Docker Desktop fixed it; no data was lost since Postgres's
+  volume persists across the daemon restart.
+- **Two real bugs, both in tests I wrote, not in the code under test** —
+  caught during Step 4 verification, not left for later:
+  - The overlap test for `generate_slots` set two schedules to the same
+    `start_time` before forcing them onto the same weekday, which hit
+    `ProviderSchedule`'s own unique constraint *before* the test ever
+    reached the `Slot` exclusion constraint it was meant to exercise.
+    Fixed by giving the second schedule a different `start_time`.
+  - The `has_available_slots` test gave *one* provider two services and
+    only one slot, expecting the filter to distinguish between the two
+    services. It can't — see the decisions table above. Fixed by using
+    two separate providers, one with a slot and one without.
+  Both are a good reminder that a failing test needs the same "what
+  exactly does this prove" scrutiny as the code it's testing.
+
+**Things I want to be able to explain out loud**
+
+- Why `datetime.combine(date, time, tzinfo=clinic_tz).astimezone(utc)`
+  is the whole slot-generation trick: the first call describes a moment
+  using the clinic's local clock face; `.astimezone(utc)` describes the
+  exact same moment using a different clock face. Nothing about *when*
+  changes, only how it's written down.
+- Why route *declaration order* matters in FastAPI: Starlette checks a
+  router's routes top-to-bottom and stops at the first path pattern that
+  matches, so a literal path (`/search`) must be declared before a
+  wildcard one (`/{service_id}`) that would otherwise swallow it.
+- Why `EXISTS` beats `JOIN` for an optional filter here specifically:
+  a join fans out one row per match, which is invisible until someone
+  notices the *count* is wrong, not just the list.
+- Why the seed script has to bypass its own CRUD endpoint's rule (setting
+  `service.status = PUBLISHED` directly): a maintenance script operating
+  on the database directly is a different trust boundary than the API —
+  the *endpoint* still can't do it, which is the actual requirement.
+
+**Carrying into Day 5**
+
+- **Coverage is at 78%, just under the 80% MUST** — checked with
+  `pytest --cov=app`. The gap is structural: every `app/api/v1/*.py`
+  router file shows **0%** coverage, because every integration test this
+  week calls the service-layer functions directly rather than going
+  through a `TestClient` against the real routes. Manual `curl`
+  verification proved the routes work, but pytest coverage can't see
+  manual verification — task 1.11 (auth flow, role + patient-data
+  enforcement, CRUD happy path + 2 failure cases) needs at least a
+  handful of real `TestClient` tests to close this, not more
+  service-layer tests.
+- Task 1.11 (the rest of it) and 1.12 (README v1, confirm the ERD is
+  current, finish `docs/design.md`) are Friday's work per the guidelines'
+  own hour estimates — today stayed on 1.7/1.8/1.10 only.
+- Friday's loop: self-check against the Definition of Done, close the
+  coverage gap above, update docs, open the `week-1` → `main` PR, demo.
+- **Mentor confirmed: full route-level coverage is expected**, not a
+  representative sample. So Day 5's coverage work is a `TestClient`-based
+  test file per router — auth header / wrong-role / happy-path / 404 /
+  409 — for every endpoint in `app/api/v1/`: auth, departments, services
+  (+ the public search route), providers, provider schedules
+  (+ generate-slots). That's six route files, none of them tested at the
+  HTTP layer yet.
+
+**Open questions for my mentor**
+
+- None outstanding — the one open question above was answered before
+  Day 5 started.
+
+---
+
 ## Weekly self-check
 
 Answered honestly every Friday.
