@@ -11,8 +11,8 @@ assistant refuses to give medical advice by design.
 It is also **API only**. There is no UI; Swagger UI at `/docs`, curl or Postman
 is the interface.
 
-> Status: **Week 1 — foundation**. See [Project status](#project-status) for what
-> works today.
+> Status: **Week 1 — foundation, self-check complete**. See
+> [Project status](#project-status) for what works today.
 
 ---
 
@@ -82,7 +82,11 @@ docker compose up -d --build api
 # 3. build the schema
 docker compose exec api alembic upgrade head
 
-# 4. check
+# 4. load a synthetic demo dataset (clinic, departments, providers + schedules,
+#    published services, patients) -- idempotent, safe to re-run
+docker compose exec api python -m scripts.seed
+
+# 5. check
 curl http://localhost:8000/health
 ```
 
@@ -144,23 +148,32 @@ docker compose exec api pytest
 docker compose exec api pytest --cov=app --cov-report=term-missing
 ```
 
-Target is ≥25 meaningful tests and ≥80% coverage, including the hard cases: slot
-double-booking under concurrency, duplicate bookings, saga compensation, illegal
-state transitions, unauthorized access to patient data, and idempotent event
-handling. The suite must pass with no network access.
+Target is ≥25 meaningful tests and ≥80% coverage; Week 1 stands at 142 tests and
+98% coverage, no network access required. Later weeks add the concurrency/saga/
+event hard cases (slot double-booking, saga compensation, idempotent event
+handling) that Week 1's domain doesn't have yet.
 
 ---
 
 ## API overview
 
-| Method | Path | Purpose | Week |
+| Method | Path | Purpose | Access |
 |---|---|---|---|
-| GET | `/health` | Liveness | 1 |
-| GET | `/health/db` | Temporary: confirms the API can reach Postgres | 1 |
-| GET | `/docs` | Swagger UI | 1 |
+| GET | `/health` | Liveness | Public |
+| GET | `/health/db` | Temporary: confirms the API can reach Postgres | Public |
+| GET | `/docs` | Swagger UI | Public |
+| POST | `/api/v1/auth/register` | Patient self-registration | Public |
+| POST | `/api/v1/auth/login` | Issue a JWT | Public |
+| GET | `/api/v1/auth/me` | Current authenticated user | Any role |
+| POST/GET/PATCH | `/api/v1/departments`, `/departments/{id}` | Department CRUD | Admin write, any staff read |
+| POST/GET/PATCH | `/api/v1/services`, `/services/{id}` | Service CRUD (always created `DRAFT`) | Admin write, any staff read |
+| GET | `/api/v1/services/search` | Public catalog: published + offered, filterable | Public |
+| POST/GET/PATCH | `/api/v1/providers`, `/providers/{id}` | Provider profile CRUD | Admin write, any staff read |
+| POST/GET/PATCH | `/api/v1/providers/{id}/schedules`, `/schedules/{id}` | Weekly working-hours templates | Admin write, any staff read |
+| POST | `/api/v1/providers/{id}/schedules/generate-slots` | Turn templates into bookable `Slot` rows, idempotent | Admin |
 
-Everything else — auth, providers, services, slots, appointments, analytics,
-search and the assistant — is added week by week and documented here as it lands.
+Slots, appointments, analytics, and the AI assistant are added week by week and
+documented here as they land.
 
 ---
 
@@ -224,14 +237,16 @@ leak `password_hash` and patient data).
 
 | Week | Theme | Status |
 |---|---|---|
-| 1 | Foundation and core domain | In progress |
+| 1 | Foundation and core domain | Done |
 | 2 | Temporal workflows, scheduling, slots | Not started |
 | 3 | Celery, Kafka, observability | Not started |
 | 4 | Chunking, embeddings, retrieval | Not started |
 | 5 | AI assistant, streaming, demo | Not started |
 
-**Working today:** Docker Compose brings up Postgres, Redis and the API;
-`/health` and `/health/db` respond; Alembic builds the schema from empty and
-enables pgvector.
+**Working today:** the full Week 1 domain — auth (register/login/roles),
+department/service/provider CRUD, provider schedules + idempotent slot
+generation, the public service search, and a synthetic seed script — all
+behind real routes, all role/ownership-checked, 142 tests at 98% coverage.
 
-**Not built yet:** everything else — auth, the domain models, and every workflow.
+**Not built yet:** appointments, the Temporal publish workflow and scheduling
+saga, Celery/Kafka, analytics, and the AI layer — Weeks 2–5.

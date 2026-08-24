@@ -6,7 +6,7 @@ How SmartHealth is put together, and why. Updated as work lands.
 - [2. Three things that will bite in Week 2](#2-three-things-that-will-bite-in-week-2)
 - [3. Decisions and tradeoffs](#3-decisions-and-tradeoffs)
 - [4. Open questions](#4-open-questions)
-- [5. Module breakdown](#5-module-breakdown) *(Week 1, in progress)*
+- [5. Module breakdown](#5-module-breakdown)
 - [6. Publish workflow and scheduling saga](#6-publish-workflow-and-scheduling-saga) *(Week 2)*
 - [7. Slot concurrency](#7-slot-concurrency) *(Week 2)*
 
@@ -16,7 +16,7 @@ How SmartHealth is put together, and why. Updated as work lands.
 
 ### 1.1 ERD — Week 1 core domain
 
-Nine entities. Appointments, billing, visits and the waitlist arrive in Week 2 and
+Ten entities. Appointments, billing, visits and the waitlist arrive in Week 2 and
 are deliberately absent here; the shapes below are what they will attach to.
 
 ```mermaid
@@ -29,6 +29,8 @@ erDiagram
     USER ||--o| PROVIDER : "may be"
     PROVIDER ||--o{ PROVIDER_SCHEDULE : "works"
     PROVIDER ||--o{ SLOT : "has"
+    PROVIDER ||--o{ PROVIDER_SERVICE : "is qualified for"
+    SERVICE ||--o{ PROVIDER_SERVICE : "delivered by"
 
     CLINIC {
         bigint id PK
@@ -116,6 +118,14 @@ erDiagram
         timestamptz created_at
         timestamptz updated_at
     }
+
+    PROVIDER_SERVICE {
+        bigint id PK
+        bigint provider_id FK "NOT NULL"
+        bigint service_id FK "NOT NULL, indexed"
+        timestamptz created_at
+        timestamptz updated_at
+    }
 ```
 
 **Conventions applied to every table.** Integer (`bigint`) identity primary keys.
@@ -190,6 +200,13 @@ it with nothing to conflict over. A row has a primary key an appointment can
 reference, a `status` the database can arbitrate with one conditional `UPDATE`,
 and a lifetime that can be audited. A slot is also *not* service-specific — it is
 provider time; the service is chosen when the appointment is created.
+
+**ProviderService** — a join table stating a fact nothing else in the schema can:
+that this provider is qualified to deliver this service. *Not* inferred from a
+shared `department_id` — a department groups people and offerings, it does not
+certify who performs what. Added Day 3, ahead of Week 2's eligibility check and
+task 1.8's `has_available_slots` search filter, both of which need the real
+answer.
 
 ---
 
@@ -337,12 +354,12 @@ could write any string at all. Every enum column is therefore built through one
 helper in `app/models/enums.py` that sets the flag, so it cannot be forgotten on
 one column out of three.
 
-**Known gap: there is no link between `providers` and `services.`** Nothing in the
-schema stops an appointment naming a dermatology service and a cardiologist. For
-Week 1 this is validated loosely in the service layer via the shared department. If
-that proves too weak once appointments exist, the fix is a `provider_services` join
-table in Week 2 — a genuine many-to-many, at which point the constraint becomes
-real. Recorded rather than fixed because appointments do not exist yet.
+**Resolved: `providers` and `services` are linked via `provider_services`.** This
+was originally recorded as a known gap deferred to Week 2 (a shared department
+alone doesn't certify who performs what — a dermatology service and a
+cardiologist could otherwise pair up with nothing to stop it). Built ahead of
+schedule on Day 3, once task 1.8's search filters made the gap concrete: a
+genuine many-to-many, not inferred from department.
 
 **Known gap: overlapping *schedule* windows for one provider are not prevented.**
 Mon 09:00–12:00 and Mon 11:00–14:00 can both be stored. Postgres ships no range
@@ -372,21 +389,29 @@ test.
 - Confirm a single clinic is sufficient for Week 1 — assumed yes.
 - Confirm treating slots as the schedule (generated from templates) rather than
   computing availability on the fly is the expected shape.
-- Whether `provider_services` should be modelled up front or deferred to Week 2.
 
 ---
 
 ## 5. Module breakdown
 
-*In progress — written as Week 1 lands.*
-
 ```
-api/       FastAPI routers. Parse input, call a service, shape the response.
-services/  Business rules.
+api/v1/    auth, departments, services (+ public /search), providers,
+           provider_schedules (+ generate-slots). Parse input, call a
+           service, shape the response — no business logic, no SQL.
+services/  Business rules: uniqueness checks, role/ownership checks,
+           slot generation. One module per api/v1 router, same name.
 models/    SQLAlchemy ORM. Database shape only.
-schemas/   Pydantic request/response. No ORM object ever leaves an endpoint.
-core/      Config, security, logging, exceptions, dependencies, metrics.
+schemas/   Pydantic request/response. No ORM object ever leaves an endpoint;
+           writable schemas omit any field only a workflow may set (e.g.
+           Service.status).
+core/      config, security (bcrypt + JWT), dependencies (get_current_user,
+           require_role, ensure_patient_self_or_staff), exceptions +
+           error_handlers (one JSON error shape), pagination.
 ```
+
+Every router endpoint is admin/staff-gated with `require_role` except
+`GET /services/search`, which is deliberately public — a prospective patient
+browsing before they register is the point of task 1.8.
 
 ## 6. Publish workflow and scheduling saga
 
