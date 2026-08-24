@@ -30,32 +30,20 @@ is the interface.
 
 ## Architecture
 
-```
-                    ┌──────────────┐
-   curl / Postman ──▶│  FastAPI API │
-                    └──────┬───────┘
-                           │
-        ┌──────────────────┼──────────────────┐
-        ▼                  ▼                  ▼
-  ┌───────────┐      ┌───────────┐      ┌───────────┐
-  │ PostgreSQL│      │   Redis   │      │  Temporal │   (Week 2)
-  │ +pgvector │      │ cache /   │      │  server   │
-  └───────────┘      │ broker /  │      └─────┬─────┘
-                     │ idem keys │            │
-                     └─────┬─────┘            ▼
-                           │            ┌──────────────┐
-                           ▼            │ Temporal     │
-                    ┌─────────────┐     │ worker       │
-                    │ Celery      │     │ (workflows + │
-                    │ worker      │     │  activities) │
-                    │ (Week 3)    │     └──────────────┘
-                    └─────────────┘
-                           │
-                           ▼
-                    ┌─────────────┐     ┌──────────────┐
-                    │   Kafka     │────▶│  Consumer    │──▶ analytics tables
-                    │  (Week 3)   │     │  (idempotent)│
-                    └─────────────┘     └──────────────┘
+```mermaid
+flowchart TD
+    Client["curl / Postman"] --> API["FastAPI API"]
+
+    API --> PG[("PostgreSQL + pgvector")]
+    API --> Redis[("Redis<br/>cache / broker / idempotency keys")]
+    API --> TemporalServer["Temporal server (Week 2)"]
+
+    Redis --> Celery["Celery worker (Week 3)"]
+    TemporalServer --> TemporalWorker["Temporal worker<br/>(workflows + activities)"]
+
+    Celery --> Kafka["Kafka (Week 3)"]
+    Kafka --> Consumer["Consumer (idempotent)"]
+    Consumer --> Analytics[("analytics tables")]
 ```
 
 **Division of labour.** Temporal owns the multi-step durable workflows (service
@@ -63,7 +51,7 @@ publishing, the appointment scheduling saga). Celery owns fire-and-forget work
 (reminders, the analytics rollup). The visit lifecycle is neither — it is a plain
 validated status flow driven by human actions.
 
-A proper diagram and the ERD land in `docs/design.md` at the end of Week 1.
+The ERD lives in `docs/design.md`.
 
 ---
 
