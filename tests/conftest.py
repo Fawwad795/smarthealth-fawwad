@@ -15,10 +15,14 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.orm import Session
+from fastapi.testclient import TestClient
 
 from app.core.config import settings
 from app.models import Clinic, Department, Provider, Specialty, User
 from app.models.enums import UserRole
+from app.core.security import create_access_token
+from app.db.session import get_db
+from app.main import app
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -184,3 +188,87 @@ def provider(
     db_session.add(p)
     db_session.flush()
     return p
+
+
+# --- HTTP layer -------------------------------------------------------------
+# Everything above builds rows directly with the ORM. These fixtures are for
+# tests that go through the real FastAPI routes instead, which is what
+# route-level coverage actually requires.
+
+
+@pytest.fixture()
+def client(db_session: Session) -> Generator[TestClient, None, None]:
+    """A TestClient that sees this test's own db_session, not a fresh
+    connection to the real dev database.
+
+    app's own get_db() opens a brand-new SessionLocal() against
+    settings.database_url every time FastAPI resolves it -- that's the dev
+    database, not the isolated, auto-rolled-back one db_session gives this
+    test. dependency_overrides swaps what Depends(get_db) resolves to, for
+    the lifetime of this fixture only.
+    """
+
+    def _get_test_db() -> Generator[Session, None, None]:
+        yield db_session
+
+    app.dependency_overrides[get_db] = _get_test_db
+    with TestClient(app) as test_client:
+        yield test_client
+    # Cleared even though the next test's client fixture would overwrite it
+    # anyway -- a stray test that used `app` directly, without this fixture,
+    # must not silently inherit someone else's database override.
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture()
+def front_desk_user(db_session: Session) -> User:
+    u = User(
+        email="frontdesk@example.com",
+        password_hash="not-a-real-hash",
+        role=UserRole.FRONT_DESK,
+    )
+    db_session.add(u)
+    db_session.flush()
+    return u
+
+
+@pytest.fixture()
+def admin_user(db_session: Session) -> User:
+    u = User(
+        email="admin@example.com",
+        password_hash="not-a-real-hash",
+        role=UserRole.ADMIN,
+    )
+    db_session.add(u)
+    db_session.flush()
+    return u
+
+
+def _auth_headers(user: User) -> dict[str, str]:
+    # Mints a token the same way login() does, but skips the real login
+    # round-trip -- bcrypt's hash+verify is deliberately slow, and a route
+    # test that isn't testing login shouldn't pay for it or depend on it
+    # being correct.
+    token = create_access_token(user.id)
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture()
+def patient_auth_headers(patient_user: User) -> dict[str, str]:
+    return _auth_headers(patient_user)
+
+
+@pytest.fixture()
+def provider_auth_headers(provider_user: User) -> dict[str, str]:
+    return _auth_headers(provider_user)
+
+
+@pytest.fixture()
+def front_desk_auth_headers(front_desk_user: User) -> dict[str, str]:
+    return _auth_headers(front_desk_user)
+
+
+@pytest.fixture()
+def admin_auth_headers(admin_user: User) -> dict[str, str]:
+    return _auth_headers(admin_user)
+
