@@ -69,9 +69,23 @@ def test_tampered_token_is_rejected() -> None:
     """Changing even one character invalidates the signature -- this is
     the entire security model. Without this check, anyone could edit the
     payload to claim to be a different user id.
+
+    Flips a character in the middle of the signature segment, not the
+    last character of the whole token: a 256-bit HMAC-SHA256 signature's
+    final base64url character only encodes 4 real bits, with the other 2
+    discarded as padding on decode -- so about 1 in 4 possible
+    last-character replacements silently decode to the exact same
+    signature bytes, leaving a token that is not actually tampered. A
+    middle character has no such padding, so every replacement genuinely
+    changes the decoded bytes.
     """
     token = create_access_token(42)
-    tampered = token[:-1] + ("a" if token[-1] != "a" else "b")
+    header, payload, signature = token.split(".")
+    middle = len(signature) // 2
+    flipped_char = "a" if signature[middle] != "a" else "b"
+    tampered_signature = signature[:middle] + flipped_char + signature[middle + 1 :]
+    tampered = f"{header}.{payload}.{tampered_signature}"
+
     with pytest.raises(AppError) as exc_info:
         decode_access_token(tampered)
     assert exc_info.value.status_code == 401
