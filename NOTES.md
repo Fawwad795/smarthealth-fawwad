@@ -173,6 +173,93 @@ test harness proving the migration builds it. No endpoints, no auth.
 
 ---
 
+### Day 3 — 2026-08-23
+
+**Goal:** auth done end-to-end — one JSON error shape, password hashing, JWT,
+register + login, a protected endpoint, and role/patient-data checks — so
+Day 4's CRUD endpoints have something real to sit behind from their first line.
+
+**Done**
+
+- Two Day 2 open questions closed first: dropped the redundant
+  `ix_services_department_id` index; added `provider_services` as an explicit
+  many-to-many table rather than inferring "who offers what" from a shared
+  `department_id`.
+- `core/exceptions.py` (`AppError`) + `core/error_handlers.py`: one JSON shape
+  for every failure. `AppError`, a validation error, a missing route, and an
+  unhandled exception all resolve through the same
+  `{"error": {"code", "message"}}` envelope — verified live against all four
+  origins, plus confirmed the existing `/health` routes were untouched.
+- `core/security.py`: `hash_password`/`verify_password` (bcrypt via passlib)
+  and `create_access_token`/`decode_access_token` (python-jose). Proved,
+  rather than assumed, that the pinned bcrypt version silently truncates
+  anything past 72 bytes instead of raising.
+- `core/dependencies.py`: `get_current_user`
+  (`HTTPBearer(auto_error=False)`, because FastAPI's own default response to
+  a *missing* header is 403, not 401), plus `require_role` and
+  `ensure_patient_self_or_staff` — built and verified by direct function
+  call, not yet wired into a real endpoint.
+- `schemas/auth.py`, `services/auth.py`, `api/v1/auth.py`:
+  `POST /auth/register` (patient-only), `POST /auth/login` (one identical 401
+  whether the email doesn't exist, the password is wrong, or the account is
+  deactivated), `GET /auth/me`.
+- Suite grew from 12 tests to 40 across the day; every subtask landed as its
+  own commit (eight total), each verified before the next started.
+
+**Decisions and why**
+
+| Decision | Why | Tradeoff |
+|---|---|---|
+| Registration is patient-only — no `role` field on the request | Task 1.10's seed script is what provisions provider/front_desk/admin accounts; a public endpoint that could mint an ADMIN account is a real hole, not an edge case | Staff accounts need a separate provisioning path later |
+| Login returns one generic 401 for a wrong password, an unknown email, *and* a deactivated account | Distinguishing any of them lets the endpoint be used to discover which emails have real accounts — a leak on its own | A genuine typo gets the same unhelpful message as an attack attempt |
+| `HTTPBearer(auto_error=False)` | The brief requires missing, invalid and expired tokens to all fail as 401; FastAPI's own default turns a missing header into 403 instead | One extra `if credentials is None` check that `get_current_user` has to own itself |
+| `require_role` and `ensure_patient_self_or_staff` kept as two separate functions | They answer different questions — PATIENT is a role every patient account holds and says nothing about *which* patient's data they may see | Two call sites in any endpoint that needs both, instead of one |
+| `ensure_patient_self_or_staff` is a plain function, not a `Depends()` | It needs an already-loaded `Patient` row, which only exists once a router has fetched one from a path parameter — a dependency resolves too early for that | Every router using it has to remember to call it explicitly |
+| Password capped at 72 characters in `RegisterRequest` | bcrypt silently ignores anything past byte 72 — rejecting an over-length password up front beats quietly accepting one that's only ever partially checked | None found |
+
+**What confused me / cost time**
+
+- `db.add(User)` instead of `db.add(user)` — passed the class instead of the
+  instance. Caught in verification before it ever touched the real database;
+  a reminder that a single wrong capital letter compiles fine and fails at
+  runtime.
+- `docker compose exec` mangled an absolute `/tmp/...` path on Windows Git
+  Bash — MSYS rewrites it as if it were a Windows path. Fixed with
+  `MSYS_NO_PATHCONV=1` on the command.
+- `python /tmp/script.py` inside the container couldn't `import app.*` —
+  Python puts the *script's own* directory on `sys.path[0]`, not the working
+  directory, so `/app` was never on the path. Fixed with `PYTHONPATH=/app` set
+  explicitly on `docker compose exec`.
+
+**Things I want to be able to explain out loud**
+
+- Why a JWT's payload is readable by anyone yet still trustworthy: the
+  signature is what can't be forged, not the payload, which is only
+  base64-encoded — nothing secret ever belongs in a token's claims.
+- Why `get_current_user` re-checks `user.is_active` even though `login()`
+  already does: a token stays cryptographically valid for its whole lifetime
+  after issue, even if the account is deactivated an hour later. Only a
+  per-request check catches that.
+- Why `ix_services_department_id` was pure write cost with no read benefit:
+  `uq_services_department_id_name` already builds a composite index whose
+  leading column serves any query that filters on `department_id` alone.
+
+**Carrying into Day 4**
+
+- Provider / service / department CRUD (task 1.7) is what finally puts
+  `require_role` and `ensure_patient_self_or_staff` to real use.
+- Public listing — pagination, filter by specialty/department/available-slots,
+  search by service name (task 1.8) — is the first place `provider_services`
+  actually gets queried.
+- Seed script (task 1.10).
+
+**Open questions for my mentor**
+
+- None carried from Day 3 — both of Day 2's were resolved and committed
+  before today's subtasks started.
+
+---
+
 ## Weekly self-check
 
 Answered honestly every Friday.
