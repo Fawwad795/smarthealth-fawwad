@@ -12,7 +12,8 @@ from sqlalchemy.orm import Session
 from app.core.exceptions import AppError
 from app.core.security import decode_access_token
 from app.db.session import get_db
-from app.models import User
+from app.models import User, Patient
+from app.models.enums import UserRole
 
 # auto_error=False: FastAPI's own default response to a *missing* header is
 # a 403, not 401 -- but the brief requires missing, invalid and expired
@@ -39,3 +40,45 @@ def get_current_user(
         )
 
     return user
+
+
+def require_role(*allowed_roles: UserRole):
+    """Dependency factory: require_role(UserRole.PROVIDER) builds a
+    dependency that lets a provider through and 403s everyone else.
+
+    A factory rather than a single function because "which roles are
+    allowed" differs per endpoint -- a provider-schedule route and a
+    reports route need different answers, and each needs its own
+    dependency instance built from the roles that specific route allows.
+    """
+
+    def _require_role(current_user: User = Depends(get_current_user)) -> User:
+        if current_user.role not in allowed_roles:
+            raise AppError(
+                status_code=403,
+                code="FORBIDDEN",
+                message="You do not have permission to perform this action.",
+            )
+        return current_user
+
+    return _require_role
+
+
+def ensure_patient_self_or_staff(current_user: User, patient: Patient) -> None:
+    """Is current_user allowed to see this specific patient's data?
+
+    Not a role check: PATIENT is a role every patient account holds, but
+    that says nothing about *which* patient's data someone may see. Not a
+    Depends() dependency either -- it needs the actual Patient row, which
+    only exists once a router has already loaded one, typically from a
+    path parameter such as /patients/{id}.
+    """
+    if current_user.role in (UserRole.FRONT_DESK, UserRole.ADMIN):
+        return
+    if current_user.role == UserRole.PATIENT and current_user.id == patient.user_id:
+        return
+    raise AppError(
+        status_code=403,
+        code="FORBIDDEN",
+        message="You do not have permission to access this patient's data.",
+    )
