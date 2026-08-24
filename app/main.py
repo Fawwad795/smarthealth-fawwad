@@ -8,10 +8,12 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.error_handlers import register_exception_handlers
 from app.db.session import get_db
+
 from app.api.v1.auth import router as auth_router
 from app.api.v1.departments import router as departments_router
 from app.api.v1.services import router as services_router
 from app.api.v1.providers import router as providers_router
+from app.api.v1.provider_schedules import router as provider_schedules_router
 
 
 def create_app() -> FastAPI:
@@ -30,6 +32,8 @@ def create_app() -> FastAPI:
     app.include_router(departments_router, prefix="/api/v1")
     app.include_router(services_router, prefix="/api/v1")
     app.include_router(providers_router, prefix="/api/v1")
+    app.include_router(provider_schedules_router, prefix="/api/v1")
+
 
 
     @app.get("/health", tags=["health"])
