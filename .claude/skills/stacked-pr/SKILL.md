@@ -11,13 +11,19 @@ shows only that day's diff instead of a growing pile.
 
 ```
 main
- └── week-1-foundation                    (merged first)
-      └── week-2-workflows-day-1          PR → week-1-foundation, then → main
-           └── week-2-workflows-day-2     PR → week-2-workflows-day-1, then → main
+ └── week-1-foundation                    (PR #1, still open)
+      └── week-2-workflows-day-1          PR → week-1-foundation
+           └── week-2-workflows-day-2     PR → week-2-workflows-day-1
                 └── week-2-workflows-day-3  …and so on
 ```
 
 Branch naming: `week-<n>-<theme>-day-<d>`, e.g. `week-2-workflows-day-1`.
+
+**A parent does not have to be merged before you stack on it.** PR #1 is still
+open while Week 2 proceeds — branch off `week-1-foundation` anyway and target its
+PR there. The retargets happen later, when the parent actually merges (see the
+cascade section). Never branch Week 2 off `main` while Week 1 is unmerged: `main`
+does not contain Week 1's code, so the day's diff would be wrong.
 
 ## Never run git writes directly
 
