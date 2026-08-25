@@ -6,7 +6,7 @@ organisational structure, not something a patient browses directly. Task
 Provider, not this endpoint.
 """
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import require_role
@@ -26,12 +26,17 @@ router = APIRouter(prefix="/departments", tags=["departments"])
 _STAFF_ROLES = (UserRole.ADMIN, UserRole.FRONT_DESK, UserRole.PROVIDER)
 
 
-@router.post("", response_model=DepartmentResponse, status_code=201)
+@router.post("", response_model=DepartmentResponse, status_code=status.HTTP_201_CREATED)
 def create_department(
     data: DepartmentCreate,
     db: Session = Depends(get_db),
     _current_user=Depends(require_role(UserRole.ADMIN)),
 ) -> DepartmentResponse:
+    """Create a department. ADMIN only.
+
+    409 if this clinic already has a department by this name (compared
+    case-insensitively), 404 if the clinic_id doesn't exist.
+    """
     department = department_service.create_department(db, data)
     return DepartmentResponse.model_validate(department)
 
@@ -42,6 +47,11 @@ def list_departments(
     db: Session = Depends(get_db),
     _current_user=Depends(require_role(*_STAFF_ROLES)),
 ) -> DepartmentListResponse:
+    """List departments, paginated. Any staff role.
+
+    Accepts ?limit= and ?offset=; limit is capped at 100 by
+    pagination_params so a client cannot ask for the whole table.
+    """
     items, total = department_service.list_departments(db, pagination)
     return DepartmentListResponse(
         items=[DepartmentResponse.model_validate(d) for d in items],
@@ -57,6 +67,7 @@ def get_department(
     db: Session = Depends(get_db),
     _current_user=Depends(require_role(*_STAFF_ROLES)),
 ) -> DepartmentResponse:
+    """Fetch one department by id. Any staff role. 404 if it doesn't exist."""
     department = department_service.get_department(db, department_id)
     return DepartmentResponse.model_validate(department)
 
@@ -68,5 +79,10 @@ def update_department(
     db: Session = Depends(get_db),
     _current_user=Depends(require_role(UserRole.ADMIN)),
 ) -> DepartmentResponse:
+    """Partially update a department. ADMIN only.
+
+    PATCH, not PUT: any field omitted from the body is left untouched
+    rather than cleared.
+    """
     department = department_service.update_department(db, department_id, data)
     return DepartmentResponse.model_validate(department)

@@ -6,7 +6,7 @@ sense in the context of one provider -- there is no "list every schedule
 across every provider" use case here.
 """
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import require_role
@@ -28,13 +28,19 @@ router = APIRouter(prefix="/providers/{provider_id}/schedules", tags=["provider-
 _STAFF_ROLES = (UserRole.ADMIN, UserRole.FRONT_DESK, UserRole.PROVIDER)
 
 
-@router.post("", response_model=ProviderScheduleResponse, status_code=201)
+@router.post("", response_model=ProviderScheduleResponse, status_code=status.HTTP_201_CREATED)
 def create_provider_schedule(
     provider_id: int,
     data: ProviderScheduleCreate,
     db: Session = Depends(get_db),
     _current_user=Depends(require_role(UserRole.ADMIN)),
 ) -> ProviderScheduleResponse:
+    """Add one recurring weekly window to a provider's schedule. ADMIN only.
+
+    Creates the template only -- nothing is bookable until
+    /generate-slots turns it into Slot rows. 409 on a duplicate
+    (weekday, start_time) window for this provider.
+    """
     schedule = provider_schedule_service.create_provider_schedule(db, provider_id, data)
     return ProviderScheduleResponse.model_validate(schedule)
 
@@ -46,6 +52,11 @@ def list_provider_schedules(
     db: Session = Depends(get_db),
     _current_user=Depends(require_role(*_STAFF_ROLES)),
 ) -> ProviderScheduleListResponse:
+    """List one provider's schedule windows, paginated. Any staff role.
+
+    Includes retired (is_active=False) windows, so staff can see why
+    historical slots exist.
+    """
     items, total = provider_schedule_service.list_provider_schedules(
         db, provider_id, pagination
     )
@@ -64,6 +75,11 @@ def get_provider_schedule(
     db: Session = Depends(get_db),
     _current_user=Depends(require_role(*_STAFF_ROLES)),
 ) -> ProviderScheduleResponse:
+    """Fetch one schedule window. Any staff role.
+
+    A schedule_id belonging to a different provider returns 404, not the
+    row -- the path's provider_id is checked, not trusted.
+    """
     schedule = provider_schedule_service.get_provider_schedule(
         db, provider_id, schedule_id
     )
@@ -78,6 +94,12 @@ def update_provider_schedule(
     db: Session = Depends(get_db),
     _current_user=Depends(require_role(UserRole.ADMIN)),
 ) -> ProviderScheduleResponse:
+    """Edit a schedule window, or retire it with is_active=False. ADMIN only.
+
+    Retiring stops future generation runs using it; slots already
+    generated from it are untouched, since a booked slot must never
+    vanish because someone edited a template.
+    """
     schedule = provider_schedule_service.update_provider_schedule(
         db, provider_id, schedule_id, data
     )
@@ -91,6 +113,14 @@ def generate_slots(
     db: Session = Depends(get_db),
     _current_user=Depends(require_role(UserRole.ADMIN)),
 ) -> GenerateSlotsResponse:
+    """Generate bookable Slot rows from this provider's active schedules
+    over a date range. ADMIN only.
+
+    An action, not a resource create, so it returns 200 with counts
+    rather than 201 with a body. Idempotent: re-running over a range
+    that already has slots reports them as `skipped` instead of
+    duplicating them, so widening the window is always safe.
+    """
     created, skipped = provider_schedule_service.generate_slots(
         db, provider_id, data.start_date, data.end_date
     )

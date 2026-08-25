@@ -20,6 +20,13 @@ class ProviderScheduleCreate(BaseModel):
 
     @model_validator(mode="after")
     def check_end_after_start(self) -> "ProviderScheduleCreate":
+        """Reject a window that ends before it starts, or is zero-length.
+
+        mode="after" so both fields are already parsed into `time` objects
+        and can be compared. The database enforces this too, via the
+        end_after_start CHECK -- this just turns it into a clean 422
+        instead of a 500 from an IntegrityError.
+        """
         if self.end_time <= self.start_time:
             raise ValueError("end_time must be after start_time")
         return self
@@ -39,6 +46,13 @@ class ProviderScheduleUpdate(BaseModel):
 
 
 class ProviderScheduleResponse(BaseModel):
+    """One recurring schedule window as returned to a client.
+
+    start_time/end_time are clinic-local times of day with no date and no
+    timezone -- they are intent, not instants. The UTC instants live on
+    the Slot rows generate_slots produces from this.
+    """
+
     model_config = ConfigDict(from_attributes=True)
 
     id: int
@@ -51,6 +65,9 @@ class ProviderScheduleResponse(BaseModel):
 
 
 class ProviderScheduleListResponse(BaseModel):
+    """One page of a single provider's schedule windows, in the shared
+    pagination envelope. total counts that provider's windows only."""
+
     items: list[ProviderScheduleResponse]
     total: int
     limit: int
@@ -58,16 +75,35 @@ class ProviderScheduleListResponse(BaseModel):
 
 
 class GenerateSlotsRequest(BaseModel):
+    """The date range to generate slots over, inclusive of both ends and
+    interpreted as clinic-local calendar days.
+
+    start_date == end_date is allowed and means a single day.
+    """
+
     start_date: date
     end_date: date
 
     @model_validator(mode="after")
     def check_range(self) -> "GenerateSlotsRequest":
+        """Reject a backwards range up front.
+
+        Without this the generator's loop simply never runs and returns
+        created=0, which looks like a successful no-op rather than the
+        bad request it actually is.
+        """
         if self.end_date < self.start_date:
             raise ValueError("end_date must not be before start_date")
         return self
 
 
 class GenerateSlotsResponse(BaseModel):
+    """What a generation run did.
+
+    Both numbers matter: `skipped` is how the caller can tell "this range
+    was already generated" apart from "these templates produce nothing",
+    which both leave created=0.
+    """
+
     created: int
     skipped: int

@@ -1,12 +1,13 @@
-"""Service routes: admin manages services, staff can read them.
+"""Service routes: admin manages services, staff can read them, and one
+public route lets anyone browse the published catalogue.
 
-Every service here is DRAFT and stays DRAFT -- status and published_at are
-never accepted from a request body. Week 2's Temporal publish workflow is
-the only path to PUBLISHED; letting a PATCH set status directly would let
-a client skip validation and chunking entirely.
+Every service created here is DRAFT and stays DRAFT -- status and
+published_at are never accepted from a request body. Week 2's Temporal
+publish workflow is the only path to PUBLISHED; letting a PATCH set
+status directly would let a client skip validation and chunking entirely.
 """
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import require_role
@@ -32,12 +33,17 @@ router = APIRouter(prefix="/services", tags=["services"])
 _STAFF_ROLES = (UserRole.ADMIN, UserRole.FRONT_DESK, UserRole.PROVIDER)
 
 
-@router.post("", response_model=ServiceResponse, status_code=201)
+@router.post("", response_model=ServiceResponse, status_code=status.HTTP_201_CREATED)
 def create_service(
     data: ServiceCreate,
     db: Session = Depends(get_db),
     _current_user=Depends(require_role(UserRole.ADMIN)),
 ) -> ServiceResponse:
+    """Create a service, always in DRAFT. ADMIN only.
+
+    A `status` key in the request body is silently ignored: ServiceCreate
+    has no such field for it to bind to.
+    """
     service = service_service.create_service(db, data)
     return ServiceResponse.model_validate(service)
 
@@ -48,6 +54,11 @@ def list_services(
     db: Session = Depends(get_db),
     _current_user=Depends(require_role(*_STAFF_ROLES)),
 ) -> ServiceListResponse:
+    """List services in any status, paginated. Any staff role.
+
+    The staff view. Patients get /services/search below, which is
+    filtered to PUBLISHED.
+    """
     items, total = service_service.list_services(db, pagination)
     return ServiceListResponse(
         items=[ServiceResponse.model_validate(s) for s in items],
@@ -63,8 +74,11 @@ def search_services(
     pagination: PaginationParams = Depends(pagination_params),
     db: Session = Depends(get_db),
 ) -> PublicServiceListResponse:
-    """Public: no require_role dependency -- a prospective patient
+    """Browse the published service catalogue. Public -- no auth required.
+
+    No require_role dependency, deliberately: a prospective patient
     browsing before they even register is the whole point of this route.
+    Only PUBLISHED services are ever returned, enforced in SQL.
 
     Declared here, before GET /{service_id} below, on purpose: Starlette
     matches routes in declaration order, and /{service_id} would otherwise
@@ -86,6 +100,11 @@ def get_service(
     db: Session = Depends(get_db),
     _current_user=Depends(require_role(*_STAFF_ROLES)),
 ) -> ServiceResponse:
+    """Fetch one service by id, in any status. Any staff role.
+
+    Staff-only because a DRAFT service is internal -- it describes
+    something the clinic does not yet offer.
+    """
     service = service_service.get_service(db, service_id)
     return ServiceResponse.model_validate(service)
 
@@ -97,5 +116,11 @@ def update_service(
     db: Session = Depends(get_db),
     _current_user=Depends(require_role(UserRole.ADMIN)),
 ) -> ServiceResponse:
+    """Partially update a service's name, description or prep
+    instructions. ADMIN only.
+
+    Cannot change status: ServiceUpdate has no such field, so a client
+    sending one gets its name updated and its status left alone.
+    """
     service = service_service.update_service(db, service_id, data)
     return ServiceResponse.model_validate(service)

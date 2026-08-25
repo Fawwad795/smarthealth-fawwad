@@ -4,6 +4,13 @@ from pydantic import BaseModel, ConfigDict
 
 
 class ProviderCreate(BaseModel):
+    """Attaches an operational profile to an account that already exists.
+
+    user_id must belong to a user whose role is already PROVIDER -- this
+    schema cannot express "make this person a provider", and the service
+    layer rejects a user_id that isn't one.
+    """
+
     user_id: int
     department_id: int
     specialty_id: int
@@ -23,6 +30,14 @@ class ProviderUpdate(BaseModel):
 
 
 class ProviderResponse(BaseModel):
+    """One provider profile as returned to a client.
+
+    Ids only for department and specialty -- resolving them to names is
+    the caller's job here. The public catalogue (PublicServiceResponse)
+    is the place that does that resolution, because a patient browsing
+    services has no way to look an id up.
+    """
+
     model_config = ConfigDict(from_attributes=True)
 
     id: int
@@ -33,6 +48,8 @@ class ProviderResponse(BaseModel):
 
 
 class ProviderListResponse(BaseModel):
+    """One page of provider profiles in the shared pagination envelope."""
+
     items: list[ProviderResponse]
     total: int
     limit: int

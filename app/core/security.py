@@ -6,6 +6,7 @@ from passlib.context import CryptContext
 
 from datetime import datetime, timedelta, timezone
 
+from fastapi import status
 from jose import JWTError, jwt
 
 from app.core.config import settings
@@ -65,5 +66,7 @@ def decode_access_token(token: str) -> int:
         return int(payload["sub"])
     except (JWTError, KeyError, ValueError):
         raise AppError(
-            status_code=401, code="INVALID_TOKEN", message="Invalid or expired token"
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            code="INVALID_TOKEN",
+            message="Invalid or expired token",
         )

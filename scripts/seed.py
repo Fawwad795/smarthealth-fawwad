@@ -50,6 +50,9 @@ SEED_PASSWORD = "ChangeMe123!"
 
 
 def _get_or_create_clinic(db: Session) -> Clinic:
+    """The single clinic everything else hangs off. Inserted directly:
+    there is no clinic CRUD endpoint, and a single-clinic system does not
+    need one."""
     clinic = db.query(Clinic).filter(Clinic.name == "MediNova Central").first()
     if clinic is not None:
         return clinic
@@ -60,6 +63,8 @@ def _get_or_create_clinic(db: Session) -> Clinic:
 
 
 def _get_or_create_department(db: Session, clinic: Clinic, name: str) -> Department:
+    """One department, via the real service function so the seeded data
+    goes through the same validation an admin's request would."""
     department = (
         db.query(Department)
         .filter(Department.clinic_id == clinic.id, Department.name == name)
@@ -73,6 +78,8 @@ def _get_or_create_department(db: Session, clinic: Clinic, name: str) -> Departm
 
 
 def _get_or_create_specialty(db: Session, name: str) -> Specialty:
+    """One specialty. Inserted directly -- Week 1 built no specialty CRUD,
+    since the vocabulary is fixed rather than user-managed."""
     specialty = db.query(Specialty).filter(Specialty.name == name).first()
     if specialty is not None:
         return specialty
@@ -83,6 +90,12 @@ def _get_or_create_specialty(db: Session, name: str) -> Specialty:
 
 
 def _get_or_create_staff_user(db: Session, email: str, role: UserRole) -> User:
+    """A provider, front_desk or admin account.
+
+    This function is the *only* way those roles come into existence:
+    POST /auth/register is patient-only precisely so no public route can
+    mint one. Looked up on lower(email) to match the unique index.
+    """
     email = email.lower()
     user = db.query(User).filter(func.lower(User.email) == email).first()
     if user is not None:
@@ -96,6 +109,7 @@ def _get_or_create_staff_user(db: Session, email: str, role: UserRole) -> User:
 def _get_or_create_provider(
     db: Session, user: User, department: Department, specialty: Specialty, bio: str
 ) -> Provider:
+    """The operational profile for an already-created PROVIDER account."""
     provider = db.query(Provider).filter(Provider.user_id == user.id).first()
     if provider is not None:
         return provider
@@ -108,6 +122,9 @@ def _get_or_create_provider(
 
 
 def _get_or_create_weekday_schedule(db: Session, provider: Provider, weekday: int) -> None:
+    """A 09:00-17:00 clinic-local window on one weekday, in 30-minute
+    slots. Existence is checked on (provider, weekday) rather than the
+    full window, so re-running never adds a second window to a day."""
     exists = (
         db.query(ProviderSchedule)
         .filter_by(provider_id=provider.id, weekday=weekday)
@@ -127,6 +144,15 @@ def _get_or_create_weekday_schedule(db: Session, provider: Provider, weekday: in
 def _get_or_create_published_service(
     db: Session, department: Department, name: str, description: str, prep: str
 ) -> Service:
+    """A service, created through the service layer and then promoted to
+    PUBLISHED directly.
+
+    That promotion is the one place this script goes below the API's own
+    rules, and it is deliberate: PATCH /services/{id} refuses to set
+    status because Week 2's publish workflow must own that transition --
+    but that workflow doesn't exist yet, and the demo needs something a
+    patient can actually find in the catalogue.
+    """
     service = (
         db.query(Service)
         .filter(Service.department_id == department.id, Service.name == name)
@@ -151,6 +177,12 @@ def _get_or_create_published_service(
 
 
 def _get_or_create_provider_service(db: Session, provider: Provider, service: Service) -> None:
+    """Record that this provider is qualified to deliver this service.
+
+    What the catalogue's specialty filter and "has available slots"
+    filter both traverse -- without these links a published service is
+    invisible to either.
+    """
     exists = (
         db.query(ProviderService)
         .filter_by(provider_id=provider.id, service_id=service.id)
@@ -163,6 +195,13 @@ def _get_or_create_provider_service(db: Session, provider: Provider, service: Se
 
 
 def _get_or_create_patient(db: Session, email: str, dob: date) -> Patient:
+    """A synthetic patient: the User account and its Patient profile.
+
+    Names and dates of birth here are invented -- rule 9, never real
+    personal data in seeds or tests. Handles the half-created case (user
+    exists, profile doesn't) so a re-run after an interrupted one
+    completes rather than crashing.
+    """
     email = email.lower()
     user = db.query(User).filter(func.lower(User.email) == email).first()
     if user is None:
@@ -180,6 +219,13 @@ def _get_or_create_patient(db: Session, email: str, dob: date) -> Patient:
 
 
 def seed(db: Session) -> None:
+    """Build the whole demo dataset, in dependency order.
+
+    Split from main() so the test suite can call it against the test
+    database with its own Session, rather than shelling out to a
+    subprocess and losing the transaction rollback that keeps tests
+    isolated.
+    """
     clinic = _get_or_create_clinic(db)
 
     cardiology_dept = _get_or_create_department(db, clinic, "Cardiology")
@@ -248,6 +294,11 @@ def seed(db: Session) -> None:
 
 
 def main() -> None:
+    """Entry point for `python -m scripts.seed`.
+
+    Owns the Session -- opening and always closing it -- so seed() itself
+    stays agnostic about where its database connection came from.
+    """
     db = SessionLocal()
     try:
         seed(db)

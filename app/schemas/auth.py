@@ -22,21 +22,47 @@ class RegisterRequest(BaseModel):
 
 
 class RegisterResponse(BaseModel):
+    """What a successful registration returns: enough to confirm which
+    account was created, and nothing else. No token -- registering and
+    logging in are separate steps -- and above all no password_hash.
+    """
+
     id: int
     email: str
 
 
 class LoginRequest(BaseModel):
+    """Credentials for POST /auth/login.
+
+    No length constraints on password, unlike RegisterRequest: this field
+    is only ever compared against a stored hash, never used to create one,
+    and rejecting an over-length password here would tell an attacker
+    something about what is stored.
+    """
+
     email: EmailStr
     password: str
 
 
 class TokenResponse(BaseModel):
+    """A successful login: the signed JWT plus its type.
+
+    token_type is "bearer" to tell the client how to send it back --
+    `Authorization: Bearer <token>`, which is what HTTPBearer expects.
+    """
+
     access_token: str
     token_type: str = "bearer"
 
 
 class UserMeResponse(BaseModel):
+    """The authenticated caller's own identity, for GET /auth/me.
+
+    Deliberately only three fields: this is built from a User row, which
+    also holds password_hash and is_active, and naming fields explicitly
+    is what keeps those from ever being serialised.
+    """
+
     id: int
     email: str
     role: UserRole

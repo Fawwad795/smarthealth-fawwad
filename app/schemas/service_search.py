@@ -11,6 +11,16 @@ from pydantic import BaseModel
 
 @dataclass
 class ServiceSearchParams:
+    """The optional filters a catalogue search accepts.
+
+    A plain dataclass, not a Pydantic model, for the same reason
+    PaginationParams is: the service layer takes one of these and tests
+    build them directly, so it must carry no FastAPI machinery.
+
+    Every field being None/False means "no filter" -- the published-only
+    rule is not represented here because it is not optional.
+    """
+
     q: str | None = None
     department_id: int | None = None
     specialty_id: int | None = None
@@ -36,6 +46,16 @@ def service_search_params(
 
 
 class PublicServiceResponse(BaseModel):
+    """One published service as a patient sees it.
+
+    Carries department_name and specialty names rather than bare ids,
+    because the caller here may be unauthenticated and has no other
+    endpoint to resolve those ids against.
+
+    No status field: everything in this response is PUBLISHED by
+    construction, so returning it would say nothing.
+    """
+
     id: int
     name: str
     description: str | None
@@ -46,6 +66,12 @@ class PublicServiceResponse(BaseModel):
 
 
 class PublicServiceListResponse(BaseModel):
+    """One page of catalogue results in the shared pagination envelope.
+
+    total counts everything matching the filters, not everything in the
+    services table -- so it shrinks as filters are added.
+    """
+
     items: list[PublicServiceResponse]
     total: int
     limit: int

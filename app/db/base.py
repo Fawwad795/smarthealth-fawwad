@@ -32,6 +32,13 @@ NAMING_CONVENTION = {
 
 
 class Base(DeclarativeBase):
+    """The declarative base all ORM models inherit from.
+
+    Its only job is to own a MetaData carrying NAMING_CONVENTION above, so
+    every table registered against it gets constraint and index names that
+    follow one rule rather than whatever Postgres happens to invent.
+    """
+
     # DeclarativeBase would create a MetaData for us silently. We create it
     # ourselves so the naming convention above is attached to it — every table
     # that inherits from Base registers in this MetaData and inherits the rules.

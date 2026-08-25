@@ -12,6 +12,13 @@ class AppError(Exception):
     """
 
     def __init__(self, status_code: int, code: str, message: str) -> None:
+        """Build an expected failure.
+
+        `status_code` is the HTTP status the client should receive, `code`
+        a stable machine-readable string a client can branch on, and
+        `message` human-readable text that is always safe to show -- it
+        must never carry a stack trace, DB error or PHI (rule 8.9).
+        """
         self.status_code = status_code
         self.code = code
         self.message = message

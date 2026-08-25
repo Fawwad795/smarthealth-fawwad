@@ -7,6 +7,7 @@ deliberately the only piece of code in Week 1 that reads them and the
 only one that must never write them.
 """
 
+from fastapi import status
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -29,7 +30,7 @@ def create_service(db: Session, data: ServiceCreate) -> Service:
     ).scalar_one_or_none()
     if exists is not None:
         raise AppError(
-            status_code=409,
+            status_code=status.HTTP_409_CONFLICT,
             code="SERVICE_NAME_TAKEN",
             message="This department already has a service with this name.",
         )
@@ -49,7 +50,7 @@ def create_service(db: Session, data: ServiceCreate) -> Service:
         # the unique constraint.
         db.rollback()
         raise AppError(
-            status_code=404,
+            status_code=status.HTTP_404_NOT_FOUND,
             code="DEPARTMENT_NOT_FOUND",
             message="No department exists with this department_id.",
         )
@@ -58,10 +59,16 @@ def create_service(db: Session, data: ServiceCreate) -> Service:
 
 
 def get_service(db: Session, service_id: int) -> Service:
+    """Fetch one service by id, or raise 404.
+
+    Returns a service in any status -- this is the staff-facing read. The
+    published-only view a patient sees is search_services in
+    services/service_search.py.
+    """
     service = db.get(Service, service_id)
     if service is None:
         raise AppError(
-            status_code=404,
+            status_code=status.HTTP_404_NOT_FOUND,
             code="SERVICE_NOT_FOUND",
             message="No service exists with this id.",
         )
@@ -71,6 +78,11 @@ def get_service(db: Session, service_id: int) -> Service:
 def list_services(
     db: Session, pagination: PaginationParams
 ) -> tuple[list[Service], int]:
+    """Return one page of services plus the unpaginated total.
+
+    All statuses, every department: this is the staff management listing,
+    not the patient-facing catalogue.
+    """
     total = db.execute(select(func.count()).select_from(Service)).scalar_one()
     items = (
         db.execute(
@@ -86,6 +98,12 @@ def list_services(
 
 
 def update_service(db: Session, service_id: int, data: ServiceUpdate) -> Service:
+    """Apply a partial update to a service's editable text fields.
+
+    status and published_at are not editable here and ServiceUpdate has no
+    field for them -- promoting a service to PUBLISHED must go through
+    Week 2's Temporal workflow, which is what validates and chunks it.
+    """
     service = get_service(db, service_id)
 
     if data.name is not None:
@@ -98,7 +116,7 @@ def update_service(db: Session, service_id: int, data: ServiceUpdate) -> Service
         ).scalar_one_or_none()
         if exists is not None:
             raise AppError(
-                status_code=409,
+                status_code=status.HTTP_409_CONFLICT,
                 code="SERVICE_NAME_TAKEN",
                 message="This department already has a service with this name.",
             )

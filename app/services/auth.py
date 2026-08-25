@@ -3,6 +3,7 @@ where "is this email taken", "does this password match" and "what does a
 login actually return" live.
 """
 
+from fastapi import status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -23,7 +24,7 @@ def register_patient(db: Session, data: RegisterRequest) -> User:
     existing = db.query(User).filter(func.lower(User.email) == email).first()
     if existing is not None:
         raise AppError(
-            status_code=409,
+            status_code=status.HTTP_409_CONFLICT,
             code="EMAIL_TAKEN",
             message="An account with this email already exists."
         )
@@ -56,7 +57,7 @@ def login(db: Session, data: LoginRequest) -> str:
     user = db.query(User).filter(func.lower(User.email) == email).first()
 
     invalid = AppError(
-        status_code=401,
+        status_code=status.HTTP_401_UNAUTHORIZED,
         code="INVALID_CREDENTIALS",
         message="Incorrect email or password.",
     )

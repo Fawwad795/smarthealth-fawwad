@@ -10,6 +10,7 @@ timestamps Week 2's atomic reservation depends on.
 from datetime import date, datetime, time as time_, timedelta, timezone as dt_timezone
 from zoneinfo import ZoneInfo
 
+from fastapi import status
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -21,10 +22,16 @@ from app.schemas.provider_schedule import ProviderScheduleCreate, ProviderSchedu
 
 
 def _get_provider_or_404(db: Session, provider_id: int) -> Provider:
+    """Resolve the provider_id from the URL path, or raise 404.
+
+    Private to this module: every public function below starts with it, so
+    a schedule can never be created for, or listed under, a provider that
+    doesn't exist.
+    """
     provider = db.get(Provider, provider_id)
     if provider is None:
         raise AppError(
-            status_code=404,
+            status_code=status.HTTP_404_NOT_FOUND,
             code="PROVIDER_NOT_FOUND",
             message="No provider exists with this provider_id.",
         )
@@ -34,6 +41,12 @@ def _get_provider_or_404(db: Session, provider_id: int) -> Provider:
 def create_provider_schedule(
     db: Session, provider_id: int, data: ProviderScheduleCreate
 ) -> ProviderSchedule:
+    """Add one recurring weekly window to a provider's schedule.
+
+    Creates the template only -- no Slot rows exist until generate_slots
+    runs. The 409 comes from the (provider_id, weekday, start_time) unique
+    constraint: the same window entered twice.
+    """
     _get_provider_or_404(db, provider_id)
 
     schedule = ProviderSchedule(
@@ -49,7 +62,7 @@ def create_provider_schedule(
     except IntegrityError:
         db.rollback()
         raise AppError(
-            status_code=409,
+            status_code=status.HTTP_409_CONFLICT,
             code="DUPLICATE_SCHEDULE_WINDOW",
             message="This provider already has a schedule window starting at this time on this weekday.",
         )
@@ -60,10 +73,16 @@ def create_provider_schedule(
 def get_provider_schedule(
     db: Session, provider_id: int, schedule_id: int
 ) -> ProviderSchedule:
+    """Fetch one schedule, checking it really belongs to this provider.
+
+    A schedule_id that exists but belongs to someone else returns the same
+    404 as one that doesn't exist at all -- otherwise the difference
+    between the two responses would confirm that a given id exists.
+    """
     schedule = db.get(ProviderSchedule, schedule_id)
     if schedule is None or schedule.provider_id != provider_id:
         raise AppError(
-            status_code=404,
+            status_code=status.HTTP_404_NOT_FOUND,
             code="SCHEDULE_NOT_FOUND",
             message="No schedule exists with this id for this provider.",
         )
@@ -73,6 +92,12 @@ def get_provider_schedule(
 def list_provider_schedules(
     db: Session, provider_id: int, pagination: PaginationParams
 ) -> tuple[list[ProviderSchedule], int]:
+    """Return one page of this provider's schedule windows plus the total.
+
+    Both the count and the page are scoped to provider_id, so the total
+    describes this provider's schedules rather than every schedule in the
+    system.
+    """
     _get_provider_or_404(db, provider_id)
 
     total = db.execute(
@@ -97,6 +122,16 @@ def list_provider_schedules(
 def update_provider_schedule(
     db: Session, provider_id: int, schedule_id: int, data: ProviderScheduleUpdate
 ) -> ProviderSchedule:
+    """Edit a schedule window, or retire it by setting is_active=False.
+
+    Retiring rather than deleting is deliberate: slots already generated
+    from this window keep their provenance, and the row stays available
+    for audit.
+
+    Unlike create, the end_time > start_time rule is left to the database's
+    CHECK constraint -- a PATCH may send only one of the two, so the schema
+    has no way to compare them against the row's existing values.
+    """
     schedule = get_provider_schedule(db, provider_id, schedule_id)
 
     if data.start_time is not None:
@@ -113,7 +148,7 @@ def update_provider_schedule(
     except IntegrityError:
         db.rollback()
         raise AppError(
-            status_code=409,
+            status_code=status.HTTP_409_CONFLICT,
             code="INVALID_SCHEDULE_WINDOW",
             message="This change violates a schedule constraint -- check end_time is after start_time and this window doesn't duplicate another for this provider/weekday.",
         )
@@ -129,6 +164,8 @@ def generate_slots(
     days. Idempotent: a start_time that already has a slot is skipped, not
     duplicated, so this is safe to re-run after adding a new template or
     widening the date range.
+
+    Returns (created, skipped).
     """
     provider = _get_provider_or_404(db, provider_id)
     clinic_tz = ZoneInfo(provider.department.clinic.timezone)
@@ -205,7 +242,7 @@ def generate_slots(
         # slots.ex_slots_no_overlap.
         db.rollback()
         raise AppError(
-            status_code=409,
+            status_code=status.HTTP_409_CONFLICT,
             code="OVERLAPPING_SCHEDULE_WINDOWS",
             message="Generating slots for this range would create overlapping slots -- check for overlapping schedule windows on the same weekday.",
         )
