@@ -131,10 +131,29 @@ working `downgrade()`.
 
 ## Tests
 
+The suite runs entirely inside Docker — nothing is installed on the host, and no
+network access is required.
+
 ```bash
-docker compose exec api pytest
-docker compose exec api pytest --cov=app --cov-report=term-missing
+make test        # the whole suite, from cold
+make test-cov    # with a coverage report
 ```
+
+`make test` runs `docker compose run --rm test`: a one-shot container that starts
+Postgres itself and exits with pytest's exit code. Unlike
+`docker compose exec api pytest`, it does **not** need the API container to
+already be running, which is what makes it usable from a cold checkout and in CI.
+
+Without `make` (or on Windows, where MSYS `make` can mangle arguments to the
+Docker CLI), run the same thing directly:
+
+```bash
+docker compose run --rm test
+docker compose run --rm test pytest --cov=app --cov-report=term-missing
+```
+
+Run `make help` to list every target (`up`, `migrate`, `seed`, `lint`, `fmt`,
+`psql`, `reset`).
 
 Target is ≥25 meaningful tests and ≥80% coverage; Week 1 stands at 142 tests and
 98% coverage, no network access required. Later weeks add the concurrency/saga/
@@ -200,6 +219,8 @@ migrations/       Alembic revisions
 tests/            unit/ and integration/
 docs/             design, events, runbook, ai-layer, prd
 scripts/          seed, reconcile_analytics, eval_retrieval
+.claude/          working context for Claude Code (committed, see below)
+Makefile          one target per task — run `make help`
 ```
 
 The layering is the point: routers hold no business logic and no SQL, services
@@ -218,6 +239,30 @@ leak `password_hash` and patient data).
 | `docs/ai-layer.md` | Chunking, retrieval, prompts, evaluation, transcripts |
 | `docs/prd.md` | PRD with the requirement → implementation → test traceability table |
 | `NOTES.md` | Working log and weekly tracking tables |
+
+### `.claude/` — working context
+
+Committed rather than ignored, so the conventions this project is held to are
+reviewable like any other file.
+
+| Path | Loads | Contents |
+|---|---|---|
+| `CLAUDE.md` | every session | Project summary, layering, the non-negotiables, working rules |
+| `rules/data-model.md` | editing `app/models/**`, `migrations/**` | Table list, enum/timestamp/migration conventions |
+| `rules/workflows-and-sagas.md` | editing `app/temporal/**`, `app/services/**` | Slot atomicity, idempotency, publish workflow, scheduling saga |
+| `rules/events-observability.md` | editing `app/events/**`, `app/workers/**`, `app/core/**` | Event envelope, Celery retries, analytics, logging/metrics |
+| `rules/ai-layer.md` | editing `app/ai/**` | Chunking, retrieval filters, refusal rules, streaming |
+| `rules/testing.md` | editing `tests/**` | Coverage targets, fixture design, what must be tested |
+| `reference/*.md` | never automatically — grepped on demand | The three assignment briefs, converted from `.docx` by `scripts/convert_briefs.py` |
+| `skills/` | on demand | `start-day` (pick up a day's work with full context), `stacked-pr` (daily branch/PR chain), `verify-endpoint` (live verification loop), `assignment-brief` (searching the briefs) |
+
+Splitting it this way keeps the always-loaded file at 173 lines instead of 587:
+the Week 4 retrieval rules no longer load while writing a Week 2 Temporal activity,
+and the 1,250-line source briefs are searchable without ever being loaded in full.
+
+The briefs are living documents — re-run `python scripts/convert_briefs.py` on the
+host after the `.docx` originals change. The converted files are generated; don't
+hand-edit them.
 
 ---
 
