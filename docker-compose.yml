@@ -225,6 +225,29 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # The test suite. Not a long-running service -- it is meant to be run
+  # one-shot and thrown away:
+  #
+  #     docker compose run --rm test
+  #
+  # Deliberately separate from `api` rather than `docker compose exec api
+  # pytest`, which only works if the API container is already running. This
+  # starts Postgres itself (via depends_on) and exits with pytest's own exit
+  # code, so it works from cold and is usable in CI.
+  #
+  # profiles: keeps it out of `docker compose up` -- `run` ignores profiles,
+  # so the test service never starts alongside the app by accident.
+  test:
+    build: .
+    profiles: ["tools"]
+    command: pytest
+    env_file: [.env]
+    volumes:
+      - ".:/app"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
   postgres_data:
   redis_data:
