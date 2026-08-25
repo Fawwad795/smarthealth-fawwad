@@ -217,5 +217,8 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# Claude Code working context (local only)
-CLAUDE.md
+# Claude Code working context is now COMMITTED, not ignored: .claude/CLAUDE.md
+# and .claude/rules/ are project documentation the mentor reviews like any
+# other file. Only genuinely local, per-machine state stays out.
+.claude/settings.local.json
+CLAUDE.local.md
