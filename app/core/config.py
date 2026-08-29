@@ -9,7 +9,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """Week 1 settings. Fields are added as each week needs them."""
+    """Settings fields are added as each week needs them."""
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -41,6 +41,12 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 60
 
+    # --- Temporal ---
+    # Host is `temporal` (the compose service name), matching the same
+    # container-vs-localhost rule as database_url.
+    temporal_host: str = "temporal:7233"
+    temporal_namespace: str = "default"
+    temporal_task_queue: str = "app-workflow"
 
 # Imported everywhere as: from app.core.config import settings
 settings = Settings()
