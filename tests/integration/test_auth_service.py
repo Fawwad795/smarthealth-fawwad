@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.core.exceptions import AppError
 from app.core.security import decode_access_token, verify_password
-from app.models import Patient, User
+from app.models import Patient
 from app.models.enums import UserRole
 from app.schemas.auth import LoginRequest, RegisterRequest
 from app.services.auth import login, register_patient

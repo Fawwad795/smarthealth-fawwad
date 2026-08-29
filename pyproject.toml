@@ -1,0 +1,35 @@
+# Tool configuration. Deliberately no [project] table -- this is an
+# application run from a container, not a distributable package.
+
+[tool.ruff]
+line-length = 88          # match black, so the two never disagree
+target-version = "py311"
+
+[tool.ruff.lint]
+# E/F are ruff's defaults (pycodestyle errors, pyflakes). The rest are
+# what this project has been told to enforce and previously checked only
+# by eye:
+#   D1xx  every module/class/method/function carries a docstring. Added
+#         after a mentor review found 77 missing -- a linter catches that
+#         in a second, a human review catches it a week later.
+select = ["E", "F", "D100", "D101", "D102", "D103"]
+
+# D203/D213 conflict with D211/D212 respectively; ruff warns unless one of
+# each pair is disabled. These pick the "no blank line before class" and
+# "summary on the first line" conventions, which is what the codebase does.
+# E501 is left to black: it reflows code but will not split an unbreakable
+# string, so enforcing it here only flags long messages black cannot fix.
+ignore = ["D203", "D213", "E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Test functions are named as full sentences (test_duplicate_name_is_rejected)
+# and fixtures are self-describing; a mandated docstring on each would be
+# noise rather than information. Module-level docstrings are still required.
+"tests/**" = ["D103"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "pep257"
+
+[tool.black]
+line-length = 88
+target-version = ["py311"]

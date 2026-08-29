@@ -142,6 +142,12 @@ def convert(path: Path) -> str:
 
 
 def main() -> int:
+    """Convert every brief found in the source directory.
+
+    Returns a shell exit code: 1 if the source directory is missing, 0
+    otherwise. A brief that is individually absent is skipped with a
+    warning rather than failing the whole run.
+    """
     source_dir = Path(os.environ.get("SMARTHEALTH_BRIEFS_DIR", DEFAULT_SOURCE_DIR))
     if not source_dir.is_dir():
         print(
