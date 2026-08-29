@@ -254,11 +254,22 @@ reviewable like any other file.
 | `rules/ai-layer.md` | editing `app/ai/**` | Chunking, retrieval filters, refusal rules, streaming |
 | `rules/testing.md` | editing `tests/**` | Coverage targets, fixture design, what must be tested |
 | `reference/*.md` | never automatically — grepped on demand | The three assignment briefs, converted from `.docx` by `scripts/convert_briefs.py` |
-| `skills/` | on demand | `start-day` (pick up a day's work with full context), `stacked-pr` (daily branch/PR chain), `verify-endpoint` (live verification loop), `assignment-brief` (searching the briefs) |
+| `skills/` | on demand | `start-day`, `verify`, `verify-endpoint`, `stacked-pr`, `assignment-brief`, `explain` — see below |
 
 Splitting it this way keeps the always-loaded file at 173 lines instead of 587:
 the Week 4 retrieval rules no longer load while writing a Week 2 Temporal activity,
 and the 1,250-line source briefs are searchable without ever being loaded in full.
+
+#### Skills
+
+| Skill | Does |
+|---|---|
+| `/start-day` | Picks up a day's work: reads the NOTES.md handoff, pulls the week's task table, loads that week's rules, starts the branch |
+| `/verify` | Lint, docstrings, status codes, tests, coverage — run before every commit |
+| `/verify-endpoint` | Live curl round-trip against the running container |
+| `/stacked-pr` | The daily branch/PR chain and its retarget cascade |
+| `/assignment-brief` | Where the briefs are and how to search them |
+| `/explain <n>` | Re-explains the last *n* responses in plain, beginner-level English |
 
 The briefs are living documents — re-run `python scripts/convert_briefs.py` on the
 host after the `.docx` originals change. The converted files are generated; don't
