@@ -333,3 +333,64 @@ of them.
 **Open questions**
 
 - None.
+
+---
+
+## Week 2 - Temporal Workflows & Scheduling
+
+### Day 1 - 2026-08-29
+
+**Goal:** 2.1 (status transition guard, 409 on illegal entry) + 2.2
+(Temporal worker wired up, trivial workflow end-to-end).
+
+**Done**
+
+- **2.1** `service_publish.py` - `ensure_can_publish` /
+  `ensure_can_unpublish`. 10 unit tests, no database.
+- **2.2** `app/temporal/` - `client.py`, `ping_workflow.py` (temporary),
+  `worker.py`. New `temporal-worker` compose service. `temporalio==1.9.0`.
+- Verified live: worker connected, `PingWorkflow` ran end-to-end ->
+  `pong, Fawwad`.
+- 142 -> 152 tests, lint clean, no hardcoded status codes.
+
+**Decisions**
+
+| Decision | Why |
+|---|---|
+| Guard in its own module (`service_publish.py`) | Keeps `service.py` Temporal-unaware |
+| `INACTIVE` has no path back to `PUBLISHING` | Diagram only draws `PUBLISH_FAILED -> PUBLISHING` as retry |
+| Compose service `temporal-worker`, not `worker` | `worker` already reserved for Week 3's Celery worker |
+| `client.py` test deferred to 2.3 | Needs an async-test-infra call 2.3 forces anyway |
+
+**Cost time**
+
+- Named the compose service `worker`, collided with the file's own Week 3
+  plan - caught on re-read, not by me first.
+- `run_worker()` missing a docstring - caught by ruff (D103).
+- `docker compose exec` mangled a path on Git Bash again -
+  `MSYS_NO_PATHCONV=1`.
+- `ruff check .` on the whole repo flagged `migrations/` - false alarm,
+  `make lint` excludes it.
+
+**Explain out loud**
+
+- Workflow/Activity/Worker/Client - the kitchen analogy; durable execution
+  resumes mid-recipe after a crash.
+- `temporal:7233` only resolves inside the compose network, not the
+  laptop.
+- Same `client.py` file will run inside `api` too - one image, execution
+  follows the importer.
+- `@activity.defn`/`@workflow.defn` - registers a function with Temporal's
+  SDK.
+- `Client.connect()` is a real network call - why it has to be `async`.
+
+**Carrying into Day 2**
+
+- 2.3 - the real publish workflow, replaces `ping_workflow.py`.
+- Decide Temporal test-infra (`pytest-asyncio` + `WorkflowEnvironment` vs.
+  real container).
+- 2.4 follows once 2.3 exists.
+
+**Open questions**
+
+- Should `INACTIVE` have a re-publish path?
