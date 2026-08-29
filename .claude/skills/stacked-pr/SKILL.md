@@ -1,6 +1,7 @@
 ---
 name: stacked-pr
 description: Start a day's branch, open its PR against the previous day's branch, and cascade the retargets after a merge. Use whenever starting a new day's work, opening a daily PR, or after a PR in the stack merges. From Week 2 onward each day gets its own branch stacked on the previous day's.
+allowed-tools: Bash, Read
 ---
 
 # Stacked daily PRs

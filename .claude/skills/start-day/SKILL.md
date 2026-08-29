@@ -1,6 +1,7 @@
 ---
 name: start-day
 description: Pick up a new day's work with full context - read where yesterday left off, pull this week's task list from the assignment brief, load the rules for this week's theme, start the day's branch, and propose a plan. Use at the beginning of any working session ("Week 2 Day 1", "start day 3", "let's begin today").
+allowed-tools: Bash, Read, Grep
 ---
 
 # Starting a day

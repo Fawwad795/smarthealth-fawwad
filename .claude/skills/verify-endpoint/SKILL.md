@@ -1,6 +1,7 @@
 ---
 name: verify-endpoint
 description: Prove an endpoint actually works by running it live against the running container - mint a token, seed throwaway data, curl the real routes, inspect the rows, clean up. Use in step 4 of any subtask that adds or changes an API endpoint, before writing the permanent test.
+allowed-tools: Bash, Read, Write, Grep
 ---
 
 # Verifying an endpoint for real

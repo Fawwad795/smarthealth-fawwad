@@ -2,6 +2,7 @@
 name: explain
 description: Re-explain recent work in short, plain, beginner-level English. Invoked as "/explain 2" or "/explain 4", where the number is how many of the most recent Claude responses to cover. Use whenever the user wants to understand what just happened without the jargon.
 allowed-tools: Read, Grep
+disallowed-tools: Edit, Write, NotebookEdit, Bash
 ---
 
 # Explain what just happened, simply

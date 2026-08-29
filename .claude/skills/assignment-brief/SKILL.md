@@ -1,6 +1,7 @@
 ---
 name: assignment-brief
 description: Look up what the assignment documents actually say - the week's task list and hour estimates, a Definition of Done, an exact MUST/SHOULD/STRETCH wording, or the grading weights. Use whenever a question needs the source of truth rather than the summary in CLAUDE.md, or when the mentor's briefs have been edited and need re-converting.
+allowed-tools: Read, Grep, Bash
 ---
 
 # The assignment briefs
