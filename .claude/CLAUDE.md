@@ -123,9 +123,6 @@ Each is expanded in the matching file under `.claude/rules/`.
 
 ## 7. Engineering requirements
 
-- `docker compose up` starts everything. A mentor installs nothing locally.
-- `alembic upgrade head` builds the whole schema from an empty DB.
-- Seed script → synthetic demo dataset in one command (`make seed`).
 - Config via env vars; `.env.example` committed and accurate.
 - **pytest, ≥25 meaningful tests, ≥80% coverage.** See `rules/testing.md`.
 - Meaningful commits, one branch per week, one PR per week. `main` stays working.
@@ -133,10 +130,6 @@ Each is expanded in the matching file under `.claude/rules/`.
 - `make help` lists every task target.
 
 ## 8. Deliverables
-
-`README.md` · `docs/design.md` · `docs/events.md` · `docs/runbook.md` ·
-`docs/ai-layer.md` · `docs/prd.md` (with the traceability table) · `NOTES.md`
-(working log + weekly tracking tables).
 
 Update `README.md`, `docs/design.md` and the PRD traceability table **at the end of
 every week**. Docs written on the last afternoon are visible and penalised.
