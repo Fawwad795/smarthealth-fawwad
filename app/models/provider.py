@@ -10,9 +10,9 @@ from app.models.mixins import TimestampMixin
 
 if TYPE_CHECKING:
     from app.models.department import Department
-    from app.models.provider_schedule import ProviderSchedule   
+    from app.models.provider_schedule import ProviderSchedule
     from app.models.provider_service import ProviderService
-    from app.models.slot import Slot  
+    from app.models.slot import Slot
     from app.models.specialty import Specialty
     from app.models.user import User
 
@@ -60,6 +60,10 @@ class Provider(Base, TimestampMixin):
     user: Mapped["User"] = relationship(back_populates="provider")
     department: Mapped["Department"] = relationship(back_populates="providers")
     specialty: Mapped["Specialty"] = relationship(back_populates="providers")
-    schedules: Mapped[list["ProviderSchedule"]] = relationship(back_populates="provider")
+    schedules: Mapped[list["ProviderSchedule"]] = relationship(
+        back_populates="provider"
+    )
     slots: Mapped[list["Slot"]] = relationship(back_populates="provider")
-    provider_services: Mapped[list["ProviderService"]] = relationship(back_populates="provider")
+    provider_services: Mapped[list["ProviderService"]] = relationship(
+        back_populates="provider"
+    )

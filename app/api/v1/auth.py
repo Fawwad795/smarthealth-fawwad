@@ -11,7 +11,7 @@ from app.schemas.auth import (
     RegisterRequest,
     RegisterResponse,
     TokenResponse,
-    UserMeResponse
+    UserMeResponse,
 )
 from app.services import auth as auth_service
 from app.core.dependencies import get_current_user
@@ -20,7 +20,9 @@ from app.models import User
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
-@router.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED
+)
 def register(data: RegisterRequest, db: Session = Depends(get_db)) -> RegisterResponse:
     """Create a patient account. Public: no authentication required.
 
@@ -50,4 +52,6 @@ def me(current_user: User = Depends(get_current_user)) -> UserMeResponse:
     confirm a token is valid. Any authenticated role may call it; the
     response is built field-by-field so no password_hash can escape.
     """
-    return UserMeResponse(id=current_user.id, email=current_user.email, role=current_user.role)
+    return UserMeResponse(
+        id=current_user.id, email=current_user.email, role=current_user.role
+    )

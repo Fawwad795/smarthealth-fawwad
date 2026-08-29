@@ -53,11 +53,18 @@ def test_create_provider_forbidden_for_non_admin_staff(
 
 
 def test_create_provider_unknown_user_returns_404(
-    client: TestClient, department: Department, specialty: Specialty, admin_auth_headers: dict
+    client: TestClient,
+    department: Department,
+    specialty: Specialty,
+    admin_auth_headers: dict,
 ) -> None:
     response = client.post(
         "/api/v1/providers",
-        json={"user_id": 999999, "department_id": department.id, "specialty_id": specialty.id},
+        json={
+            "user_id": 999999,
+            "department_id": department.id,
+            "specialty_id": specialty.id,
+        },
         headers=admin_auth_headers,
     )
 
@@ -74,7 +81,11 @@ def test_create_provider_wrong_role_returns_409(
 ) -> None:
     response = client.post(
         "/api/v1/providers",
-        json={"user_id": patient_user.id, "department_id": department.id, "specialty_id": specialty.id},
+        json={
+            "user_id": patient_user.id,
+            "department_id": department.id,
+            "specialty_id": specialty.id,
+        },
         headers=admin_auth_headers,
     )
 
@@ -120,7 +131,9 @@ def test_list_providers_forbidden_for_patient(
 def test_get_provider_returns_200(
     client: TestClient, provider: Provider, provider_auth_headers: dict
 ) -> None:
-    response = client.get(f"/api/v1/providers/{provider.id}", headers=provider_auth_headers)
+    response = client.get(
+        f"/api/v1/providers/{provider.id}", headers=provider_auth_headers
+    )
 
     assert response.status_code == 200
     assert response.json()["id"] == provider.id

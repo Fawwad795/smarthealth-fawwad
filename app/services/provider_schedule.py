@@ -170,12 +170,16 @@ def generate_slots(
     provider = _get_provider_or_404(db, provider_id)
     clinic_tz = ZoneInfo(provider.department.clinic.timezone)
 
-    schedules = db.execute(
-        select(ProviderSchedule).where(
-            ProviderSchedule.provider_id == provider_id,
-            ProviderSchedule.is_active.is_(True),
+    schedules = (
+        db.execute(
+            select(ProviderSchedule).where(
+                ProviderSchedule.provider_id == provider_id,
+                ProviderSchedule.is_active.is_(True),
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     range_start_utc = datetime.combine(
         start_date, time_.min, tzinfo=clinic_tz
@@ -191,7 +195,9 @@ def generate_slots(
                 Slot.start_time >= range_start_utc,
                 Slot.start_time < range_end_utc,
             )
-        ).scalars().all()
+        )
+        .scalars()
+        .all()
     )
 
     created = 0
@@ -223,7 +229,11 @@ def generate_slots(
                     skipped += 1
                 else:
                     new_slots.append(
-                        Slot(provider_id=provider_id, start_time=start_utc, end_time=end_utc)
+                        Slot(
+                            provider_id=provider_id,
+                            start_time=start_utc,
+                            end_time=end_utc,
+                        )
                     )
                     existing_starts.add(start_utc)
                     created += 1

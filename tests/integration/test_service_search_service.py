@@ -10,7 +10,15 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 
 from app.core.pagination import PaginationParams
-from app.models import Department, Provider, ProviderService, Service, Slot, Specialty, User
+from app.models import (
+    Department,
+    Provider,
+    ProviderService,
+    Service,
+    Slot,
+    Specialty,
+    User,
+)
 from app.models.enums import ServiceStatus, SlotStatus, UserRole
 from app.schemas.service_search import ServiceSearchParams
 from app.services import service_search as service_search_service
@@ -40,7 +48,9 @@ def test_search_excludes_draft_services(
     db_session: Session, department: Department
 ) -> None:
     _make_service(db_session, department, "Knee X-Ray", ServiceStatus.DRAFT)
-    published = _make_service(db_session, department, "MRI Scan", ServiceStatus.PUBLISHED)
+    published = _make_service(
+        db_session, department, "MRI Scan", ServiceStatus.PUBLISHED
+    )
 
     items, total = service_search_service.search_services(
         db_session, _default_params(), PaginationParams()
@@ -73,7 +83,9 @@ def test_search_filters_by_department_id(
     _make_service(db_session, other_department, "EEG", ServiceStatus.PUBLISHED)
 
     items, total = service_search_service.search_services(
-        db_session, _default_params(department_id=other_department.id), PaginationParams()
+        db_session,
+        _default_params(department_id=other_department.id),
+        PaginationParams(),
     )
 
     assert total == 1
@@ -81,9 +93,14 @@ def test_search_filters_by_department_id(
 
 
 def test_search_filters_by_specialty_id(
-    db_session: Session, department: Department, provider: Provider, specialty: Specialty
+    db_session: Session,
+    department: Department,
+    provider: Provider,
+    specialty: Specialty,
 ) -> None:
-    offered = _make_service(db_session, department, "Knee X-Ray", ServiceStatus.PUBLISHED)
+    offered = _make_service(
+        db_session, department, "Knee X-Ray", ServiceStatus.PUBLISHED
+    )
     _make_service(db_session, department, "MRI Scan", ServiceStatus.PUBLISHED)
 
     db_session.add(ProviderService(provider_id=provider.id, service_id=offered.id))
@@ -99,7 +116,10 @@ def test_search_filters_by_specialty_id(
 
 
 def test_search_filters_by_has_available_slots(
-    db_session: Session, department: Department, specialty: Specialty, provider: Provider
+    db_session: Session,
+    department: Department,
+    specialty: Specialty,
+    provider: Provider,
 ) -> None:
     """has_available_slots is provider-level, not service-level -- Slot has
     no service_id at all (see slot.py's own docstring: "this is provider
@@ -108,8 +128,12 @@ def test_search_filters_by_has_available_slots(
     one provider offering both services would make both "have available
     slots" through the same slot, which is correct behaviour, not a bug.
     """
-    with_slot = _make_service(db_session, department, "Knee X-Ray", ServiceStatus.PUBLISHED)
-    without_slot = _make_service(db_session, department, "MRI Scan", ServiceStatus.PUBLISHED)
+    with_slot = _make_service(
+        db_session, department, "Knee X-Ray", ServiceStatus.PUBLISHED
+    )
+    without_slot = _make_service(
+        db_session, department, "MRI Scan", ServiceStatus.PUBLISHED
+    )
 
     second_user = User(
         email="second-provider@example.com",

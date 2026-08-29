@@ -94,7 +94,9 @@ def test_list_schedules_paginates(db_session: Session, provider: Provider) -> No
         schedule_service.create_provider_schedule(
             db_session,
             provider.id,
-            ProviderScheduleCreate(weekday=weekday, start_time="09:00", end_time="17:00"),
+            ProviderScheduleCreate(
+                weekday=weekday, start_time="09:00", end_time="17:00"
+            ),
         )
 
     items, total = schedule_service.list_provider_schedules(
@@ -128,7 +130,9 @@ def test_generate_slots_produces_correct_utc_timestamps(
 
     slots = (
         db_session.execute(
-            select(Slot).where(Slot.provider_id == provider.id).order_by(Slot.start_time)
+            select(Slot)
+            .where(Slot.provider_id == provider.id)
+            .order_by(Slot.start_time)
         )
         .scalars()
         .all()
@@ -171,9 +175,11 @@ def test_generate_slots_is_idempotent_on_rerun(
     assert second_created == 0
     assert second_skipped == 2
 
-    total_slots = db_session.execute(
-        select(Slot).where(Slot.provider_id == provider.id)
-    ).scalars().all()
+    total_slots = (
+        db_session.execute(select(Slot).where(Slot.provider_id == provider.id))
+        .scalars()
+        .all()
+    )
     assert len(total_slots) == 2
 
 
@@ -203,7 +209,9 @@ def test_generate_slots_skips_inactive_schedules(
 
 def test_generate_slots_rejects_a_missing_provider(db_session: Session) -> None:
     with pytest.raises(AppError) as exc_info:
-        schedule_service.generate_slots(db_session, 999999999, date.today(), date.today())
+        schedule_service.generate_slots(
+            db_session, 999999999, date.today(), date.today()
+        )
     assert exc_info.value.status_code == 404
 
 

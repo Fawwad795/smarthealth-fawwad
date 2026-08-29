@@ -31,6 +31,3 @@ class Clinic(Base, TimestampMixin):
     timezone: Mapped[str] = mapped_column(String(64), nullable=False)
 
     departments: Mapped[list["Department"]] = relationship(back_populates="clinic")
-
-
-

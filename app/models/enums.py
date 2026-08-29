@@ -62,10 +62,10 @@ class SlotStatus(StrEnum):
     that is safe if the status says the booking never completed.
     """
 
-    AVAILABLE = "AVAILABLE"   # generated and bookable
-    RESERVED = "RESERVED"     # held by an in-flight saga, may be released
-    BOOKED = "BOOKED"         # a confirmed appointment owns this slot
-    BLOCKED = "BLOCKED"       # provider time off, never bookable
+    AVAILABLE = "AVAILABLE"  # generated and bookable
+    RESERVED = "RESERVED"  # held by an in-flight saga, may be released
+    BOOKED = "BOOKED"  # a confirmed appointment owns this slot
+    BLOCKED = "BLOCKED"  # provider time off, never bookable
 
 
 def enum_column(enum_cls: type[StrEnum], name: str) -> SAEnum:

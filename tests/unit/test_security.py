@@ -17,7 +17,6 @@ from app.core.security import (
 )
 
 
-
 def test_hashing_the_same_password_twice_yields_different_hashes() -> None:
     """bcrypt salts every call independently. If two users pick the same
     password, their stored hashes must not reveal that -- and if this test

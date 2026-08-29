@@ -14,7 +14,10 @@ from app.models.enums import ServiceStatus
 
 
 def _make_service(
-    db_session: Session, department: Department, name: str, status: ServiceStatus = ServiceStatus.PUBLISHED
+    db_session: Session,
+    department: Department,
+    name: str,
+    status: ServiceStatus = ServiceStatus.PUBLISHED,
 ) -> Service:
     s = Service(department_id=department.id, name=name, status=status)
     db_session.add(s)
@@ -55,7 +58,10 @@ def test_create_service_forbidden_for_non_admin_staff(
 
 
 def test_create_service_duplicate_name_returns_409(
-    client: TestClient, db_session: Session, department: Department, admin_auth_headers: dict
+    client: TestClient,
+    db_session: Session,
+    department: Department,
+    admin_auth_headers: dict,
 ) -> None:
     existing = _make_service(db_session, department, "Knee X-Ray", ServiceStatus.DRAFT)
 
@@ -83,7 +89,10 @@ def test_create_service_unknown_department_returns_404(
 
 
 def test_list_services_returns_items_for_staff(
-    client: TestClient, db_session: Session, department: Department, provider_auth_headers: dict
+    client: TestClient,
+    db_session: Session,
+    department: Department,
+    provider_auth_headers: dict,
 ) -> None:
     service = _make_service(db_session, department, "Knee X-Ray", ServiceStatus.DRAFT)
 
@@ -103,11 +112,16 @@ def test_list_services_forbidden_for_patient(
 
 
 def test_get_service_returns_200(
-    client: TestClient, db_session: Session, department: Department, provider_auth_headers: dict
+    client: TestClient,
+    db_session: Session,
+    department: Department,
+    provider_auth_headers: dict,
 ) -> None:
     service = _make_service(db_session, department, "Knee X-Ray", ServiceStatus.DRAFT)
 
-    response = client.get(f"/api/v1/services/{service.id}", headers=provider_auth_headers)
+    response = client.get(
+        f"/api/v1/services/{service.id}", headers=provider_auth_headers
+    )
 
     assert response.status_code == 200
     assert response.json()["id"] == service.id
@@ -129,7 +143,10 @@ def test_get_service_without_a_header_returns_401(client: TestClient) -> None:
 
 
 def test_update_service_returns_200_and_ignores_a_status_field(
-    client: TestClient, db_session: Session, department: Department, admin_auth_headers: dict
+    client: TestClient,
+    db_session: Session,
+    department: Department,
+    admin_auth_headers: dict,
 ) -> None:
     service = _make_service(db_session, department, "Knee X-Ray", ServiceStatus.DRAFT)
 
@@ -146,7 +163,10 @@ def test_update_service_returns_200_and_ignores_a_status_field(
 
 
 def test_update_service_forbidden_for_non_admin_staff(
-    client: TestClient, db_session: Session, department: Department, provider_auth_headers: dict
+    client: TestClient,
+    db_session: Session,
+    department: Department,
+    provider_auth_headers: dict,
 ) -> None:
     service = _make_service(db_session, department, "Knee X-Ray", ServiceStatus.DRAFT)
 
@@ -160,7 +180,10 @@ def test_update_service_forbidden_for_non_admin_staff(
 
 
 def test_update_service_duplicate_name_returns_409(
-    client: TestClient, db_session: Session, department: Department, admin_auth_headers: dict
+    client: TestClient,
+    db_session: Session,
+    department: Department,
+    admin_auth_headers: dict,
 ) -> None:
     _make_service(db_session, department, "Knee X-Ray", ServiceStatus.DRAFT)
     other = _make_service(db_session, department, "MRI Scan", ServiceStatus.DRAFT)
@@ -179,7 +202,9 @@ def test_search_services_succeeds_with_no_auth_header_and_excludes_draft(
     client: TestClient, db_session: Session, department: Department
 ) -> None:
     _make_service(db_session, department, "Knee X-Ray", ServiceStatus.DRAFT)
-    published = _make_service(db_session, department, "MRI Scan", ServiceStatus.PUBLISHED)
+    published = _make_service(
+        db_session, department, "MRI Scan", ServiceStatus.PUBLISHED
+    )
 
     response = client.get("/api/v1/services/search")
 
@@ -187,4 +212,7 @@ def test_search_services_succeeds_with_no_auth_header_and_excludes_draft(
     body = response.json()
     ids = [item["id"] for item in body["items"]]
     assert published.id in ids
-    assert all(item["id"] != published.id or item["name"] == "MRI Scan" for item in body["items"])
+    assert all(
+        item["id"] != published.id or item["name"] == "MRI Scan"
+        for item in body["items"]
+    )

@@ -123,9 +123,7 @@ def test_adjacent_slots_are_accepted(db_session: Session, provider: Provider) ->
     assert count == 4
 
 
-def test_zero_length_slot_is_rejected(
-    db_session: Session, provider: Provider
-) -> None:
+def test_zero_length_slot_is_rejected(db_session: Session, provider: Provider) -> None:
     """Not merely tidiness -- it closes a hole in the exclusion constraint.
 
     An empty range overlaps nothing in Postgres, not even an identical empty

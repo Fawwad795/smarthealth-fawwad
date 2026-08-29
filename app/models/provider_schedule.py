@@ -3,7 +3,16 @@
 from datetime import time
 from typing import TYPE_CHECKING
 
-from sqlalchemy import (BigInteger, Boolean, CheckConstraint, ForeignKey, SmallInteger, Time, UniqueConstraint, text,)
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    ForeignKey,
+    SmallInteger,
+    Time,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -11,6 +20,7 @@ from app.models.mixins import TimestampMixin
 
 if TYPE_CHECKING:
     from app.models.provider import Provider
+
 
 class ProviderSchedule(Base, TimestampMixin):
     """Recurring intent, in clinic-local time: "Mondays, 09:00 to 17:00".

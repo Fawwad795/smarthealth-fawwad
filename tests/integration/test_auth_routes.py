@@ -16,7 +16,11 @@ def test_register_returns_201_and_creates_a_patient_row(
 ) -> None:
     response = client.post(
         "/api/v1/auth/register",
-        json={"email": "ayesha@example.com", "password": "correct horse battery staple", "dob": "1990-05-14"},
+        json={
+            "email": "ayesha@example.com",
+            "password": "correct horse battery staple",
+            "dob": "1990-05-14",
+        },
     )
 
     assert response.status_code == 201
@@ -30,7 +34,11 @@ def test_register_returns_201_and_creates_a_patient_row(
 
 
 def test_register_duplicate_email_returns_409(client: TestClient) -> None:
-    payload = {"email": "ayesha@example.com", "password": "correct horse battery staple", "dob": "1990-05-14"}
+    payload = {
+        "email": "ayesha@example.com",
+        "password": "correct horse battery staple",
+        "dob": "1990-05-14",
+    }
     client.post("/api/v1/auth/register", json=payload)
 
     response = client.post("/api/v1/auth/register", json=payload)
@@ -50,11 +58,16 @@ def test_register_rejects_a_too_short_password_with_422(client: TestClient) -> N
 
 
 def test_login_token_authenticates_a_later_me_call(client: TestClient) -> None:
-    payload = {"email": "ayesha@example.com", "password": "correct horse battery staple", "dob": "1990-05-14"}
+    payload = {
+        "email": "ayesha@example.com",
+        "password": "correct horse battery staple",
+        "dob": "1990-05-14",
+    }
     client.post("/api/v1/auth/register", json=payload)
 
     login_response = client.post(
-        "/api/v1/auth/login", json={"email": payload["email"], "password": payload["password"]}
+        "/api/v1/auth/login",
+        json={"email": payload["email"], "password": payload["password"]},
     )
     assert login_response.status_code == 200
     token = login_response.json()["access_token"]
@@ -67,11 +80,16 @@ def test_login_token_authenticates_a_later_me_call(client: TestClient) -> None:
 
 
 def test_login_wrong_password_returns_401(client: TestClient) -> None:
-    payload = {"email": "ayesha@example.com", "password": "correct horse battery staple", "dob": "1990-05-14"}
+    payload = {
+        "email": "ayesha@example.com",
+        "password": "correct horse battery staple",
+        "dob": "1990-05-14",
+    }
     client.post("/api/v1/auth/register", json=payload)
 
     response = client.post(
-        "/api/v1/auth/login", json={"email": payload["email"], "password": "wrong password"}
+        "/api/v1/auth/login",
+        json={"email": payload["email"], "password": "wrong password"},
     )
 
     assert response.status_code == 401
@@ -80,7 +98,8 @@ def test_login_wrong_password_returns_401(client: TestClient) -> None:
 
 def test_login_unknown_email_returns_401(client: TestClient) -> None:
     response = client.post(
-        "/api/v1/auth/login", json={"email": "nobody@example.com", "password": "whatever123"}
+        "/api/v1/auth/login",
+        json={"email": "nobody@example.com", "password": "whatever123"},
     )
 
     assert response.status_code == 401

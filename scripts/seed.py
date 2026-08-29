@@ -116,12 +116,17 @@ def _get_or_create_provider(
     return provider_service.create_provider(
         db,
         ProviderCreate(
-            user_id=user.id, department_id=department.id, specialty_id=specialty.id, bio=bio
+            user_id=user.id,
+            department_id=department.id,
+            specialty_id=specialty.id,
+            bio=bio,
         ),
     )
 
 
-def _get_or_create_weekday_schedule(db: Session, provider: Provider, weekday: int) -> None:
+def _get_or_create_weekday_schedule(
+    db: Session, provider: Provider, weekday: int
+) -> None:
     """A 09:00-17:00 clinic-local window on one weekday, in 30-minute
     slots. Existence is checked on (provider, weekday) rather than the
     full window, so re-running never adds a second window to a day."""
@@ -136,7 +141,10 @@ def _get_or_create_weekday_schedule(db: Session, provider: Provider, weekday: in
         db,
         provider.id,
         ProviderScheduleCreate(
-            weekday=weekday, start_time="09:00", end_time="17:00", slot_duration_minutes=30
+            weekday=weekday,
+            start_time="09:00",
+            end_time="17:00",
+            slot_duration_minutes=30,
         ),
     )
 
@@ -163,7 +171,10 @@ def _get_or_create_published_service(
     service = service_service.create_service(
         db,
         ServiceCreate(
-            department_id=department.id, name=name, description=description, prep_instructions=prep
+            department_id=department.id,
+            name=name,
+            description=description,
+            prep_instructions=prep,
         ),
     )
     # No publish workflow exists yet (Week 2) -- this is exactly the
@@ -176,7 +187,9 @@ def _get_or_create_published_service(
     return service
 
 
-def _get_or_create_provider_service(db: Session, provider: Provider, service: Service) -> None:
+def _get_or_create_provider_service(
+    db: Session, provider: Provider, service: Service
+) -> None:
     """Record that this provider is qualified to deliver this service.
 
     What the catalogue's specialty filter and "has available slots"
@@ -205,7 +218,11 @@ def _get_or_create_patient(db: Session, email: str, dob: date) -> Patient:
     email = email.lower()
     user = db.query(User).filter(func.lower(User.email) == email).first()
     if user is None:
-        user = User(email=email, password_hash=hash_password(SEED_PASSWORD), role=UserRole.PATIENT)
+        user = User(
+            email=email,
+            password_hash=hash_password(SEED_PASSWORD),
+            role=UserRole.PATIENT,
+        )
         db.add(user)
         db.flush()
     patient = db.query(Patient).filter(Patient.user_id == user.id).first()
@@ -239,17 +256,23 @@ def seed(db: Session) -> None:
     _get_or_create_staff_user(db, "admin@medinova.example", UserRole.ADMIN)
     _get_or_create_staff_user(db, "frontdesk@medinova.example", UserRole.FRONT_DESK)
 
-    khan_user = _get_or_create_staff_user(db, "dr.khan@medinova.example", UserRole.PROVIDER)
+    khan_user = _get_or_create_staff_user(
+        db, "dr.khan@medinova.example", UserRole.PROVIDER
+    )
     khan = _get_or_create_provider(
         db, khan_user, cardiology_dept, cardiology_spec, "Consultant cardiologist."
     )
 
-    ahmed_user = _get_or_create_staff_user(db, "dr.ahmed@medinova.example", UserRole.PROVIDER)
+    ahmed_user = _get_or_create_staff_user(
+        db, "dr.ahmed@medinova.example", UserRole.PROVIDER
+    )
     ahmed = _get_or_create_provider(
         db, ahmed_user, ortho_dept, ortho_spec, "Consultant orthopaedic surgeon."
     )
 
-    raza_user = _get_or_create_staff_user(db, "dr.raza@medinova.example", UserRole.PROVIDER)
+    raza_user = _get_or_create_staff_user(
+        db, "dr.raza@medinova.example", UserRole.PROVIDER
+    )
     raza = _get_or_create_provider(
         db, raza_user, derm_dept, derm_spec, "Consultant dermatologist."
     )
@@ -260,7 +283,9 @@ def seed(db: Session) -> None:
 
     today = date.today()
     for provider in (khan, ahmed, raza):
-        provider_schedule_service.generate_slots(db, provider.id, today, today + timedelta(days=14))
+        provider_schedule_service.generate_slots(
+            db, provider.id, today, today + timedelta(days=14)
+        )
 
     knee_xray = _get_or_create_published_service(
         db,

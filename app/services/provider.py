@@ -116,9 +116,7 @@ def list_providers(
     return list(items), total
 
 
-def update_provider(
-    db: Session, provider_id: int, data: ProviderUpdate
-) -> Provider:
+def update_provider(db: Session, provider_id: int, data: ProviderUpdate) -> Provider:
     """Move a provider between departments/specialties, or edit their bio.
 
     user_id is absent from ProviderUpdate and cannot be changed here:

@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from app.models.patient import Patient
     from app.models.provider import Provider
 
+
 class User(Base, TimestampMixin):
     """An account. Identity only -- what a person *is* lives on their profile.
 

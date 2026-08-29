@@ -57,7 +57,9 @@ def test_patient_cannot_read_another_patients_data() -> None:
 def test_staff_can_read_any_patients_data() -> None:
     someone_elses_record = _patient(user_id=99)
     for role in (UserRole.FRONT_DESK, UserRole.ADMIN):
-        ensure_patient_self_or_staff(_user(5, role), someone_elses_record)  # no exception
+        ensure_patient_self_or_staff(
+            _user(5, role), someone_elses_record
+        )  # no exception
 
 
 def test_a_provider_is_not_automatically_staff() -> None:

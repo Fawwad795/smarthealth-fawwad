@@ -3,7 +3,14 @@
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import (BigInteger, DateTime, ForeignKey, String, Text, UniqueConstraint,)
+from sqlalchemy import (
+    BigInteger,
+    DateTime,
+    ForeignKey,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -61,5 +68,6 @@ class Service(Base, TimestampMixin):
     )
 
     department: Mapped["Department"] = relationship(back_populates="services")
-    provider_services: Mapped[list["ProviderService"]] = relationship(back_populates="service")
-
+    provider_services: Mapped[list["ProviderService"]] = relationship(
+        back_populates="service"
+    )

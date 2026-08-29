@@ -26,16 +26,14 @@ def register_patient(db: Session, data: RegisterRequest) -> User:
         raise AppError(
             status_code=status.HTTP_409_CONFLICT,
             code="EMAIL_TAKEN",
-            message="An account with this email already exists."
+            message="An account with this email already exists.",
         )
 
     user = User(
-        email=email,
-        password_hash=hash_password(data.password),
-        role=UserRole.PATIENT
+        email=email, password_hash=hash_password(data.password), role=UserRole.PATIENT
     )
     db.add(user)
-    db.flush() # assigns user.id, still inside this transaction
+    db.flush()  # assigns user.id, still inside this transaction
 
     patient = Patient(user_id=user.id, dob=data.dob)
     db.add(patient)

@@ -271,4 +271,3 @@ def front_desk_auth_headers(front_desk_user: User) -> dict[str, str]:
 @pytest.fixture()
 def admin_auth_headers(admin_user: User) -> dict[str, str]:
     return _auth_headers(admin_user)
-

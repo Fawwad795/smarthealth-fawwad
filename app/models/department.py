@@ -2,7 +2,14 @@
 
 from typing import TYPE_CHECKING
 
-from sqlalchemy import (BigInteger, ForeignKey, Integer, String, UniqueConstraint, text,)
+from sqlalchemy import (
+    BigInteger,
+    ForeignKey,
+    Integer,
+    String,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -13,8 +20,9 @@ from app.models.mixins import TimestampMixin
 # "Service" from its own class registry once every model has loaded.
 if TYPE_CHECKING:
     from app.models.clinic import Clinic
-    from app.models.provider import Provider    
+    from app.models.provider import Provider
     from app.models.service import Service
+
 
 class Department(Base, TimestampMixin):
     """A grouping inside a clinic that owns both providers and services.
@@ -51,4 +59,3 @@ class Department(Base, TimestampMixin):
     clinic: Mapped["Clinic"] = relationship(back_populates="departments")
     services: Mapped[list["Service"]] = relationship(back_populates="department")
     providers: Mapped[list["Provider"]] = relationship(back_populates="department")
-

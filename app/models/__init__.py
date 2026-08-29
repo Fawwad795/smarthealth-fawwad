@@ -46,6 +46,3 @@ __all__ = [
     "Specialty",
     "User",
 ]
-
-
-

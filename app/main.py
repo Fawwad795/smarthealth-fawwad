@@ -34,8 +34,6 @@ def create_app() -> FastAPI:
     app.include_router(providers_router, prefix="/api/v1")
     app.include_router(provider_schedules_router, prefix="/api/v1")
 
-
-
     @app.get("/health", tags=["health"])
     def health() -> dict[str, str]:
         """Liveness: is this process up? Deliberately checks nothing else,

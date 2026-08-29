@@ -23,11 +23,11 @@ from sqlalchemy.orm import DeclarativeBase
 #   %(referred_table_name)s for a foreign key, the table it points at
 #   %(constraint_name)s     the name passed explicitly to CheckConstraint(...)
 NAMING_CONVENTION = {
-    "ix": "ix_%(table_name)s_%(column_0_N_name)s",   # index
-    "uq": "uq_%(table_name)s_%(column_0_N_name)s",   # unique constraint
-    "ck": "ck_%(table_name)s_%(constraint_name)s",   # check constraint
+    "ix": "ix_%(table_name)s_%(column_0_N_name)s",  # index
+    "uq": "uq_%(table_name)s_%(column_0_N_name)s",  # unique constraint
+    "ck": "ck_%(table_name)s_%(constraint_name)s",  # check constraint
     "fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s",
-    "pk": "pk_%(table_name)s",                       # primary key
+    "pk": "pk_%(table_name)s",  # primary key
 }
 
 

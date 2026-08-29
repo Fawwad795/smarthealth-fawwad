@@ -78,9 +78,9 @@ def search_services(
     department_ids = {s.department_id for s in services}
     department_names = {
         d.id: d.name
-        for d in db.execute(
-            select(Department).where(Department.id.in_(department_ids))
-        ).scalars().all()
+        for d in db.execute(select(Department).where(Department.id.in_(department_ids)))
+        .scalars()
+        .all()
     }
 
     service_ids = [s.id for s in services]

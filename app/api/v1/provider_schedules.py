@@ -23,12 +23,16 @@ from app.schemas.provider_schedule import (
 )
 from app.services import provider_schedule as provider_schedule_service
 
-router = APIRouter(prefix="/providers/{provider_id}/schedules", tags=["provider-schedules"])
+router = APIRouter(
+    prefix="/providers/{provider_id}/schedules", tags=["provider-schedules"]
+)
 
 _STAFF_ROLES = (UserRole.ADMIN, UserRole.FRONT_DESK, UserRole.PROVIDER)
 
 
-@router.post("", response_model=ProviderScheduleResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "", response_model=ProviderScheduleResponse, status_code=status.HTTP_201_CREATED
+)
 def create_provider_schedule(
     provider_id: int,
     data: ProviderScheduleCreate,

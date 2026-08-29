@@ -49,7 +49,7 @@ async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
 
 
 async def validation_error_handler(
-        request: Request, exc: RequestValidationError
+    request: Request, exc: RequestValidationError
 ) -> JSONResponse:
     """A request body that failed Pydantic validation.
 

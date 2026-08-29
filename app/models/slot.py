@@ -89,9 +89,7 @@ class Slot(Base, TimestampMixin):
     start_time: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
-    end_time: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    end_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     # Indexed because availability queries always filter on it. Selectivity
     # will be poor once most slots are AVAILABLE; if that shows up in a real

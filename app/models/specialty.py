@@ -30,4 +30,3 @@ class Specialty(Base, TimestampMixin):
     name: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
 
     providers: Mapped[list["Provider"]] = relationship(back_populates="specialty")
-
