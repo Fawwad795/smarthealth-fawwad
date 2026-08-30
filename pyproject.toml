@@ -33,3 +33,14 @@ convention = "pep257"
 [tool.black]
 line-length = 88
 target-version = ["py311"]
+
+[tool.pytest.ini_options]
+# "auto" runs every `async def test_...` under its own event loop without a
+# per-test @pytest.mark.asyncio decorator -- Temporal's client is async
+# throughout, so every workflow/activity test would otherwise need one.
+asyncio_mode = "auto"
+# Pinned rather than left on pytest-asyncio's default: an async fixture
+# (e.g. a shared WorkflowEnvironment) gets a fresh event loop per test,
+# matching db_session's own per-test scope -- so a test can never see
+# state left behind by the one that ran before it.
+asyncio_default_fixture_loop_scope = "function"
