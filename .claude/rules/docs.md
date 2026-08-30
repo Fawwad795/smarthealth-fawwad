@@ -52,9 +52,16 @@ must not contain a real person's details even in the question.
 ## NOTES.md structure
 
 Append `### Day N — <date>` under the current week, matching the existing entries:
-Goal · Done · Decisions and why (a table: Decision | Why | Tradeoff) · What confused
-me / cost time · Things I want to be able to explain out loud · Carrying into Day N+1
-· Open questions for my mentor.
+Goal · Done · Decisions (a table: Decision | Why — two columns, not three) · Cost
+time · Explain out loud · Carrying into Day N+1 · Open questions.
+
+**These are notes, not documentation.** One line per bullet, no sub-explanations,
+no restating what the code comment already says. Goal is 1–2 sentences. Done is
+~5–8 bullets naming the thing, not narrating it. The Decisions table is short
+phrases, not paragraphs — the *why* in a few words, not the full reasoning (that
+belongs in code comments or the Friday docs pass, not here). If a day's entry runs
+noticeably longer than a typical prior day's, it has drifted from notes into
+documentation — cut it back before appending.
 
 Write it from what actually happened — including bugs found in tests rather than in
 the code, and time lost to environment problems. That record is what the Friday
