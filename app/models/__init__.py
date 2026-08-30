@@ -24,6 +24,7 @@ check against.
 """
 
 from app.models.clinic import Clinic
+from app.models.content_chunk import ContentChunk
 from app.models.department import Department
 from app.models.patient import Patient
 from app.models.provider import Provider
@@ -36,6 +37,7 @@ from app.models.user import User
 
 __all__ = [
     "Clinic",
+    "ContentChunk",
     "Department",
     "Patient",
     "Provider",

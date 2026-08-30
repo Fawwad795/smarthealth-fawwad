@@ -68,6 +68,19 @@ class SlotStatus(StrEnum):
     BLOCKED = "BLOCKED"  # provider time off, never bookable
 
 
+class ContentSourceType(StrEnum):
+    """What kind of row a content_chunks entry was generated from.
+
+    A single member for now -- services are the only thing this project
+    chunks. Kept as an enum (source_type + source_id) rather than a bare
+    service_id column because the brief's data model treats content_chunks
+    as generic: whatever gets chunked later says so through this column,
+    not through a schema change.
+    """
+
+    SERVICE = "SERVICE"
+
+
 def enum_column(enum_cls: type[StrEnum], name: str) -> SAEnum:
     """Build the column type for an enum: VARCHAR + CHECK, never a native type.
 
