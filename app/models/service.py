@@ -18,6 +18,7 @@ from app.models.enums import ServiceStatus, enum_column
 from app.models.mixins import TimestampMixin
 
 if TYPE_CHECKING:
+    from app.models.appointment import Appointment
     from app.models.department import Department
     from app.models.provider_service import ProviderService
 
@@ -71,3 +72,4 @@ class Service(Base, TimestampMixin):
     provider_services: Mapped[list["ProviderService"]] = relationship(
         back_populates="service"
     )
+    appointments: Mapped[list["Appointment"]] = relationship(back_populates="service")

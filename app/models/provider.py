@@ -9,6 +9,7 @@ from app.db.base import Base
 from app.models.mixins import TimestampMixin
 
 if TYPE_CHECKING:
+    from app.models.appointment import Appointment
     from app.models.department import Department
     from app.models.provider_schedule import ProviderSchedule
     from app.models.provider_service import ProviderService
@@ -67,3 +68,4 @@ class Provider(Base, TimestampMixin):
     provider_services: Mapped[list["ProviderService"]] = relationship(
         back_populates="provider"
     )
+    appointments: Mapped[list["Appointment"]] = relationship(back_populates="provider")

@@ -68,6 +68,30 @@ class SlotStatus(StrEnum):
     BLOCKED = "BLOCKED"  # provider time off, never bookable
 
 
+class AppointmentStatus(StrEnum):
+    """Lifecycle of a booking, driven by the Week 2 scheduling saga.
+
+        REQUESTED --reserve--> SLOT_RESERVED --billing--> CONFIRMED --(visit)--> COMPLETED
+            |                       |
+         (ineligible)         (billing fails)
+            v                       v
+        REJECTED         compensate(release slot) -> CANCELLED
+                                                        ^
+                                patient cancel / reschedule
+
+    SLOT_RESERVED is its own state, not folded into CONFIRMED, because the
+    saga's compensation depends on knowing whether a slot was ever held for
+    this appointment -- see AppointmentStatusHistory.
+    """
+
+    REQUESTED = "REQUESTED"
+    SLOT_RESERVED = "SLOT_RESERVED"
+    CONFIRMED = "CONFIRMED"
+    COMPLETED = "COMPLETED"
+    REJECTED = "REJECTED"
+    CANCELLED = "CANCELLED"
+
+
 class ContentSourceType(StrEnum):
     """What kind of row a content_chunks entry was generated from.
 

@@ -8,9 +8,10 @@ from migrations makes the suite a continuous check that the chain is correct.
 """
 
 from collections.abc import Generator
+from datetime import date
 from pathlib import Path
-
 import pytest
+
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import Engine, create_engine, text
@@ -18,7 +19,7 @@ from sqlalchemy.orm import Session
 from fastapi.testclient import TestClient
 
 from app.core.config import settings
-from app.models import Clinic, Department, Provider, Specialty, User
+from app.models import Clinic, Department, Patient, Provider, Service, Specialty, User
 from app.models.enums import UserRole
 from app.core.security import create_access_token
 from app.db.session import get_db
@@ -189,6 +190,26 @@ def provider(
     db_session.flush()
     return p
 
+@pytest.fixture()
+def patient(db_session: Session, patient_user: User) -> Patient:
+    p = Patient(
+        user_id=patient_user.id,
+        dob=date(1990, 1, 1)
+    )
+    db_session.add(p)
+    db_session.flush()
+    return p
+
+
+@pytest.fixture()
+def service(db_session: Session, department: Department) -> Service:
+    s = Service(
+        department_id=department.id, 
+        name="Echocardiogram"
+    )
+    db_session.add(s)
+    db_session.flush()
+    return s
 
 # --- HTTP layer -------------------------------------------------------------
 # Everything above builds rows directly with the ORM. These fixtures are for
