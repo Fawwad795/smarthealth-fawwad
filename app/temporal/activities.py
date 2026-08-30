@@ -135,3 +135,16 @@ class PublishActivities:
             service.status = ServiceStatus.PUBLISHED
             service.published_at = datetime.now(UTC)
             db.commit()
+
+    @activity.defn
+    def mark_publish_failed(self, service_id: int) -> None:
+        """Transition the service to PUBLISH_FAILED.
+
+        Called only after validate_service's non-retryable rejection --
+        the Workflow's clean-failure path, not something Activities decide
+        for themselves.
+        """
+        with self._session_factory() as db:
+            service = db.get(Service, service_id)
+            service.status = ServiceStatus.PUBLISH_FAILED
+            db.commit()
