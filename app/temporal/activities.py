@@ -1,4 +1,4 @@
-"""Activities for the service-publishing Workflow.
+"""Activities for the service-publishing and appointment-scheduling Workflows.
 
 All I/O for the service publish and scheduling pipeline lives here, never in workflows.py --
 Temporal Workflows must be deterministic and cannot touch the database

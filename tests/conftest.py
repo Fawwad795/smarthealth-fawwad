@@ -8,7 +8,7 @@ from migrations makes the suite a continuous check that the chain is correct.
 """
 
 from collections.abc import Generator
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import pytest
 import redis
@@ -20,8 +20,20 @@ from sqlalchemy.orm import Session
 from fastapi.testclient import TestClient
 
 from app.core.config import settings
-from app.models import Clinic, Department, Patient, Provider, Service, Specialty, User
-from app.models.enums import UserRole
+from app.models import (
+    Appointment,
+    AppointmentStatusHistory,
+    Clinic,
+    Department,
+    Patient,
+    Provider,
+    ProviderService,
+    Service,
+    Slot,
+    Specialty,
+    User,
+)
+from app.models.enums import AppointmentStatus, UserRole
 from app.core.security import create_access_token
 from app.db.session import get_db
 from app.main import app
@@ -224,6 +236,58 @@ def service(db_session: Session, department: Department) -> Service:
     db_session.add(s)
     db_session.flush()
     return s
+
+
+@pytest.fixture()
+def slot(db_session: Session, provider: Provider) -> Slot:
+    start = datetime.now(timezone.utc) + timedelta(days=1)
+    s = Slot(
+        provider_id=provider.id,
+        start_time=start,
+        end_time=start + timedelta(minutes=30),
+    )
+    db_session.add(s)
+    db_session.flush()
+    return s
+
+
+@pytest.fixture()
+def provider_service_link(
+    db_session: Session, provider: Provider, service: Service
+) -> ProviderService:
+    ps = ProviderService(provider_id=provider.id, service_id=service.id)
+    db_session.add(ps)
+    db_session.flush()
+    return ps
+
+
+@pytest.fixture()
+def appointment(
+    db_session: Session,
+    patient: Patient,
+    provider: Provider,
+    service: Service,
+    slot: Slot,
+) -> Appointment:
+    a = Appointment(
+        patient_id=patient.id,
+        provider_id=provider.id,
+        slot_id=slot.id,
+        service_id=service.id,
+        idempotency_key="test-appointment-key",
+    )
+    db_session.add(a)
+    db_session.flush()
+    db_session.add(
+        AppointmentStatusHistory(
+            appointment_id=a.id,
+            from_status=None,
+            to_status=AppointmentStatus.REQUESTED,
+            actor="PATIENT",
+        )
+    )
+    db_session.flush()
+    return a
 
 
 # --- HTTP layer -------------------------------------------------------------
