@@ -11,8 +11,8 @@ assistant refuses to give medical advice by design.
 It is also **API only**. There is no UI; Swagger UI at `/docs`, curl or Postman
 is the interface.
 
-> Status: **Week 1 — foundation, self-check complete**. See
-> [Project status](#project-status) for what works today.
+> Status: **Week 2 — Temporal workflows and scheduling, mostly complete**. See
+> [Project status](#project-status) for what works today and what doesn't.
 
 ---
 
@@ -64,8 +64,10 @@ The ERD lives in `docs/design.md`.
 cp .env.example .env
 python -c "import secrets; print(secrets.token_urlsafe(48))"   # paste into JWT_SECRET
 
-# 2. start (Week 1 needs postgres + redis + api)
-docker compose up -d --build api
+# 2. start. `--build api` alone gives postgres + redis + api, which is enough
+#    for Week 1's domain; booking and publishing also need the Temporal server
+#    and worker, so from Week 2 on start everything
+docker compose up -d --build
 
 # 3. build the schema
 docker compose exec api alembic upgrade head
@@ -155,10 +157,11 @@ docker compose run --rm test pytest --cov=app --cov-report=term-missing
 Run `make help` to list every target (`up`, `migrate`, `seed`, `lint`, `fmt`,
 `psql`, `reset`).
 
-Target is ≥25 meaningful tests and ≥80% coverage; Week 1 stands at 142 tests and
-98% coverage, no network access required. Later weeks add the concurrency/saga/
-event hard cases (slot double-booking, saga compensation, idempotent event
-handling) that Week 1's domain doesn't have yet.
+Target is ≥25 meaningful tests and ≥80% coverage; the suite stands at 223 tests
+and 97% coverage, no network access required. The hard cases are covered as they
+land: 50 threads racing one slot, a repeated idempotency key producing one
+appointment and one billing row, the saga compensating a billing failure, and the
+waitlist's partial unique index. Idempotent event handling arrives with Week 3.
 
 ---
 
@@ -178,9 +181,14 @@ handling) that Week 1's domain doesn't have yet.
 | POST/GET/PATCH | `/api/v1/providers`, `/providers/{id}` | Provider profile CRUD | Admin write, any staff read |
 | POST/GET/PATCH | `/api/v1/providers/{id}/schedules`, `/schedules/{id}` | Weekly working-hours templates | Admin write, any staff read |
 | POST | `/api/v1/providers/{id}/schedules/generate-slots` | Turn templates into bookable `Slot` rows, idempotent | Admin |
+| POST | `/api/v1/services/{id}/publish` | Start the Temporal publish workflow (202 + workflow id) | Admin |
+| GET | `/api/v1/services/{id}/publish-status` | Where the publish lifecycle stands | Any staff |
+| POST | `/api/v1/appointments` | Start the scheduling saga (202 + id). Requires `Idempotency-Key` | Patient (self), front desk/admin (on behalf) |
+| GET | `/api/v1/appointments/{id}` | Current booking state | Patient (own), any staff |
+| POST | `/api/v1/waitlist` | Join a provider's queue | Patient (self), front desk/admin (on behalf) |
 
-Slots, appointments, analytics, and the AI assistant are added week by week and
-documented here as they land.
+Cancel/reschedule, the visit lifecycle, analytics and the AI assistant are added
+week by week and documented here as they land.
 
 ---
 
@@ -234,11 +242,11 @@ leak `password_hash` and patient data).
 | Document | Contents |
 |---|---|
 | `docs/design.md` | Data model / ERD, module breakdown, publish workflow and scheduling saga, the slot concurrency approach, decisions and tradeoffs |
-| `docs/events.md` | Every event, its schema, producer, consumer, idempotency guarantee |
-| `docs/runbook.md` | Diagnosing the most likely failures |
-| `docs/ai-layer.md` | Chunking, retrieval, prompts, evaluation, transcripts |
-| `docs/prd.md` | PRD with the requirement → implementation → test traceability table |
 | `NOTES.md` | Working log and weekly tracking tables |
+
+Planned, not yet written: `docs/events.md` (Week 3), `docs/runbook.md` (Week 3),
+`docs/ai-layer.md` (Weeks 4–5), and `docs/prd.md` with the requirement →
+implementation → test traceability table.
 
 ### `.claude/` — working context
 
@@ -282,15 +290,22 @@ hand-edit them.
 | Week | Theme | Status |
 |---|---|---|
 | 1 | Foundation and core domain | Done |
-| 2 | Temporal workflows, scheduling, slots | Not started |
+| 2 | Temporal workflows, scheduling, slots | Mostly done — see below |
 | 3 | Celery, Kafka, observability | Not started |
 | 4 | Chunking, embeddings, retrieval | Not started |
 | 5 | AI assistant, streaming, demo | Not started |
 
-**Working today:** the full Week 1 domain — auth (register/login/roles),
-department/service/provider CRUD, provider schedules + idempotent slot
-generation, the public service search, and a synthetic seed script — all
-behind real routes, all role/ownership-checked, 142 tests at 98% coverage.
+**Working today:** everything from Week 1 (auth and roles, department/service/
+provider CRUD, schedules and idempotent slot generation, public service search,
+synthetic seed), plus Week 2's service publishing as a Temporal workflow, the
+concurrency-safe atomic slot reservation, the appointment scheduling saga with
+compensation, booking idempotency, the simulated billing pre-check, and the
+waitlist table with its join endpoint. 223 tests at 97% coverage.
 
-**Not built yet:** appointments, the Temporal publish workflow and scheduling
-saga, Celery/Kafka, analytics, and the AI layer — Weeks 2–5.
+**Known gaps in Week 2, carried into Week 3:** cancelling and rescheduling an
+appointment, and the visit lifecycle (`CHECKED_IN → IN_PROGRESS → COMPLETED`).
+The waitlist can be joined but nothing promotes an entry yet, since promotion is
+what cancellation triggers. A booking whose workflow fails to start because
+Temporal is unreachable stays `REQUESTED` with nothing to retry it.
+
+**Not built yet:** Celery/Kafka, analytics, and the AI layer — Weeks 3–5.
