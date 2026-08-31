@@ -56,6 +56,10 @@ class Settings(BaseSettings):
     # How long an Idempotency-Key is remembered before a retried request
     # would be treated as brand new. Read by app/services/idempotency.py.
     idempotency_key_ttl_seconds: int = 86400
+    # Simulated billing failure switch, for exercising the Week 2 saga's
+    # compensation path (task 2.9) on demand. Never true outside a demo
+    # or a test that deliberately flips it.
+    billing_force_fail: bool = False
 
 
 # Imported everywhere as: from app.core.config import settings

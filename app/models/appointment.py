@@ -18,6 +18,7 @@ from app.models.mixins import TimestampMixin
 
 if TYPE_CHECKING:
     from app.models.appointment_status_history import AppointmentStatusHistory
+    from app.models.billing import Billing
     from app.models.patient import Patient
     from app.models.provider import Provider
     from app.models.service import Service
@@ -74,3 +75,4 @@ class Appointment(Base, TimestampMixin):
     status_history: Mapped[list["AppointmentStatusHistory"]] = relationship(
         back_populates="appointment", order_by="AppointmentStatusHistory.created_at"
     )
+    billing: Mapped["Billing | None"] = relationship(back_populates="appointment")

@@ -92,6 +92,23 @@ class AppointmentStatus(StrEnum):
     CANCELLED = "CANCELLED"
 
 
+class BillingStatus(StrEnum):
+    """Lifecycle of a simulated billing pre-check for one appointment.
+
+    Real payment/insurance integration is out of scope (CLAUDE.md #4) --
+    this exists so the Week 2 scheduling saga (task 2.9) has a genuine
+    failure to compensate against. PENDING is the vocabulary's "not yet
+    checked" state; in practice precheck() decides CHECKED or FAILED in
+    one synchronous write, so PENDING is never actually persisted by this
+    simulation. REFUNDED is reserved for a future cancellation path.
+    """
+
+    PENDING = "PENDING"
+    CHECKED = "CHECKED"
+    FAILED = "FAILED"
+    REFUNDED = "REFUNDED"
+
+
 class ContentSourceType(StrEnum):
     """What kind of row a content_chunks entry was generated from.
 
