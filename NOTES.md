@@ -535,3 +535,79 @@ model, status enum, appointment_status_history migration).
   until scheduled? (carried from Day 2)
 - `AppointmentStatusHistory.actor` is a free string for now - worth a
   fixed vocabulary before the saga starts writing to it in 2.9?
+
+---
+
+### Day 4 - 2026-08-31
+
+**Goal:** 2.7 (booking idempotency via Redis) + 2.8 (simulated
+`BillingChecker` + billing table). Both standalone, unwired -- tomorrow's
+saga (2.9) is what calls them.
+
+**Done**
+
+- **2.7** `app/core/redis.py` (client) + `app/services/idempotency.py`
+  (`get_cached_result`/`store_result`), TTL from
+  `settings.idempotency_key_ttl_seconds`.
+- **2.8** `BillingStatus` enum, `Billing` model + migration (unique
+  `appointment_id` and `idempotency_key`, FK RESTRICT),
+  `BillingChecker.precheck()` - idempotent, forceable failure via
+  `billing_force_fail`.
+- Fixed pre-existing `black` drift in 3 files untouched since before Day
+  3 (`temporal/client.py`, two test files) - separate commit.
+- 172 -> 179 tests (7 new + 1 coverage fix), lint clean, no hardcoded
+  status codes, migration round-tripped, everything also verified live
+  against the real containers, not just pytest.
+
+**Decisions**
+
+| Decision | Why |
+|---|---|
+| Redis check-then-remember, DB unique constraint as backstop | Redis answers "seen this key" before a row exists; the DB is the last-resort guarantee |
+| TTL read from `settings.idempotency_key_ttl_seconds` (86400s) | `.env.example` already declared this env var; my first draft hardcoded 3600s and ignored it |
+| `BillingChecker` is a class with one method today | `REFUNDED` is already in the vocabulary - a natural second method later, same reasoning as `PublishActivities` |
+| `billing.amount` is a fixed placeholder (`100.00`) | No pricing model exists anywhere in the domain; billing is explicitly simulated |
+| `billing_force_fail` is a global settings flag | Matches the brief's literal wording; 2.9's saga flips it on demand to exercise compensation |
+| `BillingChecker.precheck` takes `db: Session` directly | Mirrors `reserve_slot`'s plain style; the Temporal session-factory DI is 2.9's Activities wrapper's job, not this class's |
+
+**Cost time**
+
+- `docker compose build` (bare) silently skips services behind
+  `profiles:` - the `test` image kept running on a pre-`redis` image
+  until built explicitly (`docker compose build test`). Recurred a
+  second time later in the day for reasons I didn't fully pin down.
+- `settings.billing.force_fail` - a nested-attribute typo for
+  `settings.billing_force_fail`, caught by the test suite, not lint.
+- `black` flagged 3 files never touched today - drift since before Day
+  3 despite that day's notes saying "lint clean".
+- `app/core/redis.py` sat at 0% coverage - nothing, not even the test
+  suite, ever imported it. Caught by `/verify`, not by habit.
+
+**Explain out loud**
+
+- Four distinct idempotency mechanisms now exist (client/Redis,
+  data/atomic UPDATE, Activity-level, consumer-level later) - why each
+  is needed and none subsumes another.
+- A fake billing check has to be able to fail on purpose, or it proves
+  nothing about compensation.
+- Check-before-insert is now the same pattern across three unrelated
+  tasks (2.5, 2.7, 2.8) - one convention, not three coincidences.
+
+**Carrying into Day 5**
+
+- 2.9 - the scheduling saga (7h, the big one) - wires `reserve_slot`,
+  `BillingChecker` and the idempotency cache together as Temporal
+  Activities with compensation.
+- Still open: a fixed vocabulary for `AppointmentStatusHistory.actor`
+  before the saga starts writing to it.
+
+**Open questions**
+
+- Should `INACTIVE` have a re-publish path? (carried from Day 1)
+- Should `GET publish-status` cross-check Temporal's own execution status
+  instead of relying on the DB column alone? (carried from Day 2)
+- Is `POST /services/{id}/unpublish` expected this week? Leaning "no" -
+  the Week 2 Definition of Done never mentions it. (carried from Day 2)
+- Why did the `test` image's `redis` package regress after being fixed
+  once already today - worth watching for a third occurrence before
+  digging into BuildKit/profile caching further.
