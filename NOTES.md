@@ -611,3 +611,69 @@ saga (2.9) is what calls them.
 - Why did the `test` image's `redis` package regress after being fixed
   once already today - worth watching for a third occurrence before
   digging into BuildKit/profile caching further.
+
+---
+
+### Day 5 - 2026-08-31
+
+**Goal:** 2.9 - the appointment scheduling saga (validate -> reserve ->
+billing -> reminders -> confirm) as a Temporal Workflow with
+compensation, fully tested.
+
+**Done**
+
+- Resolved both carried opens: `INACTIVE` gets no re-publish path;
+  `AppointmentStatusHistory.actor` fixed as
+  `PATIENT`/`FRONT_DESK`/`PROVIDER`/`ADMIN` + `SAGA` + `SAGA_COMPENSATION`.
+- `slot_reservations` table + model + enum, migration round-tripped -
+  makes `reserve_slot` retry-safe.
+- `reserve_slot` split into `reserve_slot_uncommitted` + `reserve_slot`
+  so the saga can share one transaction with its own insert.
+- `SchedulingActivities` (7 methods, all idempotent) +
+  `AppointmentSchedulingWorkflow` (explicit compensation per failure
+  type). Worker registers both.
+- Verified live: happy path, compensation path, worker-crash resumption.
+- 179 -> 202 tests, 98% coverage.
+
+**Decisions**
+
+| Decision | Why |
+|---|---|
+| `slot_reservations` table, not `Appointment.status` | Reserve must survive a crash between the UPDATE and the status write |
+| `reserve_slot` split into uncommitted core + committing wrapper | One shared transaction with the saga's own insert |
+| `SAGA` vs `SAGA_COMPENSATION` as separate actors | Audit trail shows a rollback apart from an ordinary step |
+| `schedule_reminders` a real no-op Activity | Celery is Week 3; one-line change later |
+| Compensation `try`/`except` left unabstracted | Modeling each one explicitly is the lesson |
+| Crash-resumption proven live, not by a test | No reliable way to hit "mid-saga" timing in pytest |
+
+**Cost time**
+
+- `appointment.book_at` typo for `booked_at` - same field Day 3
+  mis-typed too.
+- Test file saved as `tes_scheduling_workflow.py` - pytest silently
+  skipped it.
+- First instinct (reuse `Appointment.status` for idempotency) would have
+  missed the actual crash window.
+
+**Explain out loud**
+
+- Compensation isn't rollback - `reserve_slot` already committed, so
+  undoing it is a new write.
+- The UPDATE and the `slot_reservations` insert share one commit, not
+  two.
+- Postgres row-level locking, not "who commits first," stops two
+  concurrent reserves both winning.
+
+**Carrying into Day 6**
+
+- 2.10 - `POST /appointments`, `GET` state, cancel/reschedule.
+- 2.11 - Visit lifecycle status flow.
+- 2.12 - remaining saga-level tests that need 2.10/2.11 to exist.
+- 2.13 - docs pass, not started for 2.9.
+
+**Open questions**
+
+- `GET publish-status` cross-check Temporal directly? (carried from Day 2)
+- Is `unpublish` expected this week? Leaning no. (carried from Day 2)
+- Is a live demo enough for "demonstrate it" on crash-resumption, or does
+  the mentor want an automated test too?
