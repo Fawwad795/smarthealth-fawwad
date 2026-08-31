@@ -34,6 +34,7 @@ from app.models import (
     User,
 )
 from app.models.enums import AppointmentStatus, UserRole
+from app.core.redis import get_redis
 from app.core.security import create_access_token
 from app.db.session import get_db
 from app.main import app
@@ -297,21 +298,29 @@ def appointment(
 
 
 @pytest.fixture()
-def client(db_session: Session) -> Generator[TestClient, None, None]:
-    """A TestClient that sees this test's own db_session, not a fresh
-    connection to the real dev database.
+def client(
+    db_session: Session, test_redis_client: redis.Redis
+) -> Generator[TestClient, None, None]:
+    """A TestClient that sees this test's own db_session and the test
+    Redis database, not the real ones.
 
     app's own get_db() opens a brand-new SessionLocal() against
     settings.database_url every time FastAPI resolves it -- that's the dev
     database, not the isolated, auto-rolled-back one db_session gives this
-    test. dependency_overrides swaps what Depends(get_db) resolves to, for
-    the lifetime of this fixture only.
+    test. get_redis() has the same problem against DB 0, where an
+    idempotency key would outlive the test by its full 24h TTL and make
+    the next run of the suite fail. dependency_overrides swaps what both
+    resolve to, for the lifetime of this fixture only.
     """
 
     def _get_test_db() -> Generator[Session, None, None]:
         yield db_session
 
+    def _get_test_redis() -> redis.Redis:
+        return test_redis_client
+
     app.dependency_overrides[get_db] = _get_test_db
+    app.dependency_overrides[get_redis] = _get_test_redis
     with TestClient(app) as test_client:
         yield test_client
     # Cleared even though the next test's client fixture would overwrite it
