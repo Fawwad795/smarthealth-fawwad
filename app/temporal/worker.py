@@ -13,9 +13,9 @@ import logging
 from temporalio.worker import Worker
 
 from app.core.config import settings
-from app.temporal.activities import PublishActivities
+from app.temporal.activities import PublishActivities, SchedulingActivities
 from app.temporal.client import get_temporal_client
-from app.temporal.workflows import PublishServiceWorkflow
+from app.temporal.workflows import PublishServiceWorkflow, AppointmentSchedulingWorkflow
 
 logging.basicConfig(level=settings.log_level)
 logger = logging.getLogger(__name__)
@@ -25,20 +25,28 @@ async def run_worker() -> None:
     """Connect to Temporal and poll settings.temporal_task_queue until killed."""
     client = await get_temporal_client()
     activities = PublishActivities()
-    # PublishActivities' methods are all plain def, not async def -- they
-    # do blocking database I/O, so they need a thread pool to run in
-    # rather than Temporal's own event loop.
+    scheduling_activities = SchedulingActivities()
+    # Both Activities classes are all plain def, not async def -- they do
+    # blocking database I/O, so they need a thread pool to run in rather
+    # than Temporal's own event loop.
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         worker = Worker(
             client,
             task_queue=settings.temporal_task_queue,
-            workflows=[PublishServiceWorkflow],
+            workflows=[PublishServiceWorkflow, AppointmentSchedulingWorkflow],
             activities=[
                 activities.validate_service,
                 activities.structure_content,
                 activities.chunk_content,
                 activities.mark_published,
                 activities.mark_publish_failed,
+                scheduling_activities.validate_eligibility,
+                scheduling_activities.reject,
+                scheduling_activities.reserve_slot,
+                scheduling_activities.billing_precheck,
+                scheduling_activities.schedule_reminders,
+                scheduling_activities.confirm,
+                scheduling_activities.release_slot,
             ],
             activity_executor=executor,
         )
