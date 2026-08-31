@@ -18,6 +18,7 @@ from app.models import Appointment, User
 from app.models.enums import UserRole
 from app.schemas.appointment import AppointmentCreate, AppointmentResponse
 from app.services import appointment_scheduling
+from app.services import patient as patient_service
 
 router = APIRouter(prefix="/appointments", tags=["appointments"])
 
@@ -62,8 +63,8 @@ async def create_appointment(
     404 if provider/slot/service/patient doesn't exist, 400 if
     FRONT_DESK/ADMIN omit patient_id.
     """
-    patient, actor = appointment_scheduling.resolve_booking_patient(
-        db, current_user, data
+    patient, actor = patient_service.resolve_acting_patient(
+        db, current_user, data.patient_id
     )
     appointment, workflow_id = await appointment_scheduling.request_appointment(
         db, redis_client, data, patient.id, idempotency_key, actor
