@@ -45,9 +45,11 @@ class SlotReservation(Base, TimestampMixin):
     )
 
     status: Mapped[SlotReservationStatus] = mapped_column(
-        enum_column(SlotReservationStatus, 'status'),
+        enum_column(SlotReservationStatus, "status"),
         nullable=False,
         server_default=SlotReservationStatus.RESERVED.value,
     )
 
-    appointment: Mapped["Appointment"] = relationship(back_populates="slot_reservations")
+    appointment: Mapped["Appointment"] = relationship(
+        back_populates="slot_reservations"
+    )

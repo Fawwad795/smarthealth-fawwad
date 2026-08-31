@@ -77,4 +77,6 @@ class Appointment(Base, TimestampMixin):
         back_populates="appointment", order_by="AppointmentStatusHistory.created_at"
     )
     billing: Mapped["Billing | None"] = relationship(back_populates="appointment")
-    slot_reservations: Mapped[list["SlotReservation"]] = relationship(back_populates="appointment")
+    slot_reservations: Mapped[list["SlotReservation"]] = relationship(
+        back_populates="appointment"
+    )
