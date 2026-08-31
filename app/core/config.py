@@ -35,6 +35,10 @@ class Settings(BaseSettings):
 
     # --- Redis ---
     redis_url: str
+    # A separate Redis DB index, flushed by the test suite before/after
+    # every run. Same reasoning as test_database_url: tests must never
+    # share state with the app's real one.
+    test_redis_url: str = "redis://redis:6379/15"
 
     # --- Auth ---
     jwt_secret: str
@@ -47,6 +51,7 @@ class Settings(BaseSettings):
     temporal_host: str = "temporal:7233"
     temporal_namespace: str = "default"
     temporal_task_queue: str = "app-workflow"
+
 
 # Imported everywhere as: from app.core.config import settings
 settings = Settings()

@@ -11,6 +11,7 @@ from collections.abc import Generator
 from datetime import date
 from pathlib import Path
 import pytest
+import redis
 
 from alembic import command
 from alembic.config import Config
@@ -72,6 +73,24 @@ def test_database() -> Generator[str, None, None]:
     with admin.connect() as conn:
         conn.execute(text(f'DROP DATABASE IF EXISTS "{TEST_DB_NAME}" WITH (FORCE)'))
     admin.dispose()
+
+
+@pytest.fixture(scope="session")
+def test_redis_client() -> Generator[redis.Redis, None, None]:
+    """A Redis client bound to the test DB (index 15), flushed before and
+    after the session so tests never depend on -- or leave behind --
+    leftover keys, and never touch the app's real DB 0.
+    """
+    if settings.test_redis_url == settings.redis_url:
+        raise RuntimeError(
+            "TEST_REDIS_URL must differ from REDIS_URL -- this fixture "
+            "flushes its database."
+        )
+    client = redis.from_url(settings.test_redis_url, decode_responses=True)
+    client.flushdb()
+    yield client
+    client.flushdb()
+    client.close()
 
 
 @pytest.fixture(scope="session")
@@ -190,12 +209,10 @@ def provider(
     db_session.flush()
     return p
 
+
 @pytest.fixture()
 def patient(db_session: Session, patient_user: User) -> Patient:
-    p = Patient(
-        user_id=patient_user.id,
-        dob=date(1990, 1, 1)
-    )
+    p = Patient(user_id=patient_user.id, dob=date(1990, 1, 1))
     db_session.add(p)
     db_session.flush()
     return p
@@ -203,13 +220,11 @@ def patient(db_session: Session, patient_user: User) -> Patient:
 
 @pytest.fixture()
 def service(db_session: Session, department: Department) -> Service:
-    s = Service(
-        department_id=department.id, 
-        name="Echocardiogram"
-    )
+    s = Service(department_id=department.id, name="Echocardiogram")
     db_session.add(s)
     db_session.flush()
     return s
+
 
 # --- HTTP layer -------------------------------------------------------------
 # Everything above builds rows directly with the ORM. These fixtures are for

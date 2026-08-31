@@ -13,6 +13,9 @@ psycopg[binary]==3.2.3        # the modern (v3) Postgres driver
 # --- Temporal (Week 2+) -------------------------------------------------
 temporalio==1.9.0
 
+# --- Redis (Week 2+) ----------------------------------------------------
+redis==5.2.1
+
 # --- Config / validation -----------------------------------------------
 pydantic==2.10.4
 pydantic-settings==2.7.0      # reads settings from env vars / .env
