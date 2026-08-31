@@ -136,6 +136,21 @@ class SlotReservationStatus(StrEnum):
     COMMITTED = "COMMITTED"  # the booking confirmed; the hold is now permanent
 
 
+class WaitlistStatus(StrEnum):
+    """Where one patient's place in a provider's queue currently stands.
+
+    Two members, not more. A released slot moves the oldest WAITING entry
+    to OFFERED, and that is as far as this project takes it: actually
+    telling the patient is a notification, which is Week 3's Celery work.
+    A third state for "they accepted the offer" would be unreachable code
+    today, and an enum member nothing can ever write is worse than absent
+    -- it reads as a feature that exists.
+    """
+
+    WAITING = "WAITING"  # in the queue, nothing offered yet
+    OFFERED = "OFFERED"  # a slot opened and this entry was the next in line
+
+
 def enum_column(enum_cls: type[StrEnum], name: str) -> SAEnum:
     """Build the column type for an enum: VARCHAR + CHECK, never a native type.
 

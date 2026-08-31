@@ -38,6 +38,7 @@ from app.models.slot_reservation import SlotReservation
 from app.models.slot import Slot
 from app.models.specialty import Specialty
 from app.models.user import User
+from app.models.waitlist import Waitlist
 
 __all__ = [
     "Appointment",
@@ -55,4 +56,5 @@ __all__ = [
     "Slot",
     "Specialty",
     "User",
+    "Waitlist",
 ]

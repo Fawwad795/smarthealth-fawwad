@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from app.models.slot import Slot
     from app.models.specialty import Specialty
     from app.models.user import User
+    from app.models.waitlist import Waitlist
 
 
 class Provider(Base, TimestampMixin):
@@ -69,3 +70,4 @@ class Provider(Base, TimestampMixin):
         back_populates="provider"
     )
     appointments: Mapped[list["Appointment"]] = relationship(back_populates="provider")
+    waitlist_entries: Mapped[list["Waitlist"]] = relationship(back_populates="provider")
