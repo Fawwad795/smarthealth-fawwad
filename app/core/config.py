@@ -52,6 +52,11 @@ class Settings(BaseSettings):
     temporal_namespace: str = "default"
     temporal_task_queue: str = "app-workflow"
 
+    # --- Domain rules ---
+    # How long an Idempotency-Key is remembered before a retried request
+    # would be treated as brand new. Read by app/services/idempotency.py.
+    idempotency_key_ttl_seconds: int = 86400
+
 
 # Imported everywhere as: from app.core.config import settings
 settings = Settings()

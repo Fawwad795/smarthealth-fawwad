@@ -13,9 +13,9 @@ import json
 
 from redis import Redis
 
+from app.core.config import settings
+
 _KEY_PREFIX = "idempotency:appointment:"
-_TTL_SECONDS = 60 * 60  # long enough to catch a retried request,
-# short enough that keys don't accumulate forever.
 
 
 def get_cached_result(redis_client: Redis, idempotency_key: str) -> dict | None:
@@ -42,5 +42,5 @@ def store_result(
     redis_client.set(
         _KEY_PREFIX + idempotency_key,
         json.dumps({"status_code": status_code, "appointment_id": appointment_id}),
-        ex=_TTL_SECONDS,
+        ex=settings.idempotency_key_ttl_seconds,
     )
