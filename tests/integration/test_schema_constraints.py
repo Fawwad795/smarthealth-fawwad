@@ -23,7 +23,16 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models import Appointment, AppointmentStatusHistory, Department, Patient, Provider, Service, Slot, User
+from app.models import (
+    Appointment,
+    AppointmentStatusHistory,
+    Department,
+    Patient,
+    Provider,
+    Service,
+    Slot,
+    User,
+)
 from app.models.enums import AppointmentStatus, UserRole
 
 # Fixed, never datetime.now(). A test whose input changes on every run can
@@ -304,4 +313,3 @@ def test_appointment_with_history_cannot_be_deleted(
         db_session.execute(
             text("DELETE FROM appointments WHERE id = :id"), {"id": appointment.id}
         )
-
