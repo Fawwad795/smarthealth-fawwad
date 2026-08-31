@@ -122,6 +122,20 @@ class ContentSourceType(StrEnum):
     SERVICE = "SERVICE"
 
 
+class SlotReservationStatus(StrEnum):
+    """Lifecycle of one slot-hold attempt for one appointment.
+
+    Exists so reserve_slot's Activity can tell a genuine retry apart from
+    a fresh attempt -- the atomic UPDATE on slots alone can't: a retried
+    Activity call sees the slot already RESERVED and has no way to know
+    whether it reserved it moments ago or someone else beat it there.
+    """
+
+    RESERVED = "RESERVED"  # the saga is holding this slot
+    RELEASED = "RELEASED"  # compensation gave it back after a downstream failure
+    COMMITTED = "COMMITTED"  # the booking confirmed; the hold is now permanent
+
+
 def enum_column(enum_cls: type[StrEnum], name: str) -> SAEnum:
     """Build the column type for an enum: VARCHAR + CHECK, never a native type.
 

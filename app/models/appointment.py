@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from app.models.provider import Provider
     from app.models.service import Service
     from app.models.slot import Slot
+    from app.models.slot_reservation import SlotReservation
 
 
 class Appointment(Base, TimestampMixin):
@@ -76,3 +77,4 @@ class Appointment(Base, TimestampMixin):
         back_populates="appointment", order_by="AppointmentStatusHistory.created_at"
     )
     billing: Mapped["Billing | None"] = relationship(back_populates="appointment")
+    slot_reservations: Mapped[list["SlotReservation"]] = relationship(back_populates="appointment")

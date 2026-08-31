@@ -34,6 +34,7 @@ from app.models.provider import Provider
 from app.models.provider_schedule import ProviderSchedule
 from app.models.provider_service import ProviderService
 from app.models.service import Service
+from app.models.slot_reservation import SlotReservation
 from app.models.slot import Slot
 from app.models.specialty import Specialty
 from app.models.user import User
@@ -50,6 +51,7 @@ __all__ = [
     "ProviderSchedule",
     "ProviderService",
     "Service",
+    "SlotReservation",
     "Slot",
     "Specialty",
     "User",
