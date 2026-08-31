@@ -13,23 +13,14 @@ from app.models import Slot
 from app.models.enums import SlotStatus
 
 
-def reserve_slot(db: Session, slot_id: int) -> bool:
-    """Atomically move one slot from AVAILABLE to RESERVED.
+def reserve_slot_uncommitted(db: Session, slot_id: int) -> bool:
+    """The atomic UPDATE itself, without committing.
 
-    One UPDATE, not a SELECT followed by an UPDATE: the "is it still
-    available" check and the write happen as a single statement Postgres
-    treats as indivisible, so two concurrent callers can never both see
-    AVAILABLE and both proceed. Whichever call reaches Postgres second
-    finds the row no longer matches `status == AVAILABLE` and updates
-    zero rows -- there is no gap between checking and acting for a second
-    caller to land in.
-
-    Returns True if this call won the reservation, False if it didn't
-    (already taken, or slot_id doesn't exist -- callers that need to tell
-    those apart should look the slot up first). updated_at is set
-    explicitly rather than left to TimestampMixin's onupdate: this
-    statement's correctness must not depend on that being applied, so it
-    is set the same as any other column this UPDATE touches.
+    Split out from reserve_slot() so the scheduling saga's Activity (task
+    2.9) can combine it with its own slot_reservations insert in one
+    transaction -- committing here separately would leave a crash window
+    between "slot flipped" and "reservation recorded" that defeats the
+    whole point of that table.
     """
     result = db.execute(
         update(Slot)
@@ -37,6 +28,16 @@ def reserve_slot(db: Session, slot_id: int) -> bool:
         .values(status=SlotStatus.RESERVED, updated_at=func.now())
         .returning(Slot.id)
     )
-    won = result.first() is not None
+    return result.first() is not None
+
+
+def reserve_slot(db: Session, slot_id: int) -> bool:
+    """Atomically move one slot from AVAILABLE to RESERVED, and commit.
+
+    The entry point for anything that just wants a slot held with no
+    further bookkeeping -- see reserve_slot_uncommitted's docstring for
+    why the saga's Activity uses that one directly instead.
+    """
+    won = reserve_slot_uncommitted(db, slot_id)
     db.commit()
     return won

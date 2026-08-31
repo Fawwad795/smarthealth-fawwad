@@ -1,6 +1,6 @@
 """Activities for the service-publishing Workflow.
 
-All I/O for the publish pipeline lives here, never in workflows.py --
+All I/O for the service publish and scheduling pipeline lives here, never in workflows.py --
 Temporal Workflows must be deterministic and cannot touch the database
 directly. Bundled on a class rather than left as bare functions so a test
 can hand the constructor a factory pointing at the test database instead
@@ -14,14 +14,31 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
 from app.db.session import SessionLocal
-from app.models import ContentChunk, Service
-from app.models.enums import ContentSourceType, ServiceStatus
+from app.models import (
+    Appointment,
+    AppointmentStatusHistory,
+    ContentChunk,
+    ProviderService,
+    Service,
+    Slot,
+    SlotReservation,
+)
+from app.models.enums import (
+    AppointmentStatus,
+    BillingStatus,
+    ContentSourceType,
+    ServiceStatus,
+    SlotReservationStatus,
+    SlotStatus,
+)
+from app.services.billing import BillingChecker
+from app.services.slot import reserve_slot_uncommitted
 
 
 @dataclass
@@ -147,4 +164,260 @@ class PublishActivities:
         with self._session_factory() as db:
             service = db.get(Service, service_id)
             service.status = ServiceStatus.PUBLISH_FAILED
+            db.commit()
+
+
+@dataclass
+class RejectInput:
+    """Bundles reject's two arguments -- see ChunkContentInput for why."""
+
+    appointment_id: int
+    reason: str
+
+
+@dataclass
+class ReleaseSlotInput:
+    """Bundles release_slot's two arguments -- see ChunkContentInput for why."""
+
+    appointment_id: int
+    reason: str
+
+
+_ACTOR_SAGA = "SAGA"
+_ACTOR_SAGA_COMPENSATION = "SAGA_COMPENSATION"
+
+
+def _record_transition(
+    db: Session,
+    appointment: Appointment,
+    to_status: AppointmentStatus,
+    actor: str,
+    reason: str | None = None,
+) -> None:
+    """Append one AppointmentStatusHistory row and move Appointment.status.
+
+    Every Activity below calls this exactly once per transition, in the
+    same commit as its other writes, so the history log and the current
+    status column can never drift apart.
+    """
+    db.add(
+        AppointmentStatusHistory(
+            appointment_id=appointment.id,
+            from_status=appointment.status,
+            to_status=to_status,
+            actor=actor,
+            reason=reason,
+        )
+    )
+    appointment.status = to_status
+
+
+class SchedulingActivities:
+    """The Activities the appointment-scheduling saga Workflow calls.
+
+    Same session_factory injection as PublishActivities, same reason: no
+    Depends(get_db) inside a Temporal Activity.
+    """
+
+    def __init__(
+        self,
+        session_factory: Callable[[], AbstractContextManager[Session]] = SessionLocal,
+    ) -> None:
+        """Store the session factory; open nothing until a method runs."""
+        self._session_factory = session_factory
+
+    @activity.defn
+    def validate_eligibility(self, appointment_id: int) -> None:
+        """Raise a non-retryable error listing every reason this booking
+        can't proceed, or return None if it's eligible.
+
+        Checks the same "published + offered" facts task 1.8's public
+        search filters on, plus that the slot actually belongs to the
+        provider being booked. None of this can change on a retry, so a
+        failure here is non-retryable -- same reasoning as
+        validate_service.
+        """
+        with self._session_factory() as db:
+            appointment = db.get(Appointment, appointment_id)
+            service = db.get(Service, appointment.service_id)
+            slot = db.get(Slot, appointment.slot_id)
+
+            errors = []
+            if service.status != ServiceStatus.PUBLISHED:
+                errors.append("service is not published")
+            offered = db.execute(
+                select(ProviderService).where(
+                    ProviderService.provider_id == appointment.provider_id,
+                    ProviderService.service_id == appointment.service_id,
+                )
+            ).scalar_one_or_none()
+            if offered is None:
+                errors.append("provider does not offer this service")
+            if slot.provider_id != appointment.provider_id:
+                errors.append("slot does not belong to this provider")
+
+            if errors:
+                raise ApplicationError(
+                    "; ".join(errors),
+                    type="APPOINTMENT_INELIGIBLE",
+                    non_retryable=True,
+                )
+
+    @activity.defn
+    def reject(self, input: RejectInput) -> None:
+        """Reject a booking that never got as far as reserving a slot.
+
+        Idempotent: REQUESTED is the only legal starting point, so if
+        this appointment already moved on, do nothing.
+        """
+        with self._session_factory() as db:
+            appointment = db.get(Appointment, input.appointment_id)
+            if appointment.status != AppointmentStatus.REQUESTED:
+                return
+            _record_transition(
+                db, appointment, AppointmentStatus.REJECTED, _ACTOR_SAGA, input.reason
+            )
+            db.commit()
+
+    @activity.defn
+    def reserve_slot(self, appointment_id: int) -> None:
+        """Reserve this appointment's slot, or raise if it's already taken.
+
+        Checks for an existing slot_reservations row for this
+        (appointment, slot) pair first -- if one exists, this Activity
+        already succeeded on a prior attempt, and re-running the atomic
+        UPDATE would find the slot already RESERVED by this very
+        appointment and wrongly conclude someone else won it. The UPDATE
+        and the slot_reservations insert commit together in one
+        transaction, so there's no window where the slot is flipped but
+        unrecorded.
+        """
+        with self._session_factory() as db:
+            appointment = db.get(Appointment, appointment_id)
+            existing = db.execute(
+                select(SlotReservation).where(
+                    SlotReservation.appointment_id == appointment_id,
+                    SlotReservation.slot_id == appointment.slot_id,
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                return
+
+            won = reserve_slot_uncommitted(db, appointment.slot_id)
+            if not won:
+                raise ApplicationError(
+                    "slot is no longer available",
+                    type="SLOT_UNAVAILABLE",
+                    non_retryable=True,
+                )
+
+            db.add(
+                SlotReservation(
+                    appointment_id=appointment_id, slot_id=appointment.slot_id
+                )
+            )
+            _record_transition(
+                db, appointment, AppointmentStatus.SLOT_RESERVED, _ACTOR_SAGA
+            )
+            db.commit()
+
+    @activity.defn
+    def billing_precheck(self, appointment_id: int) -> None:
+        """Run the simulated billing pre-check, or raise if it fails.
+
+        Idempotent by construction: BillingChecker.precheck() already
+        checks for an existing Billing row before creating one (task
+        2.8), so a retried call finds -- and reuses -- the first
+        attempt's result rather than re-deciding pass/fail from scratch.
+        """
+        with self._session_factory() as db:
+            appointment = db.get(Appointment, appointment_id)
+            billing = BillingChecker().precheck(
+                db, appointment, appointment.idempotency_key
+            )
+            if billing.status == BillingStatus.FAILED:
+                raise ApplicationError(
+                    "billing pre-check failed",
+                    type="BILLING_FAILED",
+                    non_retryable=True,
+                )
+
+    @activity.defn
+    def schedule_reminders(self, appointment_id: int) -> None:
+        """Placeholder for Week 3's Celery-backed reminders.
+
+        A structural no-op: the saga's shape (validate -> reserve ->
+        billing -> reminders -> confirm) is correct now, but nothing that
+        actually sends a reminder exists until Celery does. Kept as a
+        real Activity, not skipped, so wiring it to a Celery task later
+        is a one-line change here, not a saga redesign.
+        """
+        activity.logger.info(
+            "reminder scheduling is a Week 3 placeholder",
+            extra={"appointment_id": appointment_id},
+        )
+
+    @activity.defn
+    def confirm(self, appointment_id: int) -> None:
+        """Confirm the appointment: the saga's last step on the happy path.
+
+        Idempotent: if this appointment is already CONFIRMED, every write
+        below is a no-op -- returning immediately avoids re-flipping an
+        already-BOOKED slot or writing a duplicate history row.
+        """
+        with self._session_factory() as db:
+            appointment = db.get(Appointment, appointment_id)
+            if appointment.status == AppointmentStatus.CONFIRMED:
+                return
+
+            slot = db.get(Slot, appointment.slot_id)
+            slot.status = SlotStatus.BOOKED
+
+            reservation = db.execute(
+                select(SlotReservation).where(
+                    SlotReservation.appointment_id == appointment_id,
+                    SlotReservation.slot_id == appointment.slot_id,
+                )
+            ).scalar_one()
+            reservation.status = SlotReservationStatus.COMMITTED
+
+            appointment.booked_at = datetime.now(UTC)
+            _record_transition(
+                db, appointment, AppointmentStatus.CONFIRMED, _ACTOR_SAGA
+            )
+            db.commit()
+
+    @activity.defn
+    def release_slot(self, input: ReleaseSlotInput) -> None:
+        """Compensate a reservation: give the slot back after billing fails.
+
+        Idempotent: if this appointment is already CANCELLED, every
+        write below is a no-op. This is the saga's own compensating
+        Activity -- SAGA_COMPENSATION is reserved for exactly this path,
+        not for a patient-requested cancel (task 2.10), even though that
+        will reuse similar release logic.
+        """
+        with self._session_factory() as db:
+            appointment = db.get(Appointment, input.appointment_id)
+            if appointment.status == AppointmentStatus.CANCELLED:
+                return
+
+            slot = db.get(Slot, appointment.slot_id)
+            slot.status = SlotStatus.AVAILABLE
+
+            reservation = db.execute(
+                select(SlotReservation).where(
+                    SlotReservation.appointment_id == input.appointment_id,
+                    SlotReservation.slot_id == appointment.slot_id,
+                )
+            ).scalar_one()
+            reservation.status = SlotReservationStatus.RELEASED
+
+            _record_transition(
+                db,
+                appointment,
+                AppointmentStatus.CANCELLED,
+                _ACTOR_SAGA_COMPENSATION,
+                input.reason,
+            )
             db.commit()
