@@ -15,6 +15,7 @@ from app.api.v1.departments import router as departments_router
 from app.api.v1.services import router as services_router
 from app.api.v1.providers import router as providers_router
 from app.api.v1.provider_schedules import router as provider_schedules_router
+from app.api.v1.waitlist import router as waitlist_router
 
 
 def create_app() -> FastAPI:
@@ -65,6 +66,7 @@ def create_app() -> FastAPI:
     app.include_router(providers_router, prefix="/api/v1")
     app.include_router(provider_schedules_router, prefix="/api/v1")
     app.include_router(appointments_router, prefix="/api/v1")
+    app.include_router(waitlist_router, prefix="/api/v1")
 
     @app.get("/health", tags=["health"])
     def health() -> dict[str, str]:
