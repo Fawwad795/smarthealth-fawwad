@@ -32,8 +32,9 @@ from app.models import (
     Service,
     Slot,
     User,
+    Waitlist,
 )
-from app.models.enums import AppointmentStatus, UserRole
+from app.models.enums import AppointmentStatus, UserRole, WaitlistStatus
 
 # Fixed, never datetime.now(). A test whose input changes on every run can
 # fail for reasons unrelated to the code, and the reflex that produces --
@@ -313,3 +314,43 @@ def test_appointment_with_history_cannot_be_deleted(
         db_session.execute(
             text("DELETE FROM appointments WHERE id = :id"), {"id": appointment.id}
         )
+
+
+def test_patient_cannot_hold_two_waiting_places_in_one_queue(
+    db_session: Session, provider: Provider, patient: Patient
+) -> None:
+    """uq_waitlist_one_waiting_entry: joining a queue you are already
+    waiting in is a duplicate, not a second place.
+    """
+    db_session.add(Waitlist(provider_id=provider.id, patient_id=patient.id))
+    db_session.flush()
+
+    db_session.add(Waitlist(provider_id=provider.id, patient_id=patient.id))
+    with pytest.raises(IntegrityError, match="uq_waitlist_one_waiting_entry"):
+        db_session.flush()
+
+
+def test_patient_can_rejoin_a_queue_after_being_offered(
+    db_session: Session, provider: Provider, patient: Patient
+) -> None:
+    """The index is partial on purpose: an OFFERED entry is history and
+    must not block a fresh join. A plain unique index would lock someone
+    out of a queue permanently after their first offer -- which is the
+    exact bug this test exists to catch if the WHERE clause is ever lost.
+    """
+    db_session.add(
+        Waitlist(
+            provider_id=provider.id,
+            patient_id=patient.id,
+            status=WaitlistStatus.OFFERED,
+        )
+    )
+    db_session.flush()
+
+    db_session.add(Waitlist(provider_id=provider.id, patient_id=patient.id))
+    db_session.flush()
+
+    assert (
+        db_session.query(Waitlist).filter(Waitlist.patient_id == patient.id).count()
+        == 2
+    )
