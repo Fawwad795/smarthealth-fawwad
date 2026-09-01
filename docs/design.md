@@ -14,10 +14,10 @@ How SmartHealth is put together, and why. Updated as work lands.
 
 ## 1. Data model
 
-### 1.1 ERD — Week 1 core domain
+### 1.1 ERD — core domain through Week 2
 
-Ten entities. Appointments, billing, visits and the waitlist arrive in Week 2 and
-are deliberately absent here; the shapes below are what they will attach to.
+Seventeen entities. The ten Week 1 shapes plus everything the scheduling saga and
+visit lifecycle attach to them.
 
 ```mermaid
 erDiagram
@@ -31,6 +31,18 @@ erDiagram
     PROVIDER ||--o{ SLOT : "has"
     PROVIDER ||--o{ PROVIDER_SERVICE : "is qualified for"
     SERVICE ||--o{ PROVIDER_SERVICE : "delivered by"
+
+    PATIENT ||--o{ APPOINTMENT : "books"
+    PROVIDER ||--o{ APPOINTMENT : "sees"
+    SERVICE ||--o{ APPOINTMENT : "for"
+    SLOT ||--o{ APPOINTMENT : "occupies"
+    APPOINTMENT ||--o{ APPOINTMENT_STATUS_HISTORY : "logs"
+    APPOINTMENT ||--o{ SLOT_RESERVATION : "holds"
+    SLOT ||--o{ SLOT_RESERVATION : "held by"
+    APPOINTMENT ||--o| BILLING : "pre-checked by"
+    APPOINTMENT ||--o| VISIT : "becomes"
+    PROVIDER ||--o{ WAITLIST : "queued for"
+    PATIENT ||--o{ WAITLIST : "waits on"
 
     CLINIC {
         bigint id PK
@@ -126,7 +138,84 @@ erDiagram
         timestamptz created_at
         timestamptz updated_at
     }
+
+    APPOINTMENT {
+        bigint id PK
+        bigint patient_id FK "NOT NULL, indexed"
+        bigint provider_id FK "NOT NULL, indexed"
+        bigint slot_id FK "NOT NULL, indexed"
+        bigint service_id FK "NOT NULL, indexed"
+        text status "enum REQUESTED|SLOT_RESERVED|CONFIRMED|COMPLETED|REJECTED|CANCELLED"
+        text idempotency_key UK "the client's Idempotency-Key header"
+        timestamptz booked_at "null until CONFIRMED"
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    APPOINTMENT_STATUS_HISTORY {
+        bigint id PK
+        bigint appointment_id FK "NOT NULL, indexed"
+        text from_status "null only on the creation row"
+        text to_status "NOT NULL"
+        text actor "PATIENT|FRONT_DESK|PROVIDER|ADMIN|SAGA|SAGA_COMPENSATION"
+        text reason "operational only, never patient text"
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    SLOT_RESERVATION {
+        bigint id PK
+        bigint appointment_id FK "NOT NULL, indexed"
+        bigint slot_id FK "NOT NULL, indexed"
+        text status "enum RESERVED|RELEASED|COMMITTED"
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    BILLING {
+        bigint id PK
+        bigint appointment_id FK "UNIQUE, NOT NULL"
+        numeric amount "fixed placeholder; no pricing model exists"
+        text status "enum PENDING|CHECKED|FAILED|REFUNDED"
+        text idempotency_key UK
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    VISIT {
+        bigint id PK
+        bigint appointment_id FK "UNIQUE, NOT NULL"
+        text status "enum CHECKED_IN|IN_PROGRESS|COMPLETED, indexed"
+        timestamptz checked_in_at "NOT NULL; the row exists only from check-in"
+        timestamptz completed_at "null until COMPLETED"
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    WAITLIST {
+        bigint id PK
+        bigint provider_id FK "NOT NULL, indexed"
+        bigint patient_id FK "NOT NULL, indexed"
+        text status "enum WAITING|OFFERED, indexed"
+        timestamptz created_at "with id, the queue position"
+        timestamptz updated_at
+    }
+
+    CONTENT_CHUNK {
+        bigint id PK
+        text source_type "enum SERVICE; generic by design"
+        bigint source_id "no FK -- see decisions"
+        int chunk_index
+        text text
+        int token_count
+        text text_hash
+        timestamptz embedded_at "null until Week 4"
+        timestamptz created_at
+        timestamptz updated_at
+    }
 ```
+
+Exported copies of this and every other diagram here live in `docs/diagrams/`.
 
 **Conventions applied to every table.** Integer (`bigint`) identity primary keys.
 `created_at` / `updated_at` as `timestamptz`, always UTC-aware — never a naive

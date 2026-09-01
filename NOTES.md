@@ -12,7 +12,7 @@ Kept as I go, not written up at the end of the week.
 | Week | Focus | Must be true by Friday | Status |
 |---|---|---|---|
 | 1 | Foundation & core domain | Auth + roles + patient-data protection, providers/services/slots CRUD, migrations, seed, 80% coverage | ☑ 142 tests, 98% - PR #1 approved, deliberately left unmerged |
-| 2 | Temporal, scheduling & slots | No double-booking, no duplicate booking, publish workflow + scheduling saga with compensation, chunks produced, 80% coverage | ◐ 243 tests, 97% - everything but the visit lifecycle done; continuing Day 7 |
+| 2 | Temporal, scheduling & slots | No double-booking, no duplicate booking, publish workflow + scheduling saga with compensation, chunks produced, 80% coverage | ☑ 264 tests, 98% - 2.1-2.13 complete |
 | 3 | Async, events, observability | Celery reminders/rollup with DLQ, events consumed idempotently, accurate analytics, correlation IDs (no PHI), `/metrics`, 80% coverage | ☐ |
 
 ### Part B (Weeks 4-5)
@@ -787,3 +787,85 @@ table and join endpoint, cancel, and reschedule. Ran long enough that
 - Live demo enough for crash-resumption, or an automated test too? (Day 5)
 - A booking stuck REQUESTED because Temporal was down at `start_workflow`
   has no retry. Worth a sweeper, or is documenting it enough?
+
+---
+
+### Day 7 - 2026-09-02
+
+**Goal:** close Week 2 - 2.11 (visit lifecycle), the 2.12 gaps, and
+2.13's remaining `docs/prd.md`.
+
+**Done**
+
+- Closed all three carried opens: `publish-status` does not cross-check
+  Temporal, `unpublish` is not expected for now, and a live demo is
+  enough for crash-resumption.
+- **2.11** `visits` table, model, enum, migration (round-tripped);
+  `unique(appointment_id)` makes it a real 1:1.
+- `app/services/visit.py` - `check_in`/`start_visit`/`complete_visit`,
+  each with its own `ensure_can_*` guard. `complete_visit` is the only
+  one that also moves `Appointment.status` and writes history.
+- `app/api/v1/visits.py` under `/appointments/{id}/visit` - transitions
+  are staff-only, a patient can read their own.
+- **2.12** audited: 4 of 5 cases already covered. Closed
+  `mark_publish_failed`, the Redis-evicted idempotency backstop and
+  three 404s, into their existing test files.
+- **2.13** `docs/prd.md` with the traceability table; ERD extended to
+  all 17 tables.
+- 243 -> 264 tests, 98% coverage.
+
+**Decisions**
+
+| Decision | Why |
+|---|---|
+| Visit lifecycle is not a Temporal workflow | Each move is a human action at its own pace; nothing is mid-flight to resume |
+| No `visit_status_history` table | `status` plus the two timestamps are the whole trail for a linear flow |
+| Idempotent retry and illegal jump handled separately | Repeating a transition is a no-op; skipping or reversing one is a 409 |
+| Check-in returns an existing visit whatever state it reached | A retry must not create a second row *or* drag a started visit back |
+| No end-to-end saga compensation test | Real Activities under `WorkflowEnvironment` share the test session across the worker's threads; two halves plus a live demo instead |
+
+**Cost time**
+
+- `visit.status - VisitStatus.COMPLETED` - a `-` where `=` belonged.
+  Third transcription typo on this branch; all three caught by tests,
+  none by review.
+
+**Explain out loud**
+
+- Why the visit lifecycle is a status column and a guard rather than a
+  workflow - who owes the next step, the system or a human.
+- Why a retried check-in is a 200 no-op but completing an unstarted
+  visit is a 409.
+- What `from_attributes=True` does, and why `AppointmentResponse`
+  deliberately does not have it.
+
+**Carrying into Week 3**
+
+- Celery first, then Kafka, then observability - do not start Kafka on
+  Monday.
+- Still uncovered: the `IntegrityError` race in `request_appointment`.
+- A booking stuck REQUESTED if Temporal was down at `start_workflow`.
+- A pre-commit hook for black.
+
+**Open questions**
+
+- None.
+
+---
+
+## Weekly self-check
+
+### Week 2 - 2026-09-02
+
+1. **Finished / broken:** 2.1-2.13 all complete. 264 tests, 98%
+   coverage. Nothing known broken; three known gaps recorded in
+   `docs/prd.md` rather than left implicit.
+2. **Not fully understood yet:** what should happen to a booking whose
+   workflow never started because Temporal was down - the row sits
+   REQUESTED and nothing retries it.
+3. **Most time spent:** writing the code, and working out Temporal's
+   model - what belongs in an Activity vs. a Workflow, why Workflows
+   must be deterministic, and the reasoning behind each piece before
+   typing it.
+4. **Carrying into Week 3:** nothing from Week 2's task list. Celery,
+   then Kafka, then observability.

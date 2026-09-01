@@ -11,8 +11,8 @@ assistant refuses to give medical advice by design.
 It is also **API only**. There is no UI; Swagger UI at `/docs`, curl or Postman
 is the interface.
 
-> Status: **Week 2 — Temporal workflows and scheduling, mostly complete**. See
-> [Project status](#project-status) for what works today and what doesn't.
+> Status: **Week 2 complete** — Temporal workflows, scheduling and slots. See
+> [Project status](#project-status) for what works today.
 
 ---
 
@@ -51,7 +51,8 @@ publishing, the appointment scheduling saga). Celery owns fire-and-forget work
 (reminders, the analytics rollup). The visit lifecycle is neither — it is a plain
 validated status flow driven by human actions.
 
-The ERD lives in `docs/design.md`.
+The ERD lives in `docs/design.md`; exported copies of every diagram are in
+`docs/diagrams/`.
 
 ---
 
@@ -157,11 +158,12 @@ docker compose run --rm test pytest --cov=app --cov-report=term-missing
 Run `make help` to list every target (`up`, `migrate`, `seed`, `lint`, `fmt`,
 `psql`, `reset`).
 
-Target is ≥25 meaningful tests and ≥80% coverage; the suite stands at 223 tests
-and 97% coverage, no network access required. The hard cases are covered as they
+Target is ≥25 meaningful tests and ≥80% coverage; the suite stands at 264 tests
+and 98% coverage, no network access required. The hard cases are covered as they
 land: 50 threads racing one slot, a repeated idempotency key producing one
-appointment and one billing row, the saga compensating a billing failure, and the
-waitlist's partial unique index. Idempotent event handling arrives with Week 3.
+appointment and one billing row, the saga compensating a billing failure, a failed
+reschedule leaving the original slot untouched, and every illegal jump in the visit
+flow. Idempotent event handling arrives with Week 3.
 
 ---
 
@@ -185,7 +187,13 @@ waitlist's partial unique index. Idempotent event handling arrives with Week 3.
 | GET | `/api/v1/services/{id}/publish-status` | Where the publish lifecycle stands | Any staff |
 | POST | `/api/v1/appointments` | Start the scheduling saga (202 + id). Requires `Idempotency-Key` | Patient (self), front desk/admin (on behalf) |
 | GET | `/api/v1/appointments/{id}` | Current booking state | Patient (own), any staff |
+| POST | `/api/v1/appointments/{id}/cancel` | Release the slot, promote the waitlist | Patient (own), front desk/admin |
+| POST | `/api/v1/appointments/{id}/reschedule` | Release old + reserve new, atomically | Patient (own), front desk/admin |
 | POST | `/api/v1/waitlist` | Join a provider's queue | Patient (self), front desk/admin (on behalf) |
+| GET | `/api/v1/appointments/{id}/visit` | Current visit state | Patient (own), any staff |
+| POST | `/api/v1/appointments/{id}/visit/check-in` | Start the visit, idempotent | Front desk, provider, admin |
+| POST | `/api/v1/appointments/{id}/visit/start` | Move to `IN_PROGRESS`, idempotent | Front desk, provider, admin |
+| POST | `/api/v1/appointments/{id}/visit/complete` | Complete visit + appointment, idempotent | Front desk, provider, admin |
 
 Cancel/reschedule, the visit lifecycle, analytics and the AI assistant are added
 week by week and documented here as they land.
@@ -242,11 +250,11 @@ leak `password_hash` and patient data).
 | Document | Contents |
 |---|---|
 | `docs/design.md` | Data model / ERD, module breakdown, publish workflow and scheduling saga, the slot concurrency approach, decisions and tradeoffs |
+| `docs/prd.md` | Requirements, milestones, and the requirement → implementation → test traceability table |
 | `NOTES.md` | Working log and weekly tracking tables |
 
-Planned, not yet written: `docs/events.md` (Week 3), `docs/runbook.md` (Week 3),
-`docs/ai-layer.md` (Weeks 4–5), and `docs/prd.md` with the requirement →
-implementation → test traceability table.
+Planned, not yet written: `docs/events.md` and `docs/runbook.md` (Week 3), and
+`docs/ai-layer.md` (Weeks 4–5).
 
 ### `.claude/` — working context
 
@@ -290,22 +298,23 @@ hand-edit them.
 | Week | Theme | Status |
 |---|---|---|
 | 1 | Foundation and core domain | Done |
-| 2 | Temporal workflows, scheduling, slots | Mostly done — see below |
+| 2 | Temporal workflows, scheduling, slots | Done |
 | 3 | Celery, Kafka, observability | Not started |
 | 4 | Chunking, embeddings, retrieval | Not started |
 | 5 | AI assistant, streaming, demo | Not started |
 
 **Working today:** everything from Week 1 (auth and roles, department/service/
 provider CRUD, schedules and idempotent slot generation, public service search,
-synthetic seed), plus Week 2's service publishing as a Temporal workflow, the
-concurrency-safe atomic slot reservation, the appointment scheduling saga with
-compensation, booking idempotency, the simulated billing pre-check, and the
-waitlist table with its join endpoint. 223 tests at 97% coverage.
+synthetic seed), plus all of Week 2 — service publishing as a Temporal workflow,
+the concurrency-safe atomic slot reservation, the scheduling saga with
+compensation, booking idempotency, the simulated billing pre-check, cancel and
+reschedule with waitlist promotion, and the visit lifecycle. 264 tests at 98%
+coverage.
 
-**Known gaps in Week 2, carried into Week 3:** cancelling and rescheduling an
-appointment, and the visit lifecycle (`CHECKED_IN → IN_PROGRESS → COMPLETED`).
-The waitlist can be joined but nothing promotes an entry yet, since promotion is
-what cancellation triggers. A booking whose workflow fails to start because
-Temporal is unreachable stays `REQUESTED` with nothing to retry it.
+**Known limitations:** the saga's compensation is covered as two halves plus a
+live demonstration rather than one end-to-end test; a booking whose workflow
+fails to start because Temporal is unreachable stays `REQUESTED` with nothing to
+retry it; overlapping provider *schedule* windows are not prevented, only the
+overlapping slots they would generate. See `docs/prd.md` §7.
 
 **Not built yet:** Celery/Kafka, analytics, and the AI layer — Weeks 3–5.
