@@ -52,3 +52,32 @@ def join_waitlist(db: Session, provider_id: int, patient_id: int) -> Waitlist:
     db.commit()
     db.refresh(entry)
     return entry
+
+
+def promote_next_waiting(db: Session, provider_id: int) -> Waitlist | None:
+    """Move the oldest WAITING entry for this provider to OFFERED.
+
+    Called when a slot for this provider frees up. Ordered by
+    (created_at, id): Postgres now() is transaction-scoped, so two joins
+    inside one transaction can share a timestamp, and id is the tiebreak.
+    Returns None if nobody is waiting -- not every released slot has a
+    queue behind it.
+
+    Stops at OFFERED. Actually notifying the patient is Week 3's Celery
+    work, the same placeholder shape as schedule_reminders. Does not
+    commit -- the caller folds this into its own transaction, so the slot
+    release and the promotion land together or not at all.
+    """
+    entry = db.execute(
+        select(Waitlist)
+        .where(
+            Waitlist.provider_id == provider_id,
+            Waitlist.status == WaitlistStatus.WAITING,
+        )
+        .order_by(Waitlist.created_at, Waitlist.id)
+        .limit(1)
+    ).scalar_one_or_none()
+    if entry is None:
+        return None
+    entry.status = WaitlistStatus.OFFERED
+    return entry
