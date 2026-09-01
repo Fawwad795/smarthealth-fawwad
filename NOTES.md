@@ -12,7 +12,7 @@ Kept as I go, not written up at the end of the week.
 | Week | Focus | Must be true by Friday | Status |
 |---|---|---|---|
 | 1 | Foundation & core domain | Auth + roles + patient-data protection, providers/services/slots CRUD, migrations, seed, 80% coverage | ☑ 142 tests, 98% - PR #1 approved, deliberately left unmerged |
-| 2 | Temporal, scheduling & slots | No double-booking, no duplicate booking, publish workflow + scheduling saga with compensation, chunks produced, 80% coverage | ◐ 223 tests, 97% - that bar met; cancel/reschedule + visit lifecycle slipped to Week 3 |
+| 2 | Temporal, scheduling & slots | No double-booking, no duplicate booking, publish workflow + scheduling saga with compensation, chunks produced, 80% coverage | ◐ 243 tests, 97% - everything but the visit lifecycle done; continuing Day 7 |
 | 3 | Async, events, observability | Celery reminders/rollup with DLQ, events consumed idempotently, accurate analytics, correlation IDs (no PHI), `/metrics`, 80% coverage | ☐ |
 
 ### Part B (Weeks 4-5)
@@ -682,9 +682,9 @@ compensation, fully tested.
 
 ### Day 6 - 2026-09-01
 
-**Goal:** 2.10 - `POST /appointments` + `GET` state, then the waitlist
-table and join endpoint. Cancel/reschedule and 2.11 deliberately dropped
-to Week 3 partway through the day.
+**Goal:** 2.10 in full - `POST /appointments` + `GET` state, the waitlist
+table and join endpoint, cancel, and reschedule. Ran long enough that
+2.11 and the rest of 2.12/2.13 continue on Day 7 instead.
 
 **Done**
 
@@ -697,17 +697,30 @@ to Week 3 partway through the day.
   test Redis (index 15) instead of the app's DB 0.
 - **2.10b** `waitlist` table, model, `WaitlistStatus`, migration with a
   partial unique index (`WHERE status = 'WAITING'`), and `POST /waitlist`.
-- Verified live against the real worker: booking ran REQUESTED -> CONFIRMED,
-  one billing row, slot BOOKED, reservation COMMITTED, history actors
-  `PATIENT`/`SAGA`. Waitlist rejoin-after-OFFERED proven in psql.
-- 202 -> 223 tests, 97% coverage.
-- **Not done:** cancel, reschedule (2.10) and the visit lifecycle (2.11).
+- **2.10c** Cancel: `ensure_can_cancel` + `cancel_appointment` - releases
+  the slot (if one was held), transitions to CANCELLED, promotes the
+  oldest waiting entry. Same shape as `ensure_can_publish`.
+- `promote_next_waiting` in `waitlist.py` - oldest `WAITING` entry to
+  `OFFERED`, ordered `(created_at, id)`, doesn't commit itself.
+- **2.10d** Reschedule: `ensure_can_reschedule` + `reschedule_appointment`
+  - release old + reserve new in one transaction via
+  `reserve_slot_uncommitted`, so a lost race for the new slot leaves
+  nothing committed. `appointment.status` untouched; a CONFIRMED
+  appointment's new slot goes straight to BOOKED/COMMITTED. No
+  `appointment_status_history` row - `slot_reservations` is the trail.
+- Verified live against the real worker throughout: booking ran REQUESTED
+  -> CONFIRMED; a cancelled CONFIRMED appointment released its slot and
+  promoted a real waitlist entry; one appointment rescheduled twice left
+  an unbroken RELEASED/RELEASED/COMMITTED trail across three slots with
+  zero extra history rows; forcing a target slot to BOOKED and
+  rescheduling into it left the original completely untouched.
+- 202 -> 243 tests, 97% coverage.
+- **Not done:** the visit lifecycle (2.11), the rest of 2.12, `docs/prd.md`.
 
 **Decisions**
 
 | Decision | Why |
 |---|---|
-| Cancel/reschedule + 2.11 pushed to Week 3 | Ran out of day. Both are MUSTs, so this is a slip to declare, not a scope cut |
 | `resolve_acting_patient` in its own service, not the router | The router had a `select()` and two business rules in it - caught by review, not by lint |
 | `get_redis` a dependency, not a module-level import | Route tests otherwise write 24h-TTL keys into the app's real Redis |
 | Waitlist entry points at a provider, not a slot | You don't know which slot frees up, only whose time you want |
@@ -715,6 +728,10 @@ to Week 3 partway through the day.
 | Queue order is `(created_at, id)` | Postgres `now()` is transaction-scoped, so two rows in one transaction tie |
 | 201 for a waitlist join, 202 for a booking | Nothing runs in the background for a join - no workflow to poll |
 | Two waitlist states only | Nothing can write a third until Week 3 notifications exist |
+| `ensure_can_cancel`/`ensure_can_reschedule` as standalone guards | Requested explicitly - same shape as `ensure_can_publish`, not inlined |
+| Cancel reuses `release_slot`'s outcome, never its code | `SAGA_COMPENSATION` is reserved for the saga's own rollback; a patient-requested cancel needs its own actor |
+| Reschedule writes no status-history row | The table logs status *transitions*; a slot move at unchanged status isn't one - `slot_reservations` already carries that trail |
+| Reschedule uses `reserve_slot_uncommitted`, not `reserve_slot` | A failed new-slot reservation must leave nothing committed, including the old slot's release |
 
 **Cost time**
 
@@ -723,6 +740,15 @@ to Week 3 partway through the day.
 - After the refactor, `appointments.py` still passed `data` instead of
   `data.patient_id`. A Pydantic model is iterable, so SQLAlchemy read it as
   a composite primary key.
+- Two transcription typos in reschedule: `db.get(Slot, appointment.id)`
+  for `appointment.slot_id` (crashed immediately); the CONFIRMED branch
+  assigning RESERVED instead of COMMITTED (silent, caught only because
+  the test asserted the exact enum value).
+- The reschedule atomicity test failed for a reason that wasn't a code
+  bug: the `client` fixture's `db_session` override has no per-request
+  rollback, unlike real `get_db()`. A live check against the real API
+  proved production was already correct; fixed by testing the same claim
+  at the service layer with an explicit commit-then-rollback instead.
 - `black` drift on 7 files, 2 untouched since Days 3 and 5. Third
   recurrence - a pre-commit hook is the actual fix.
 - The Redis test-isolation bug was caught by reading the code, not by a
@@ -735,23 +761,21 @@ to Week 3 partway through the day.
 - Why a `select()` in a router is a layering bug, and what moved to fix it.
 - Why the waitlist index carries a `WHERE` clause, and what breaks without it.
 - Why `now()` ties inside one transaction, and why `id` is the tiebreak.
+- Compensation vs. a patient's own cancel: same slot-release outcome,
+  different actor recorded, and why that distinction matters later.
+- Reschedule's atomicity is a different guarantee from the slot UPDATE's:
+  one writer's two changes staying together, not two writers racing.
 
-**Carrying into Week 3**
+**Carrying into Day 7**
 
-- **Branch plan: the leftover Week 2 work goes on `week-2-workflows-day-6`,
-  not a new Week 3 branch.** That branch's PR stays open and targets
-  `week-2-workflows-day-5`, so further pushes land in it automatically and
-  Week 2 finishes inside a Week 2 PR. Week 3's own day branches stack on
-  top of day-6 once 2.10-2.12 are closed out.
-- 2.10 cancel + reschedule (release slot, promote waitlist; reschedule
-  atomic) and 2.11 visit lifecycle - three Week 2 MUSTs.
-- 2.12 partly done already - concurrency, duplicate booking and saga
-  compensation are covered; illegal visit transitions need 2.11 first.
-- `promote_next_waiting`: the waitlist has no mover yet.
-- 2.13 mostly landed: `design.md` §6 (both diagrams, the compensation and
-  retry-safety tables), §7, ten Week 2 decision rows and two known gaps.
-  Still missing: `docs/prd.md` and the traceability table, which is a
-  Week 3 job.
+- **Branch plan: Day 7 branches off `week-2-workflows-day-6`**, its own
+  PR targeting day-6's. Day 6's PR (#8) is now complete as-is - 2.10 in
+  full plus most of 2.13 - and gets no more pushes.
+- 2.11 - visit lifecycle (`CHECKED_IN -> IN_PROGRESS -> COMPLETED`),
+  idempotent, 409 on illegal jumps. The one Week 2 MUST still unbuilt.
+- 2.12 remainder - illegal visit transitions need 2.11 to exist first.
+  Concurrency, duplicate booking and saga compensation are already covered.
+- 2.13 remainder - `docs/prd.md` and the traceability table.
 - Uncovered in `appointment_scheduling.py`: the DB-backstop branch when
   Redis misses but the row exists, and the `IntegrityError` race.
 - A pre-commit hook for black.
@@ -763,22 +787,3 @@ to Week 3 partway through the day.
 - Live demo enough for crash-resumption, or an automated test too? (Day 5)
 - A booking stuck REQUESTED because Temporal was down at `start_workflow`
   has no retry. Worth a sweeper, or is documenting it enough?
-
----
-
-## Weekly self-check
-
-### Week 2 - 2026-09-01
-
-1. **Finished / broken:** 2.1-2.9 complete, 2.13 all but the PRD. 2.10 is
-   half done - request, state and waitlist join landed; cancel and
-   reschedule did not. 2.11 not started. 223 tests, 97% coverage. Nothing
-   known broken.
-2. **Not fully understood yet:** what should happen to a booking whose
-   workflow never started because Temporal was down - the row sits
-   REQUESTED and nothing retries it.
-3. **Most time spent:** rework rather than new code - the router layering
-   fix and the Redis test-isolation problem were both written twice.
-4. **Carrying into Week 3:** three Week 2 MUSTs (cancel, reschedule, visit
-   lifecycle) land before Celery starts, pushed onto the still-open
-   `week-2-workflows-day-6` branch so they close out in the Week 2 PR.
