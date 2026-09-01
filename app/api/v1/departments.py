@@ -19,6 +19,7 @@ from app.schemas.department import (
     DepartmentResponse,
     DepartmentUpdate,
 )
+from app.schemas.errors import error_responses
 from app.services import department as department_service
 
 router = APIRouter(prefix="/departments", tags=["departments"])
@@ -26,7 +27,19 @@ router = APIRouter(prefix="/departments", tags=["departments"])
 _STAFF_ROLES = (UserRole.ADMIN, UserRole.FRONT_DESK, UserRole.PROVIDER)
 
 
-@router.post("", response_model=DepartmentResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=DepartmentResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a department",
+    responses=error_responses(
+        {
+            status.HTTP_403_FORBIDDEN: "Admin only.",
+            status.HTTP_404_NOT_FOUND: "CLINIC_NOT_FOUND.",
+            status.HTTP_409_CONFLICT: "DEPARTMENT_NAME_TAKEN within this clinic.",
+        }
+    ),
+)
 def create_department(
     data: DepartmentCreate,
     db: Session = Depends(get_db),
@@ -41,7 +54,12 @@ def create_department(
     return DepartmentResponse.model_validate(department)
 
 
-@router.get("", response_model=DepartmentListResponse)
+@router.get(
+    "",
+    response_model=DepartmentListResponse,
+    summary="List departments",
+    responses=error_responses({status.HTTP_403_FORBIDDEN: "Staff only."}),
+)
 def list_departments(
     pagination: PaginationParams = Depends(pagination_params),
     db: Session = Depends(get_db),
@@ -61,7 +79,17 @@ def list_departments(
     )
 
 
-@router.get("/{department_id}", response_model=DepartmentResponse)
+@router.get(
+    "/{department_id}",
+    response_model=DepartmentResponse,
+    summary="Read one department",
+    responses=error_responses(
+        {
+            status.HTTP_403_FORBIDDEN: "Staff only.",
+            status.HTTP_404_NOT_FOUND: "DEPARTMENT_NOT_FOUND.",
+        }
+    ),
+)
 def get_department(
     department_id: int,
     db: Session = Depends(get_db),
@@ -72,7 +100,18 @@ def get_department(
     return DepartmentResponse.model_validate(department)
 
 
-@router.patch("/{department_id}", response_model=DepartmentResponse)
+@router.patch(
+    "/{department_id}",
+    response_model=DepartmentResponse,
+    summary="Update a department",
+    responses=error_responses(
+        {
+            status.HTTP_403_FORBIDDEN: "Admin only.",
+            status.HTTP_404_NOT_FOUND: "DEPARTMENT_NOT_FOUND.",
+            status.HTTP_409_CONFLICT: "DEPARTMENT_NAME_TAKEN within this clinic.",
+        }
+    ),
+)
 def update_department(
     department_id: int,
     data: DepartmentUpdate,

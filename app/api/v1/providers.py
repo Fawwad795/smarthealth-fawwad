@@ -13,6 +13,7 @@ from app.schemas.provider import (
     ProviderResponse,
     ProviderUpdate,
 )
+from app.schemas.errors import error_responses
 from app.services import provider as provider_service
 
 router = APIRouter(prefix="/providers", tags=["providers"])
@@ -20,7 +21,19 @@ router = APIRouter(prefix="/providers", tags=["providers"])
 _STAFF_ROLES = (UserRole.ADMIN, UserRole.FRONT_DESK, UserRole.PROVIDER)
 
 
-@router.post("", response_model=ProviderResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=ProviderResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a provider profile",
+    responses=error_responses(
+        {
+            status.HTTP_403_FORBIDDEN: "Admin only.",
+            status.HTTP_404_NOT_FOUND: "USER_NOT_FOUND, or DEPARTMENT_OR_SPECIALTY_NOT_FOUND.",
+            status.HTTP_409_CONFLICT: "USER_NOT_A_PROVIDER, or PROVIDER_PROFILE_EXISTS for that user.",
+        }
+    ),
+)
 def create_provider(
     data: ProviderCreate,
     db: Session = Depends(get_db),
@@ -35,7 +48,12 @@ def create_provider(
     return ProviderResponse.model_validate(provider)
 
 
-@router.get("", response_model=ProviderListResponse)
+@router.get(
+    "",
+    response_model=ProviderListResponse,
+    summary="List providers",
+    responses=error_responses({status.HTTP_403_FORBIDDEN: "Staff only."}),
+)
 def list_providers(
     pagination: PaginationParams = Depends(pagination_params),
     db: Session = Depends(get_db),
@@ -51,7 +69,17 @@ def list_providers(
     )
 
 
-@router.get("/{provider_id}", response_model=ProviderResponse)
+@router.get(
+    "/{provider_id}",
+    response_model=ProviderResponse,
+    summary="Read one provider",
+    responses=error_responses(
+        {
+            status.HTTP_403_FORBIDDEN: "Staff only.",
+            status.HTTP_404_NOT_FOUND: "PROVIDER_NOT_FOUND.",
+        }
+    ),
+)
 def get_provider(
     provider_id: int,
     db: Session = Depends(get_db),
@@ -66,7 +94,17 @@ def get_provider(
     return ProviderResponse.model_validate(provider)
 
 
-@router.patch("/{provider_id}", response_model=ProviderResponse)
+@router.patch(
+    "/{provider_id}",
+    response_model=ProviderResponse,
+    summary="Update a provider profile",
+    responses=error_responses(
+        {
+            status.HTTP_403_FORBIDDEN: "Admin only.",
+            status.HTTP_404_NOT_FOUND: "PROVIDER_NOT_FOUND, or DEPARTMENT_OR_SPECIALTY_NOT_FOUND.",
+        }
+    ),
+)
 def update_provider(
     provider_id: int,
     data: ProviderUpdate,

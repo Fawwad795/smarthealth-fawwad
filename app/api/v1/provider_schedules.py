@@ -21,6 +21,7 @@ from app.schemas.provider_schedule import (
     ProviderScheduleResponse,
     ProviderScheduleUpdate,
 )
+from app.schemas.errors import error_responses
 from app.services import provider_schedule as provider_schedule_service
 
 router = APIRouter(
@@ -31,7 +32,18 @@ _STAFF_ROLES = (UserRole.ADMIN, UserRole.FRONT_DESK, UserRole.PROVIDER)
 
 
 @router.post(
-    "", response_model=ProviderScheduleResponse, status_code=status.HTTP_201_CREATED
+    "",
+    response_model=ProviderScheduleResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a weekly schedule template",
+    responses=error_responses(
+        {
+            status.HTTP_403_FORBIDDEN: "Admin only.",
+            status.HTTP_404_NOT_FOUND: "PROVIDER_NOT_FOUND.",
+            status.HTTP_409_CONFLICT: "DUPLICATE_SCHEDULE_WINDOW, or OVERLAPPING_SCHEDULE_WINDOWS on the same weekday.",
+            status.HTTP_422_UNPROCESSABLE_ENTITY: "INVALID_SCHEDULE_WINDOW -- end_time is not after start_time.",
+        }
+    ),
 )
 def create_provider_schedule(
     provider_id: int,
@@ -49,7 +61,17 @@ def create_provider_schedule(
     return ProviderScheduleResponse.model_validate(schedule)
 
 
-@router.get("", response_model=ProviderScheduleListResponse)
+@router.get(
+    "",
+    response_model=ProviderScheduleListResponse,
+    summary="List a provider's schedule templates",
+    responses=error_responses(
+        {
+            status.HTTP_403_FORBIDDEN: "Staff only.",
+            status.HTTP_404_NOT_FOUND: "PROVIDER_NOT_FOUND.",
+        }
+    ),
+)
 def list_provider_schedules(
     provider_id: int,
     pagination: PaginationParams = Depends(pagination_params),
@@ -72,7 +94,17 @@ def list_provider_schedules(
     )
 
 
-@router.get("/{schedule_id}", response_model=ProviderScheduleResponse)
+@router.get(
+    "/{schedule_id}",
+    response_model=ProviderScheduleResponse,
+    summary="Read one schedule template",
+    responses=error_responses(
+        {
+            status.HTTP_403_FORBIDDEN: "Staff only.",
+            status.HTTP_404_NOT_FOUND: "SCHEDULE_NOT_FOUND -- including a schedule that exists but belongs to another provider.",
+        }
+    ),
+)
 def get_provider_schedule(
     provider_id: int,
     schedule_id: int,
@@ -90,7 +122,19 @@ def get_provider_schedule(
     return ProviderScheduleResponse.model_validate(schedule)
 
 
-@router.patch("/{schedule_id}", response_model=ProviderScheduleResponse)
+@router.patch(
+    "/{schedule_id}",
+    response_model=ProviderScheduleResponse,
+    summary="Update a schedule template",
+    responses=error_responses(
+        {
+            status.HTTP_403_FORBIDDEN: "Admin only.",
+            status.HTTP_404_NOT_FOUND: "SCHEDULE_NOT_FOUND, including one belonging to another provider.",
+            status.HTTP_409_CONFLICT: "DUPLICATE_SCHEDULE_WINDOW or OVERLAPPING_SCHEDULE_WINDOWS.",
+            status.HTTP_422_UNPROCESSABLE_ENTITY: "INVALID_SCHEDULE_WINDOW.",
+        }
+    ),
+)
 def update_provider_schedule(
     provider_id: int,
     schedule_id: int,
@@ -110,7 +154,17 @@ def update_provider_schedule(
     return ProviderScheduleResponse.model_validate(schedule)
 
 
-@router.post("/generate-slots", response_model=GenerateSlotsResponse)
+@router.post(
+    "/generate-slots",
+    response_model=GenerateSlotsResponse,
+    summary="Generate bookable slots from the templates (idempotent)",
+    responses=error_responses(
+        {
+            status.HTTP_403_FORBIDDEN: "Admin only.",
+            status.HTTP_404_NOT_FOUND: "PROVIDER_NOT_FOUND.",
+        }
+    ),
+)
 def generate_slots(
     provider_id: int,
     data: GenerateSlotsRequest,

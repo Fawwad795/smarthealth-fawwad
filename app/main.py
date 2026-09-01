@@ -22,8 +22,38 @@ def create_app() -> FastAPI:
     inside tests."""
     app = FastAPI(
         title="SmartHealth API",
-        description="Healthcare operations and patient engagement platform.",
+        description=(
+            "Healthcare operations and patient engagement platform. "
+            "Operations only -- no diagnoses, prescriptions or medical "
+            "records.\n\n"
+            "Every failure returns the same envelope: "
+            '`{"error": {"code": ..., "message": ...}}`.'
+        ),
         version="0.1.0",
+        openapi_tags=[
+            {
+                "name": "auth",
+                "description": "Registration, login, and the current user.",
+            },
+            {
+                "name": "departments",
+                "description": "Clinic departments. Admin writes, staff read.",
+            },
+            {
+                "name": "services",
+                "description": (
+                    "The service catalogue. Everything is created DRAFT; "
+                    "/services/search is the one public route."
+                ),
+            },
+            {"name": "providers", "description": "Clinician profiles."},
+            {
+                "name": "provider-schedules",
+                "description": (
+                    "Weekly templates, and generating bookable slots from them."
+                ),
+            },
+        ],
     )
 
     register_exception_handlers(app)

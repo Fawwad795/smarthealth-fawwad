@@ -25,6 +25,7 @@ from app.schemas.service_search import (
     ServiceSearchParams,
     service_search_params,
 )
+from app.schemas.errors import error_responses
 from app.services import service_search as service_search_service
 from app.services import service as service_service
 
@@ -33,7 +34,19 @@ router = APIRouter(prefix="/services", tags=["services"])
 _STAFF_ROLES = (UserRole.ADMIN, UserRole.FRONT_DESK, UserRole.PROVIDER)
 
 
-@router.post("", response_model=ServiceResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=ServiceResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a service (always DRAFT)",
+    responses=error_responses(
+        {
+            status.HTTP_403_FORBIDDEN: "Admin only.",
+            status.HTTP_404_NOT_FOUND: "DEPARTMENT_NOT_FOUND.",
+            status.HTTP_409_CONFLICT: "SERVICE_NAME_TAKEN within this department.",
+        }
+    ),
+)
 def create_service(
     data: ServiceCreate,
     db: Session = Depends(get_db),
@@ -48,7 +61,12 @@ def create_service(
     return ServiceResponse.model_validate(service)
 
 
-@router.get("", response_model=ServiceListResponse)
+@router.get(
+    "",
+    response_model=ServiceListResponse,
+    summary="List services in any status",
+    responses=error_responses({status.HTTP_403_FORBIDDEN: "Staff only."}),
+)
 def list_services(
     pagination: PaginationParams = Depends(pagination_params),
     db: Session = Depends(get_db),
@@ -68,7 +86,11 @@ def list_services(
     )
 
 
-@router.get("/search", response_model=PublicServiceListResponse)
+@router.get(
+    "/search",
+    response_model=PublicServiceListResponse,
+    summary="Browse the published catalogue (public)",
+)
 def search_services(
     search: ServiceSearchParams = Depends(service_search_params),
     pagination: PaginationParams = Depends(pagination_params),
@@ -94,7 +116,17 @@ def search_services(
     )
 
 
-@router.get("/{service_id}", response_model=ServiceResponse)
+@router.get(
+    "/{service_id}",
+    response_model=ServiceResponse,
+    summary="Read one service",
+    responses=error_responses(
+        {
+            status.HTTP_403_FORBIDDEN: "Staff only -- a DRAFT service is internal.",
+            status.HTTP_404_NOT_FOUND: "SERVICE_NOT_FOUND.",
+        }
+    ),
+)
 def get_service(
     service_id: int,
     db: Session = Depends(get_db),
@@ -109,7 +141,18 @@ def get_service(
     return ServiceResponse.model_validate(service)
 
 
-@router.patch("/{service_id}", response_model=ServiceResponse)
+@router.patch(
+    "/{service_id}",
+    response_model=ServiceResponse,
+    summary="Update a service (never its status)",
+    responses=error_responses(
+        {
+            status.HTTP_403_FORBIDDEN: "Admin only.",
+            status.HTTP_404_NOT_FOUND: "SERVICE_NOT_FOUND.",
+            status.HTTP_409_CONFLICT: "SERVICE_NAME_TAKEN within this department.",
+        }
+    ),
+)
 def update_service(
     service_id: int,
     data: ServiceUpdate,
