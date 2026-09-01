@@ -91,3 +91,26 @@ def get_appointment_state(
     ensure_patient_self_or_staff(current_user, appointment.patient)
     workflow_id = appointment_scheduling.scheduling_workflow_id(appointment.id)
     return _response(appointment, workflow_id)
+
+
+@router.post("/{appointment_id}/cancel", response_model=AppointmentResponse)
+def cancel_appointment(
+    appointment_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(
+        require_role(UserRole.PATIENT, UserRole.FRONT_DESK, UserRole.ADMIN)
+    ),
+) -> AppointmentResponse:
+    """Cancel an appointment: release its slot if one was held, and
+    promote the next waitlist entry.
+
+    A patient may only cancel their own; staff may cancel any. 404 if it
+    doesn't exist, 409 if it's already REJECTED/CANCELLED/COMPLETED.
+    """
+    appointment = appointment_scheduling.get_appointment(db, appointment_id)
+    ensure_patient_self_or_staff(current_user, appointment.patient)
+    appointment = appointment_scheduling.cancel_appointment(
+        db, appointment_id, current_user.role.value
+    )
+    workflow_id = appointment_scheduling.scheduling_workflow_id(appointment.id)
+    return _response(appointment, workflow_id)
