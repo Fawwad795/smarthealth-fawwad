@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from app.models.service import Service
     from app.models.slot import Slot
     from app.models.slot_reservation import SlotReservation
+    from app.models.visit import Visit
 
 
 class Appointment(Base, TimestampMixin):
@@ -80,3 +81,4 @@ class Appointment(Base, TimestampMixin):
     slot_reservations: Mapped[list["SlotReservation"]] = relationship(
         back_populates="appointment"
     )
+    visit: Mapped["Visit | None"] = relationship(back_populates="appointment")

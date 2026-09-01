@@ -151,6 +151,25 @@ class WaitlistStatus(StrEnum):
     OFFERED = "OFFERED"  # a slot opened and this entry was the next in line
 
 
+class VisitStatus(StrEnum):
+    """How far along a patient's actual, in-person visit is.
+
+    Three members, and deliberately no "not started": a visits row is
+    created at check-in and never before, so the absence of the row is
+    what "hasn't arrived yet" means. Adding a fourth state for it would
+    need a row to exist with nothing to record in it.
+
+    CHECKED_IN -> IN_PROGRESS -> COMPLETED, strictly forward. This is not
+    a Temporal workflow: each move is a separate human action taken at
+    its own pace, so there is nothing to resume between them -- see
+    docs/design.md.
+    """
+
+    CHECKED_IN = "CHECKED_IN"  # arrived, waiting
+    IN_PROGRESS = "IN_PROGRESS"  # with the provider now
+    COMPLETED = "COMPLETED"  # done; the appointment completes with it
+
+
 def enum_column(enum_cls: type[StrEnum], name: str) -> SAEnum:
     """Build the column type for an enum: VARCHAR + CHECK, never a native type.
 
