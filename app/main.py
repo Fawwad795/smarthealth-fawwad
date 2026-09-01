@@ -55,6 +55,27 @@ def create_app() -> FastAPI:
                     "Weekly templates, and generating bookable slots from them."
                 ),
             },
+            {
+                "name": "appointments",
+                "description": (
+                    "Booking via the scheduling saga, plus cancel and "
+                    "reschedule. Booking is idempotent on Idempotency-Key."
+                ),
+            },
+            {
+                "name": "waitlist",
+                "description": (
+                    "Queues for a provider's time. An entry is offered when a "
+                    "slot is released."
+                ),
+            },
+            {
+                "name": "visits",
+                "description": (
+                    "CHECKED_IN to COMPLETED on the day. Every transition is "
+                    "idempotent."
+                ),
+            },
         ],
     )
 

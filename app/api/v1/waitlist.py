@@ -11,6 +11,7 @@ from app.core.dependencies import require_role
 from app.db.session import get_db
 from app.models import User
 from app.models.enums import UserRole
+from app.schemas.errors import error_responses
 from app.schemas.waitlist import WaitlistJoin, WaitlistResponse
 from app.services import patient as patient_service
 from app.services import waitlist as waitlist_service
@@ -18,7 +19,20 @@ from app.services import waitlist as waitlist_service
 router = APIRouter(prefix="/waitlist", tags=["waitlist"])
 
 
-@router.post("", response_model=WaitlistResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=WaitlistResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Join a provider's waitlist",
+    responses=error_responses(
+        {
+            status.HTTP_400_BAD_REQUEST: "Staff joining on a patient's behalf omitted patient_id.",
+            status.HTTP_403_FORBIDDEN: "This role may not join a waitlist.",
+            status.HTTP_404_NOT_FOUND: "No such provider or patient.",
+            status.HTTP_409_CONFLICT: "This patient is already waiting for this provider.",
+        }
+    ),
+)
 def join_waitlist(
     data: WaitlistJoin,
     db: Session = Depends(get_db),

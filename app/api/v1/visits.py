@@ -9,7 +9,7 @@ provider starts and completes. A patient can read their own visit but
 never advance it.
 """
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import (
@@ -20,6 +20,7 @@ from app.core.dependencies import (
 from app.db.session import get_db
 from app.models import User
 from app.models.enums import UserRole
+from app.schemas.errors import error_responses
 from app.schemas.visit import VisitResponse
 from app.services import appointment_scheduling, visit as visit_service
 
@@ -28,7 +29,17 @@ router = APIRouter(prefix="/appointments/{appointment_id}/visit", tags=["visits"
 _VISIT_STAFF_ROLES = (UserRole.FRONT_DESK, UserRole.PROVIDER, UserRole.ADMIN)
 
 
-@router.get("", response_model=VisitResponse)
+@router.get(
+    "",
+    response_model=VisitResponse,
+    summary="Read the visit's current state",
+    responses=error_responses(
+        {
+            status.HTTP_403_FORBIDDEN: "A patient may only read their own visit.",
+            status.HTTP_404_NOT_FOUND: "No such appointment, or nobody has been checked in yet.",
+        }
+    ),
+)
 def get_visit(
     appointment_id: int,
     db: Session = Depends(get_db),
@@ -45,7 +56,18 @@ def get_visit(
     return VisitResponse.model_validate(visit)
 
 
-@router.post("/check-in", response_model=VisitResponse)
+@router.post(
+    "/check-in",
+    response_model=VisitResponse,
+    summary="Check a patient in (idempotent)",
+    responses=error_responses(
+        {
+            status.HTTP_403_FORBIDDEN: "Staff only.",
+            status.HTTP_404_NOT_FOUND: "No appointment with that id.",
+            status.HTTP_409_CONFLICT: "The appointment is not CONFIRMED.",
+        }
+    ),
+)
 def check_in(
     appointment_id: int,
     db: Session = Depends(get_db),
@@ -61,7 +83,18 @@ def check_in(
     return VisitResponse.model_validate(visit)
 
 
-@router.post("/start", response_model=VisitResponse)
+@router.post(
+    "/start",
+    response_model=VisitResponse,
+    summary="Start the visit (idempotent)",
+    responses=error_responses(
+        {
+            status.HTTP_403_FORBIDDEN: "Staff only.",
+            status.HTTP_404_NOT_FOUND: "Nobody has been checked in for this appointment.",
+            status.HTTP_409_CONFLICT: "The visit is already COMPLETED; a visit never moves backward.",
+        }
+    ),
+)
 def start_visit(
     appointment_id: int,
     db: Session = Depends(get_db),
@@ -76,7 +109,18 @@ def start_visit(
     return VisitResponse.model_validate(visit)
 
 
-@router.post("/complete", response_model=VisitResponse)
+@router.post(
+    "/complete",
+    response_model=VisitResponse,
+    summary="Complete the visit and the appointment (idempotent)",
+    responses=error_responses(
+        {
+            status.HTTP_403_FORBIDDEN: "Staff only.",
+            status.HTTP_404_NOT_FOUND: "Nobody has been checked in for this appointment.",
+            status.HTTP_409_CONFLICT: "The visit was never started.",
+        }
+    ),
+)
 def complete_visit(
     appointment_id: int,
     db: Session = Depends(get_db),

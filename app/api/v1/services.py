@@ -175,6 +175,14 @@ def update_service(
     "/{service_id}/publish",
     response_model=ServicePublishStatusResponse,
     status_code=status.HTTP_202_ACCEPTED,
+    summary="Start the publish workflow",
+    responses=error_responses(
+        {
+            status.HTTP_403_FORBIDDEN: "Admin only.",
+            status.HTTP_404_NOT_FOUND: "SERVICE_NOT_FOUND.",
+            status.HTTP_409_CONFLICT: "SERVICE_NOT_PUBLISHABLE -- not DRAFT or PUBLISH_FAILED.",
+        }
+    ),
 )
 async def publish_service(
     service_id: int,
@@ -196,7 +204,17 @@ async def publish_service(
     )
 
 
-@router.get("/{service_id}/publish-status", response_model=ServicePublishStatusResponse)
+@router.get(
+    "/{service_id}/publish-status",
+    response_model=ServicePublishStatusResponse,
+    summary="Read where the publish lifecycle stands",
+    responses=error_responses(
+        {
+            status.HTTP_403_FORBIDDEN: "Staff only.",
+            status.HTTP_404_NOT_FOUND: "SERVICE_NOT_FOUND.",
+        }
+    ),
+)
 def get_publish_status(
     service_id: int,
     db: Session = Depends(get_db),

@@ -21,6 +21,7 @@ from app.schemas.appointment import (
     AppointmentReschedule,
     AppointmentResponse,
 )
+from app.schemas.errors import error_responses
 from app.services import appointment_scheduling
 from app.services import patient as patient_service
 
@@ -47,11 +48,31 @@ def _response(appointment: Appointment, workflow_id: str) -> AppointmentResponse
 
 
 @router.post(
-    "", response_model=AppointmentResponse, status_code=status.HTTP_202_ACCEPTED
+    "",
+    response_model=AppointmentResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Request an appointment",
+    responses=error_responses(
+        {
+            status.HTTP_400_BAD_REQUEST: "Staff booking on a patient's behalf omitted patient_id.",
+            status.HTTP_403_FORBIDDEN: "This role may not book appointments.",
+            status.HTTP_404_NOT_FOUND: "No such provider, slot, service or patient.",
+            status.HTTP_422_UNPROCESSABLE_ENTITY: "Idempotency-Key header missing, or the body failed validation.",
+        }
+    ),
 )
 async def create_appointment(
     data: AppointmentCreate,
-    idempotency_key: str = Header(..., alias="Idempotency-Key"),
+    idempotency_key: str = Header(
+        ...,
+        alias="Idempotency-Key",
+        description=(
+            "Client-generated key identifying this booking *attempt*, not "
+            "this HTTP call. Retrying with the same key returns the original "
+            "appointment instead of creating a second one."
+        ),
+        examples=["3f0c1b8e-6f1a-4f1e-9a2b-7c1d5e9f0a11"],
+    ),
     db: Session = Depends(get_db),
     redis_client: Redis = Depends(get_redis),
     current_user: User = Depends(
@@ -76,7 +97,17 @@ async def create_appointment(
     return _response(appointment, workflow_id)
 
 
-@router.get("/{appointment_id}", response_model=AppointmentResponse)
+@router.get(
+    "/{appointment_id}",
+    response_model=AppointmentResponse,
+    summary="Read an appointment's current state",
+    responses=error_responses(
+        {
+            status.HTTP_403_FORBIDDEN: "A patient may only read their own appointments.",
+            status.HTTP_404_NOT_FOUND: "No appointment with that id.",
+        }
+    ),
+)
 def get_appointment_state(
     appointment_id: int,
     db: Session = Depends(get_db),
@@ -97,7 +128,18 @@ def get_appointment_state(
     return _response(appointment, workflow_id)
 
 
-@router.post("/{appointment_id}/cancel", response_model=AppointmentResponse)
+@router.post(
+    "/{appointment_id}/cancel",
+    response_model=AppointmentResponse,
+    summary="Cancel an appointment",
+    responses=error_responses(
+        {
+            status.HTTP_403_FORBIDDEN: "A patient may only cancel their own appointments.",
+            status.HTTP_404_NOT_FOUND: "No appointment with that id.",
+            status.HTTP_409_CONFLICT: "Already REJECTED, CANCELLED or COMPLETED.",
+        }
+    ),
+)
 def cancel_appointment(
     appointment_id: int,
     db: Session = Depends(get_db),
@@ -120,7 +162,18 @@ def cancel_appointment(
     return _response(appointment, workflow_id)
 
 
-@router.post("/{appointment_id}/reschedule", response_model=AppointmentResponse)
+@router.post(
+    "/{appointment_id}/reschedule",
+    response_model=AppointmentResponse,
+    summary="Move an appointment to a different slot",
+    responses=error_responses(
+        {
+            status.HTTP_403_FORBIDDEN: "A patient may only reschedule their own appointments.",
+            status.HTTP_404_NOT_FOUND: "No such appointment, or no such slot.",
+            status.HTTP_409_CONFLICT: "Not SLOT_RESERVED/CONFIRMED, the slot belongs to another provider, or it is no longer AVAILABLE.",
+        }
+    ),
+)
 def reschedule_appointment(
     appointment_id: int,
     data: AppointmentReschedule,
