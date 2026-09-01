@@ -270,3 +270,106 @@ def test_get_appointment_state_not_found_returns_404(
 
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "APPOINTMENT_NOT_FOUND"
+
+
+def test_create_appointment_falls_back_to_the_database_when_redis_loses_the_key(
+    client: TestClient,
+    db_session: Session,
+    test_redis_client,
+    patient: Patient,
+    patient_auth_headers: dict,
+    provider: Provider,
+    slot: Slot,
+    service: Service,
+    fake_temporal_client: _FakeTemporalClient,
+) -> None:
+    """Redis is the fast path; the unique constraint is the guarantee.
+
+    Evicting the key between the two requests is exactly what the DB
+    backstop exists for -- the repeat must still return the original
+    appointment rather than starting a second saga.
+    """
+    headers = {**patient_auth_headers, "Idempotency-Key": "key-redis-evicted"}
+    payload = _booking_payload(provider, slot, service)
+
+    first = client.post("/api/v1/appointments", json=payload, headers=headers)
+    test_redis_client.delete("idempotency:appointment:key-redis-evicted")
+    second = client.post("/api/v1/appointments", json=payload, headers=headers)
+
+    assert second.status_code == 202
+    assert second.json()["id"] == first.json()["id"]
+    assert len(fake_temporal_client.started_with) == 1
+    assert (
+        db_session.query(Appointment)
+        .filter(Appointment.idempotency_key == "key-redis-evicted")
+        .count()
+        == 1
+    )
+
+
+def test_create_appointment_unknown_slot_returns_404(
+    client: TestClient,
+    patient: Patient,
+    patient_auth_headers: dict,
+    provider: Provider,
+    service: Service,
+    fake_temporal_client: _FakeTemporalClient,
+) -> None:
+    payload = {
+        "provider_id": provider.id,
+        "slot_id": 999999,
+        "service_id": service.id,
+    }
+
+    response = client.post(
+        "/api/v1/appointments",
+        json=payload,
+        headers={**patient_auth_headers, "Idempotency-Key": "key-no-slot"},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "SLOT_NOT_FOUND"
+    assert fake_temporal_client.started_with == []
+
+
+def test_create_appointment_unknown_service_returns_404(
+    client: TestClient,
+    patient: Patient,
+    patient_auth_headers: dict,
+    provider: Provider,
+    slot: Slot,
+    fake_temporal_client: _FakeTemporalClient,
+) -> None:
+    payload = {"provider_id": provider.id, "slot_id": slot.id, "service_id": 999999}
+
+    response = client.post(
+        "/api/v1/appointments",
+        json=payload,
+        headers={**patient_auth_headers, "Idempotency-Key": "key-no-service"},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "SERVICE_NOT_FOUND"
+    assert fake_temporal_client.started_with == []
+
+
+def test_create_appointment_front_desk_unknown_patient_returns_404(
+    client: TestClient,
+    front_desk_auth_headers: dict,
+    provider: Provider,
+    slot: Slot,
+    service: Service,
+    fake_temporal_client: _FakeTemporalClient,
+) -> None:
+    payload = _booking_payload(provider, slot, service)
+    payload["patient_id"] = 999999
+
+    response = client.post(
+        "/api/v1/appointments",
+        json=payload,
+        headers={**front_desk_auth_headers, "Idempotency-Key": "key-no-patient"},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "PATIENT_NOT_FOUND"
+    assert fake_temporal_client.started_with == []

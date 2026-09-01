@@ -124,3 +124,20 @@ def test_mark_published_sets_status_and_timestamp(
     db_session.refresh(service)
     assert service.status == ServiceStatus.PUBLISHED
     assert service.published_at is not None
+
+
+def test_mark_publish_failed_sets_the_failed_status(
+    activities: PublishActivities, db_session: Session, department: Department
+) -> None:
+    """The Workflow's clean-failure path after validate_service raises a
+    non-retryable rejection -- reached only on that branch, so nothing
+    else in the suite touches it.
+    """
+    service = _service(db_session, department, description=None)
+    service.status = ServiceStatus.PUBLISHING
+    db_session.flush()
+
+    activities.mark_publish_failed(service.id)
+
+    db_session.refresh(service)
+    assert service.status == ServiceStatus.PUBLISH_FAILED
