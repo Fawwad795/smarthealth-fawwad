@@ -21,10 +21,12 @@ from app.models import (
     Provider,
     Service,
     Slot,
+    SlotReservation,
 )
-from app.models.enums import AppointmentStatus
+from app.models.enums import AppointmentStatus, SlotReservationStatus, SlotStatus
 from app.schemas.appointment import AppointmentCreate
 from app.services.idempotency import get_cached_result, store_result
+from app.services.waitlist import promote_next_waiting
 from app.temporal.client import get_temporal_client
 from app.temporal.workflows import AppointmentSchedulingWorkflow
 
@@ -147,3 +149,70 @@ async def request_appointment(
     )
 
     return appointment, workflow_id
+
+
+_CANCELLABLE_FROM = {
+    AppointmentStatus.REQUESTED,
+    AppointmentStatus.SLOT_RESERVED,
+    AppointmentStatus.CONFIRMED,
+}
+
+
+def ensure_can_cancel(appointment: Appointment) -> None:
+    """Raise 409 unless `appointment.status` allows cancelling.
+
+    Mirrors ensure_can_publish/ensure_can_unpublish in service_publish.py:
+    a standalone guard, checked once before the action starts, so every
+    illegal entry action in this project fails the same way.
+    """
+    if appointment.status not in _CANCELLABLE_FROM:
+        raise AppError(
+            status_code=status.HTTP_409_CONFLICT,
+            code="APPOINTMENT_NOT_CANCELLABLE",
+            message=f"Cannot cancel an appointment with status {appointment.status}.",
+        )
+
+
+def cancel_appointment(db: Session, appointment_id: int, actor: str) -> Appointment:
+    """Cancel an appointment: release its slot if one was held, transition
+    to CANCELLED, and promote the next waitlist entry.
+
+    A REQUESTED appointment never held a slot, so nothing is released and
+    nobody is promoted; SLOT_RESERVED and CONFIRMED both did.
+
+    actor is PATIENT/FRONT_DESK/ADMIN, never SAGA_COMPENSATION -- that
+    label is reserved for the saga's own rollback after a billing
+    failure. Same slot-release outcome, different reason recorded.
+    """
+    appointment = db.get(Appointment, appointment_id)
+    ensure_can_cancel(appointment)
+
+    if appointment.status in (
+        AppointmentStatus.SLOT_RESERVED,
+        AppointmentStatus.CONFIRMED,
+    ):
+        slot = db.get(Slot, appointment.slot_id)
+        slot.status = SlotStatus.AVAILABLE
+
+        reservation = db.execute(
+            select(SlotReservation).where(
+                SlotReservation.appointment_id == appointment.id,
+                SlotReservation.slot_id == appointment.slot_id,
+            )
+        ).scalar_one()
+        reservation.status = SlotReservationStatus.RELEASED
+
+        promote_next_waiting(db, appointment.provider_id)
+
+    db.add(
+        AppointmentStatusHistory(
+            appointment_id=appointment.id,
+            from_status=appointment.status,
+            to_status=AppointmentStatus.CANCELLED,
+            actor=actor,
+        )
+    )
+    appointment.status = AppointmentStatus.CANCELLED
+    db.commit()
+    db.refresh(appointment)
+    return appointment
