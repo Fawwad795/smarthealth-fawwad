@@ -26,6 +26,16 @@ class AppointmentCreate(BaseModel):
     patient_id: int | None = None
 
 
+class AppointmentReschedule(BaseModel):
+    """A request to move an appointment to a different slot.
+
+    Same provider only -- moving to a different provider is a new
+    booking, not a reschedule.
+    """
+
+    new_slot_id: int
+
+
 class AppointmentResponse(BaseModel):
     """One appointment's current state, including the saga's workflow id
     so a caller can look it up directly in the Temporal UI if needed.

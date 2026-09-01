@@ -26,6 +26,7 @@ from app.models import (
 from app.models.enums import AppointmentStatus, SlotReservationStatus, SlotStatus
 from app.schemas.appointment import AppointmentCreate
 from app.services.idempotency import get_cached_result, store_result
+from app.services.slot import reserve_slot_uncommitted
 from app.services.waitlist import promote_next_waiting
 from app.temporal.client import get_temporal_client
 from app.temporal.workflows import AppointmentSchedulingWorkflow
@@ -213,6 +214,99 @@ def cancel_appointment(db: Session, appointment_id: int, actor: str) -> Appointm
         )
     )
     appointment.status = AppointmentStatus.CANCELLED
+    db.commit()
+    db.refresh(appointment)
+    return appointment
+
+
+_RESCHEDULABLE_FROM = {AppointmentStatus.SLOT_RESERVED, AppointmentStatus.CONFIRMED}
+
+
+def ensure_can_reschedule(appointment: Appointment) -> None:
+    """Raise 409 unless `appointment.status` allows rescheduling.
+
+    Narrower than ensure_can_cancel: REQUESTED never held a slot, so
+    there is nothing to reschedule *from* -- the saga hasn't reserved
+    anything yet, and the right move for a REQUESTED booking someone
+    wants to change is to cancel it and submit a fresh request.
+    """
+    if appointment.status not in _RESCHEDULABLE_FROM:
+        raise AppError(
+            status_code=status.HTTP_409_CONFLICT,
+            code="APPOINTMENT_NOT_RESCHEDULABLE",
+            message=f"Cannot reschedule an appointment with status {appointment.status}.",
+        )
+
+
+def reschedule_appointment(
+    db: Session, appointment_id: int, new_slot_id: int
+) -> Appointment:
+    """Move an appointment to a different slot with the same provider.
+
+    Releasing the old slot and reserving the new one happen in one
+    transaction: reserve_slot_uncommitted is called, not reserve_slot, so
+    if the new slot can't be won, nothing commits at all -- not the old
+    slot's release, not the waitlist promotion. The appointment is left
+    holding its original slot, never neither and never both.
+
+    appointment.status is left exactly as it was. A time change is not a
+    billing event or a saga re-run: CONFIRMED stays CONFIRMED,
+    SLOT_RESERVED stays SLOT_RESERVED, just pointing at a new slot. A
+    CONFIRMED appointment's new slot is set straight to BOOKED (not
+    RESERVED) and its reservation to COMMITTED, matching what confirm()
+    already means for those columns.
+    """
+    appointment = db.get(Appointment, appointment_id)
+    ensure_can_reschedule(appointment)
+
+    new_slot = db.get(Slot, new_slot_id)
+    if new_slot is None:
+        raise AppError(
+            status_code=status.HTTP_404_NOT_FOUND,
+            code="SLOT_NOT_FOUND",
+            message="No slot with that id.",
+        )
+    if new_slot.provider_id != appointment.provider_id:
+        raise AppError(
+            status_code=status.HTTP_409_CONFLICT,
+            code="SLOT_WRONG_PROVIDER",
+            message="The new slot does not belong to this appointment's provider.",
+        )
+
+    old_slot = db.get(Slot, appointment.slot_id)
+    old_slot.status = SlotStatus.AVAILABLE
+    old_reservation = db.execute(
+        select(SlotReservation).where(
+            SlotReservation.appointment_id == appointment.id,
+            SlotReservation.slot_id == appointment.slot_id,
+        )
+    ).scalar_one()
+    old_reservation.status = SlotReservationStatus.RELEASED
+    promote_next_waiting(db, appointment.provider_id)
+
+    won = reserve_slot_uncommitted(db, new_slot_id)
+    if not won:
+        raise AppError(
+            status_code=status.HTTP_409_CONFLICT,
+            code="SLOT_UNAVAILABLE",
+            message="The new slot is no longer available.",
+        )
+
+    if appointment.status == AppointmentStatus.CONFIRMED:
+        new_slot.status = SlotStatus.BOOKED
+        new_reservation_status = SlotReservationStatus.COMMITTED
+    else:
+        new_reservation_status = SlotReservationStatus.RESERVED
+
+    db.add(
+        SlotReservation(
+            appointment_id=appointment.id,
+            slot_id=new_slot_id,
+            status=new_reservation_status,
+        )
+    )
+    appointment.slot_id = new_slot_id
+
     db.commit()
     db.refresh(appointment)
     return appointment

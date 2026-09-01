@@ -16,7 +16,11 @@ from app.core.redis import get_redis
 from app.db.session import get_db
 from app.models import Appointment, User
 from app.models.enums import UserRole
-from app.schemas.appointment import AppointmentCreate, AppointmentResponse
+from app.schemas.appointment import (
+    AppointmentCreate,
+    AppointmentReschedule,
+    AppointmentResponse,
+)
 from app.services import appointment_scheduling
 from app.services import patient as patient_service
 
@@ -111,6 +115,34 @@ def cancel_appointment(
     ensure_patient_self_or_staff(current_user, appointment.patient)
     appointment = appointment_scheduling.cancel_appointment(
         db, appointment_id, current_user.role.value
+    )
+    workflow_id = appointment_scheduling.scheduling_workflow_id(appointment.id)
+    return _response(appointment, workflow_id)
+
+
+@router.post("/{appointment_id}/reschedule", response_model=AppointmentResponse)
+def reschedule_appointment(
+    appointment_id: int,
+    data: AppointmentReschedule,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(
+        require_role(UserRole.PATIENT, UserRole.FRONT_DESK, UserRole.ADMIN)
+    ),
+) -> AppointmentResponse:
+    """Move an appointment to a different slot with the same provider.
+
+    Releasing the old slot and reserving the new one happen atomically --
+    a failed reservation leaves the appointment holding its original
+    slot, never neither. A patient may only reschedule their own; staff
+    may reschedule any. Status is left unchanged; only the slot moves.
+    404 if the appointment or the new slot doesn't exist, 409 if the
+    appointment isn't SLOT_RESERVED/CONFIRMED, the new slot belongs to a
+    different provider, or the new slot isn't AVAILABLE.
+    """
+    appointment = appointment_scheduling.get_appointment(db, appointment_id)
+    ensure_patient_self_or_staff(current_user, appointment.patient)
+    appointment = appointment_scheduling.reschedule_appointment(
+        db, appointment_id, data.new_slot_id
     )
     workflow_id = appointment_scheduling.scheduling_workflow_id(appointment.id)
     return _response(appointment, workflow_id)
