@@ -135,7 +135,7 @@ Concepts you're learning: layered architecture, ORM modelling and relationships,
 | 1.7 | Provider / service / department CRUD, and provider schedules made of Slots with a status | 6h (Done) |
 | 1.8 | Public listing: paginate + filter by specialty/department/available-slots, search by service name | 3h (Done) |
 | 1.9 | Consistent error handling + one JSON error shape via exception handlers | 2h (Done) |
-| 1.10 | Seed script: providers with schedules, services, synthetic patients | 2h |
+| 1.10 | Seed script: providers with schedules, services, synthetic patients | 2h (Done) |
 | 1.11 | Tests: auth flow, role + patient-data enforcement, CRUD happy path + 2 failure cases | 4h (Done) |
 | 1.12 | README.md v1 + ERD diagram + docs/design.md started | 3h |
 
@@ -200,31 +200,29 @@ Concepts you're learning: durable workflows (Temporal), the saga pattern with co
 
 | # | Task | Est. |
 |---|---|---|
-| 2.1 | Service status enum; reject illegal publish/unpublish entry actions with 409 | 2h |
-| 2.2 | Temporal dev server + a Python worker wired up; a trivial workflow running end-to-end | 4h |
-| 2.3 | Service publishing as a Temporal Workflow with idempotent Activities (validate → structure → chunk → mark PUBLISHED) writing content_chunks | 6h |
-| 2.4 | POST /services/{id}/publish starts the workflow (202 + workflow id); GET publish-status queries it | 2h |
-| 2.5 | Concurrency-safe slot reservation (atomic conditional update, no double-booking). Document the choice. | 5h |
-| 2.6 | Appointment model, status enum, appointment_status_history, migration | 3h |
-| 2.7 | Booking idempotency: Idempotency-Key header, stored in Redis, returns the original appointment | 4h |
-| 2.8 | Simulated BillingChecker + billing table; idempotent pre-check | 4h |
-| 2.9 | Appointment scheduling as a Temporal saga (validate → reserve → billing → reminders → confirm) with compensation (release slot) on failure | 7h |
-| 2.10 | POST /appointments starts the saga (202 + id); GET state; cancel/reschedule (release slot, move waitlist) | 4h |
-| 2.11 | Visit lifecycle status flow (CHECKED_IN → IN_PROGRESS → COMPLETED); idempotent | 3h |
-| 2.12 | Tests: slot double-booking (parallel), duplicate booking, saga compensation releases the slot, illegal transitions, publish validation | 6h |
-| 2.13 | Docs: workflow + saga diagrams, concurrency write-up, decisions | 3h |
+| 2.1 | Service status enum; reject illegal publish/unpublish entry actions with 409 | 2h (Done) |
+| 2.2 | Temporal dev server + a Python worker wired up; a trivial workflow running end-to-end | 4h (Done) |
+| 2.3 | Service publishing as a Temporal Workflow with idempotent Activities (validate → structure → chunk → mark PUBLISHED) writing content_chunks | 6h (Done) |
+| 2.4 | POST /services/{id}/publish starts the workflow (202 + workflow id); GET publish-status queries it | 2h (Done) |
+| 2.5 | Concurrency-safe slot reservation (atomic conditional update, no double-booking). Document the choice. | 5h (Done) |
+| 2.6 | Appointment model, status enum, appointment_status_history, migration | 3h (Done) |
+| 2.7 | Booking idempotency: Idempotency-Key header, stored in Redis, returns the original appointment | 4h (Done) |
+| 2.8 | Simulated BillingChecker + billing table; idempotent pre-check | 4h (Done) |
+| 2.9 | Appointment scheduling as a Temporal saga (validate → reserve → billing → reminders → confirm) with compensation (release slot) on failure | 7h (Done) |
+| 2.10 | POST /appointments starts the saga (202 + id); GET state; cancel/reschedule (release slot, move waitlist) | 4h (Done) |
+| 2.11 | Visit lifecycle status flow (CHECKED_IN → IN_PROGRESS → COMPLETED); idempotent | 3h (Done) |
+| 2.12 | Tests: slot double-booking (parallel), duplicate booking, saga compensation releases the slot, illegal transitions, publish validation | 6h (Done) |
+| 2.13 | Docs: workflow + saga diagrams, concurrency write-up, decisions | 3h (Done) |
 
 ### 6.2 Guidance
 
 Slot reservation is the invariant everything else protects. Reserving a slot must be a single atomic conditional update:
 
-UPDATE slots SET status = 'RESERVED'
+UPDATE slots SET status = 'RESERVED'
 
 WHERE id = :slot_id AND status = 'AVAILABLE'
 
 RETURNING id;
-
-
 
 No row back means "already taken" — reject cleanly. Why not SELECT the slot, check it's free in Python, then UPDATE? Because two bookings can both read AVAILABLE, both decide it's free, and both book it. The check-then-act gap is the bug; the database must be the arbiter. Prove it: a test that fires ~50 concurrent bookings at one slot and asserts exactly one confirmed appointment, no double-booking.
 
@@ -649,7 +647,7 @@ Finishing "only" Part A properly, with real understanding, is a pass. Finishing 
 
 Use this, or something you can justify. The important thing is that layers are separated.
 
-smarthealth/
+smarthealth/
 
 ├── docker-compose.yml
 
@@ -734,8 +732,6 @@ Use this, or something you can justify. The important thing is that layers are s
 ├── unit/
 
 └── integration/
-
-
 
 ## 14. Appendix B — Suggested Data Model
 
