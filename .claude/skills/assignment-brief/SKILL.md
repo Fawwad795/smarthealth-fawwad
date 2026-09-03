@@ -20,20 +20,29 @@ whether something is MUST or SHOULD — the source of truth is here:
 
 `execution-guidelines.md` is ~840 lines. Reading it end to end costs more context
 than the summary it was distilled into, which defeats the point. Search for the
-section you need:
+section you need. **The chapter number is not the week number** — the brief
+front-loads three general chapters (what this assignment is, the 5-week
+structure, ground rules) before Week 1, so every week's chapter is four ahead
+of its week number:
+
+| Week | Chapter | Tasks | Guidance | Definition of Done | Common mistakes |
+|---|---|---|---|---|---|
+| 1 | 5 | `### 5.1 Tasks` | `### 5.2 Guidance` | `### 5.3 Definition of Done` | `### 5.4 Common mistakes this week` |
+| 2 | 6 | `### 6.1 Tasks` | `### 6.2 Guidance` | `### 6.3 Definition of Done` | `### 6.4 Common mistakes this week` |
+| 3 | 7 | `### 7.1 Tasks` | `### 7.2 Guidance` | `### 7.3 Definition of Done` | `### 7.4 Common mistakes this week` |
+| 4 | 8 | `### 8.1 Tasks` | `### 8.2 Guidance` | `### 8.3 Definition of Done` | `### 8.4 Common mistakes this week` |
+| 5 | 9 | `### 9.1 Tasks` | `### 9.2 Guidance` | `### 9.3 Definition of Done` | `### 9.4 Common mistakes this week` |
 
 ```
-Grep "5.1 Tasks" .claude/reference/execution-guidelines.md      -A 20
+Grep "### 7.1 Tasks" .claude/reference/execution-guidelines.md  -A 20   # e.g. Week 3
 Grep "Definition of Done" .claude/reference/execution-guidelines.md
 Grep -i "idempoten|outbox" .claude/reference/part-a.md
 ```
 
-Useful landmarks in `execution-guidelines.md`:
-
-- `## <n>. Week <n> —` — each week's chapter
-- `### <n>.1 Tasks` — the numbered task table with hour estimates
-- `### <n>.2 Guidance` · `### <n>.3 Definition of Done` · `### <n>.4 Common mistakes`
-- `Appendix A` — suggested project layout · `Appendix B` — suggested data model
+`Appendix A` — suggested project layout · `Appendix B` — suggested data model.
+If this table ever stops matching (a mentor revision could re-order chapters),
+re-derive it with `Grep "^## [0-9]" .claude/reference/execution-guidelines.md`
+rather than trusting it blindly.
 
 ## These are living documents
 

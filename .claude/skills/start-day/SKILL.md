@@ -32,11 +32,20 @@ the handoff is broken and the user should know before planning on top of it.
 
 ## 2. This week's actual task list
 
-Do not plan from memory or from the CLAUDE.md summary. Get the real table:
+Do not plan from memory or from the CLAUDE.md summary. Get the real table. **The
+brief's chapter number is not the week number** — it runs four ahead:
+
+| Week | Chapter | Tasks | Definition of Done |
+|---|---|---|---|
+| 1 | 5 | `### 5.1 Tasks` | `### 5.3 Definition of Done` |
+| 2 | 6 | `### 6.1 Tasks` | `### 6.3 Definition of Done` |
+| 3 | 7 | `### 7.1 Tasks` | `### 7.3 Definition of Done` |
+| 4 | 8 | `### 8.1 Tasks` | `### 8.3 Definition of Done` |
+| 5 | 9 | `### 9.1 Tasks` | `### 9.3 Definition of Done` |
 
 ```
-Grep "### <n>.1 Tasks" .claude/reference/execution-guidelines.md -A 25
-Grep "### <n>.3 Definition of Done" .claude/reference/execution-guidelines.md -A 15
+Grep "### 7.1 Tasks" .claude/reference/execution-guidelines.md -A 25          # e.g. Week 3
+Grep "### 7.3 Definition of Done" .claude/reference/execution-guidelines.md -A 15
 ```
 
 Task rows carry hour estimates and `(Done)` markers, which is how to tell what is
