@@ -88,17 +88,11 @@ protocol in `.claude/CLAUDE.md` §11 for each subtask unless the user waives it.
 
 ## Ending the day
 
-The next `start-day` is only as good as this. Append a `### Day N — <date>` entry
-to `NOTES.md` under the current week, matching the existing structure exactly:
-
-- **Goal** — one or two sentences
-- **Done** — what actually landed, with file references
-- **Decisions and why** — a table: Decision | Why | Tradeoff
-- **What confused me / cost time** — real dead ends, including bugs found in
-  tests rather than in the code
-- **Things I want to be able to explain out loud** — the mentor asks these
-- **Carrying into Day N+1** — the handoff step 1 depends on
-- **Open questions for my mentor**
+The next `start-day` is only as good as this. Append a `### Day N — <date>`
+entry to `NOTES.md` under the current week — read `.claude/rules/docs.md`'s
+"NOTES.md structure" section first for the exact headings and format rather
+than reconstructing it here; two copies of the same structure is how it drifted
+out of sync with real entries the first time.
 
 Write it from what actually happened, not a summary of the plan. Then draft the
 `docs:` commit for the user.
