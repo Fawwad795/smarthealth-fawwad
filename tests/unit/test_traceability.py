@@ -50,9 +50,8 @@ def test_every_traceability_reference_resolves() -> None:
         if test_file is None:
             missing.append(f"{filename}: file not found under tests/")
             continue
-        if (
-            function_name
-            and f"def {function_name}(" not in test_file.read_text(encoding="utf-8")
+        if function_name and f"def {function_name}(" not in test_file.read_text(
+            encoding="utf-8"
         ):
             missing.append(f"{filename}::{function_name}: function not found")
 
