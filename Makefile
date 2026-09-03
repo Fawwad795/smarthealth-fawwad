@@ -34,8 +34,8 @@ seed: ## Populate the synthetic demo dataset (safe to re-run)
 test: ## Run the test suite from cold — no running API needed
 	docker compose run --rm test
 
-test-cov: ## Run the suite with a coverage report
-	docker compose run --rm test pytest --cov=app --cov-report=term-missing
+test-cov: ## Run the suite with a coverage report; fails under 80%
+	docker compose run --rm test pytest --cov=app --cov-report=term-missing --cov-fail-under=80
 
 lint: ## Check formatting and lint rules without changing anything
 	docker compose run --rm test ruff check app tests scripts
