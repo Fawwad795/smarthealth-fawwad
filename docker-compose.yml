@@ -201,8 +201,6 @@ services:
   # OUR services.
   #
   # Still to be added in later weeks (same image, different command):
-  #   temporal-worker  (Week 2)  python -m app.temporal.worker
-  #   worker           (Week 3)  celery -A app.workers.celery_app worker
   #   consumer         (Week 3)  python -m app.events.consumer
   # ---------------------------------------------------------------------------
 
@@ -240,6 +238,21 @@ services:
         condition: service_healthy
       temporal:
         condition: service_started    # temporal defines no healthcheck
+    restart: unless-stopped
+
+  # The Celery worker: polls the Redis broker (DB 1) for queued tasks and
+  # runs them. Named celery-worker, not worker, so it's never confused with
+  # temporal-worker -- same image as `api`, different command.
+  celery-worker:
+    build: .
+    container_name: app-celery-worker
+    command: celery -A app.workers.celery_app worker --loglevel=info
+    env_file: [.env]
+    volumes:
+      - ".:/app"
+    depends_on:
+      redis:
+        condition: service_healthy
     restart: unless-stopped
 
   # The test suite. Not a long-running service -- it is meant to be run

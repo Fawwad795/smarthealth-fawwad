@@ -52,6 +52,13 @@ class Settings(BaseSettings):
     temporal_namespace: str = "default"
     temporal_task_queue: str = "app-workflow"
 
+    # --- Celery (Week 3+) ---
+    # Broker and result backend both live in Redis, on separate DB indices
+    # from redis_url (DB 0) so Celery's queue and the idempotency cache
+    # never collide.
+    celery_broker_url: str
+    celery_result_backend: str
+
     # --- Domain rules ---
     # How long an Idempotency-Key is remembered before a retried request
     # would be treated as brand new. Read by app/services/idempotency.py.
