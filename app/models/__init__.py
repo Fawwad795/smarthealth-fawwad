@@ -29,6 +29,8 @@ from app.models.billing import Billing
 from app.models.clinic import Clinic
 from app.models.content_chunk import ContentChunk
 from app.models.department import Department
+from app.models.failed_job import FailedJob
+from app.models.notification import Notification
 from app.models.patient import Patient
 from app.models.provider import Provider
 from app.models.provider_schedule import ProviderSchedule
@@ -48,6 +50,8 @@ __all__ = [
     "Clinic",
     "ContentChunk",
     "Department",
+    "FailedJob",
+    "Notification",
     "Patient",
     "Provider",
     "ProviderSchedule",

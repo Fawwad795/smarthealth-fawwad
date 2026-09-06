@@ -18,7 +18,7 @@ celery_app = Celery(
     # Importing celery_app alone does not register tasks defined elsewhere --
     # each module has to be explicitly listed here, same as worker.py
     # explicitly lists every Workflow/Activity rather than auto-discovering.
-    include=["app.workers.tasks.ping"],
+    include=["app.workers.tasks.ping", "app.workers.tasks.reminders"],
 )
 
 # Celery 5.4 warns on startup that this default changes in 6.0 -- pin the
