@@ -24,6 +24,7 @@ class DeadLetterTask(Task):
     """
 
     def on_failure(self, exc, task_id, args, kwargs, einfo):
+        """Write the failed_jobs row. Called by Celery, never directly."""
         with SessionLocal() as db:
             db.add(
                 FailedJob(

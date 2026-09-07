@@ -255,6 +255,21 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # Celery Beat: the scheduler for periodic tasks (today, just the
+  # analytics rollup). Enqueues onto the same Redis broker celery-worker
+  # reads from -- Beat never executes a task itself, only celery-worker does.
+  celery-beat:
+    build: .
+    container_name: app-celery-beat
+    command: celery -A app.workers.celery_app beat --loglevel=info
+    env_file: [.env]
+    volumes:
+      - ".:/app"
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
   # The test suite. Not a long-running service -- it is meant to be run
   # one-shot and thrown away:
   #

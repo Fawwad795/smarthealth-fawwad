@@ -18,10 +18,20 @@ celery_app = Celery(
     # Importing celery_app alone does not register tasks defined elsewhere --
     # each module has to be explicitly listed here, same as worker.py
     # explicitly lists every Workflow/Activity rather than auto-discovering.
-    include=["app.workers.tasks.ping", "app.workers.tasks.reminders"],
+    include=["app.workers.tasks.reminders", "app.workers.tasks.analytics"],
 )
 
 # Celery 5.4 warns on startup that this default changes in 6.0 -- pin the
 # current behaviour (retry connecting to the broker at startup) explicitly
 # rather than silently inheriting whatever 6.0 changes it to.
 celery_app.conf.broker_connection_retry_on_startup = True
+
+# Celery Beat reads this to know what to enqueue and when. celery-beat is
+# the only process that acts on it -- celery-worker just executes whatever
+# lands in the queue, the same as if a person's request had enqueued it.
+celery_app.conf.beat_schedule = {
+    "analytics-rollup": {
+        "task": "app.workers.tasks.analytics.rollup_today",
+        "schedule": 300.0,  # every 5 minutes
+    },
+}

@@ -17,6 +17,7 @@ from app.core.config import settings
 from app.models import (
     Appointment,
     AppointmentStatusHistory,
+    Notification,
     ProviderService,
     Service,
     Slot,
@@ -24,6 +25,7 @@ from app.models import (
 )
 from app.models.enums import (
     AppointmentStatus,
+    NotificationType,
     ServiceStatus,
     SlotReservationStatus,
     SlotStatus,
@@ -311,9 +313,27 @@ def test_validate_eligibility_flags_slot_belonging_to_a_different_provider(
     assert "slot does not belong to this provider" in str(exc_info.value)
 
 
-def test_schedule_reminders_is_a_no_op_placeholder(
-    activities: SchedulingActivities, appointment: Appointment
+def test_schedule_reminders_queues_a_celery_task(
+    monkeypatch: pytest.MonkeyPatch,
+    activities: SchedulingActivities,
+    appointment: Appointment,
+    db_session: Session,
 ) -> None:
-    activities.schedule_reminders(
-        appointment.id
-    )  # does not raise -- Week 3 wires the real thing
+    """schedule_reminders now queues the real Week 3 Celery task. Eager mode
+    runs it inline in this same process; redirecting its own SessionLocal at
+    db_session (the same nullcontext trick the activities fixture above
+    uses) is what lets this test see the notification it wrote, instead of
+    it landing in a separate, invisible connection.
+    """
+    monkeypatch.setattr(
+        "app.workers.tasks.reminders.SessionLocal", lambda: nullcontext(db_session)
+    )
+
+    activities.schedule_reminders(appointment.id)
+
+    notification = db_session.execute(
+        select(Notification).where(
+            Notification.payload["appointment_id"].astext == str(appointment.id)
+        )
+    ).scalar_one()
+    assert notification.type == NotificationType.APPOINTMENT_REMINDER
