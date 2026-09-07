@@ -2,13 +2,12 @@
 failure, and the periodic rollup task's own entry point.
 
 Both tasks run eagerly (celery_app.conf.task_always_eager, set in
-conftest.py) -- .delay() executes inline in this same process. Monkeypatching
-each module's own SessionLocal name (not app.db.session's -- each module
-already copied its own reference at import time) redirects that inline
-execution at db_session instead of the dev database.
+conftest.py) -- .delay() executes inline in this same process. The
+worker_session fixture redirects that inline execution at db_session
+instead of the dev database, by patching the single SessionLocal lookup
+that session_scope() makes at call time.
 """
 
-from contextlib import nullcontext
 from datetime import UTC, datetime
 
 import pytest
@@ -22,11 +21,15 @@ from app.workers.tasks.reminders import send_appointment_reminder
 
 
 def test_reminder_task_dead_letters_a_permanent_failure(
-    monkeypatch: pytest.MonkeyPatch, db_session: Session
+    monkeypatch: pytest.MonkeyPatch, worker_session: None, db_session: Session
 ) -> None:
     """A missing appointment is a ValueError, not a transient failure -- it
     must not be autoretried, and must land in failed_jobs instead of just
     vanishing.
+
+    Two different modules open a session on this path -- the task body and
+    DeadLetterTask.on_failure -- and both used to need patching separately.
+    They now share session_scope(), so worker_session covers both.
 
     task_eager_propagates (on globally, so every other eager-mode test can
     just pytest.raises) makes Celery skip its own failure handling and
@@ -34,12 +37,6 @@ def test_reminder_task_dead_letters_a_permanent_failure(
     test needs to prove ran. Turned off for just this call so on_failure
     actually fires, the one trade only this test needs to make.
     """
-    monkeypatch.setattr(
-        "app.workers.tasks.reminders.SessionLocal", lambda: nullcontext(db_session)
-    )
-    monkeypatch.setattr(
-        "app.workers.base.SessionLocal", lambda: nullcontext(db_session)
-    )
     monkeypatch.setattr(celery_app.conf, "task_eager_propagates", False)
 
     result = send_appointment_reminder.apply(args=(999999999,))
@@ -52,12 +49,8 @@ def test_reminder_task_dead_letters_a_permanent_failure(
 
 
 def test_rollup_today_task_writes_todays_row(
-    monkeypatch: pytest.MonkeyPatch, db_session: Session
+    worker_session: None, db_session: Session
 ) -> None:
-    monkeypatch.setattr(
-        "app.workers.tasks.analytics.SessionLocal", lambda: nullcontext(db_session)
-    )
-
     rollup_today.delay()
 
     row = db_session.get(AnalyticsDaily, datetime.now(UTC).date())

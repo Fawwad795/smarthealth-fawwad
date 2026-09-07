@@ -314,21 +314,18 @@ def test_validate_eligibility_flags_slot_belonging_to_a_different_provider(
 
 
 def test_schedule_reminders_queues_a_celery_task(
-    monkeypatch: pytest.MonkeyPatch,
+    worker_session: None,
     activities: SchedulingActivities,
     appointment: Appointment,
     db_session: Session,
 ) -> None:
     """schedule_reminders now queues the real Week 3 Celery task. Eager mode
-    runs it inline in this same process; redirecting its own SessionLocal at
-    db_session (the same nullcontext trick the activities fixture above
-    uses) is what lets this test see the notification it wrote, instead of
-    it landing in a separate, invisible connection.
+    runs it inline in this same process; the worker_session fixture points
+    session_scope() at db_session -- the same nullcontext trick the
+    activities fixture above uses -- which is what lets this test see the
+    notification it wrote, instead of it landing in a separate, invisible
+    connection.
     """
-    monkeypatch.setattr(
-        "app.workers.tasks.reminders.SessionLocal", lambda: nullcontext(db_session)
-    )
-
     activities.schedule_reminders(appointment.id)
 
     notification = db_session.execute(

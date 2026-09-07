@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy.exc import OperationalError
 
-from app.db.session import SessionLocal
+from app.db.session import session_scope
 from app.services import analytics as analytics_service
 from app.workers.base import DeadLetterTask
 from app.workers.celery_app import celery_app
@@ -23,5 +23,5 @@ from app.workers.celery_app import celery_app
 )
 def rollup_today() -> None:
     """Recompute today's analytics_daily row. Beat's scheduled entry point."""
-    with SessionLocal() as db:
+    with session_scope() as db:
         analytics_service.rollup_analytics_for_date(db, datetime.now(UTC).date())

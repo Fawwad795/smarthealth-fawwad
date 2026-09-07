@@ -8,6 +8,7 @@ from migrations makes the suite a continuous check that the chain is correct.
 """
 
 from collections.abc import Generator
+from contextlib import nullcontext
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import pytest
@@ -154,6 +155,23 @@ def db_session(engine: Engine) -> Generator[Session, None, None]:
         if transaction.is_active:
             transaction.rollback()
         connection.close()
+
+
+@pytest.fixture
+def worker_session(monkeypatch: pytest.MonkeyPatch, db_session: Session) -> None:
+    """Points every session_scope() caller at the test's transaction.
+
+    Code running outside a request -- Celery tasks in eager mode, the
+    dead-letter handler -- would otherwise open a real connection to the
+    dev database, and the rows it wrote would be invisible to db_session.
+    nullcontext hands back the test's own session and, unlike a real
+    Session context manager, does not close it on exit.
+
+    Patching app.db.session.SessionLocal reaches every caller because
+    session_scope() resolves that name at call time. Requesting this
+    fixture is a side effect; it yields nothing.
+    """
+    monkeypatch.setattr("app.db.session.SessionLocal", lambda: nullcontext(db_session))
 
 
 # --- Domain fixtures -------------------------------------------------------

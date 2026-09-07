@@ -9,7 +9,7 @@ every task module later.
 
 from celery import Task
 
-from app.db.session import SessionLocal
+from app.db.session import session_scope
 from app.models import FailedJob
 
 
@@ -19,13 +19,13 @@ class DeadLetterTask(Task):
     Celery calls on_failure automatically when a task's exception won't be
     retried again -- either autoretry_for exhausted max_retries, or the
     exception wasn't a retryable one to begin with. Runs inside the worker
-    process, so it opens its own session the same way Temporal Activities
+    process, so it opens its own session via session_scope the same way Temporal Activities
     do -- there is no Depends(get_db) here.
     """
 
     def on_failure(self, exc, task_id, args, kwargs, einfo):
         """Write the failed_jobs row. Called by Celery, never directly."""
-        with SessionLocal() as db:
+        with session_scope() as db:
             db.add(
                 FailedJob(
                     job_type=self.name,
