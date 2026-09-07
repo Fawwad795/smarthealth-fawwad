@@ -27,14 +27,14 @@ class Notification(Base, TimestampMixin):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
 
-    user_id : Mapped[int] = mapped_column(
+    user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="RESTRICT"),
         nullable=False,
         index=True,
     )
 
     type: Mapped[NotificationType] = mapped_column(
-        enum_column(NotificationType, "type"), 
+        enum_column(NotificationType, "type"),
         nullable=False,
     )
 

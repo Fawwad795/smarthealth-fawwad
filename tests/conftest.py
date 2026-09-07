@@ -57,6 +57,7 @@ ADMIN_URL = f"{_server}/postgres"
 celery_app.conf.task_always_eager = True
 celery_app.conf.task_eager_propagates = True
 
+
 @pytest.fixture(scope="session")
 def test_database() -> Generator[str, None, None]:
     """Create the test database, migrate it to head, drop it afterwards.

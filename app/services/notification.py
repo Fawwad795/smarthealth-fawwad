@@ -15,6 +15,7 @@ from app.models.enums import NotificationStatus, NotificationType
 
 logger = logging.getLogger(__name__)
 
+
 def send_appointment_reminder(db: Session, appointment_id: int) -> None:
     """Write a reminder notification for one appointment, unless one already exists.
 
@@ -39,9 +40,7 @@ def send_appointment_reminder(db: Session, appointment_id: int) -> None:
     ).first()
 
     if already_sent is not None:
-        logger.info(
-            "reminder already sent, skipping appointment_id=%s", appointment_id
-        )
+        logger.info("reminder already sent, skipping appointment_id=%s", appointment_id)
         return
 
     db.add(
