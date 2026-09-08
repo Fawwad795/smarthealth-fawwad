@@ -15,6 +15,8 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.logging import ensure_correlation_id
 from app.core.exceptions import AppError
+from app.events.envelope import EventType
+from app.events.outbox import record_event
 from redis import Redis
 from app.models import (
     Appointment,
@@ -136,6 +138,20 @@ async def request_appointment(
             actor=actor,
         )
     )
+
+    record_event(
+        db,
+        EventType.APPOINTMENT_BOOKED,
+        appointment.id,
+        {
+            "appointment_id": appointment.id,
+            "patient_id": appointment.patient_id,
+            "provider_id": appointment.provider_id,
+            "service_id": appointment.service_id,
+            "slot_id": appointment.slot_id,
+        },
+    )
+
     db.commit()
 
     workflow_id = scheduling_workflow_id(appointment.id)
@@ -216,6 +232,14 @@ def cancel_appointment(db: Session, appointment_id: int, actor: str) -> Appointm
         )
     )
     appointment.status = AppointmentStatus.CANCELLED
+
+    record_event(
+        db,
+        EventType.APPOINTMENT_CANCELLED,
+        appointment.id,
+        {"appointment_id": appointment.id, "slot_id": appointment.slot_id},
+    )
+
     db.commit()
     db.refresh(appointment)
     return appointment

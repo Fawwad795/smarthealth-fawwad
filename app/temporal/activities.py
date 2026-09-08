@@ -22,6 +22,8 @@ from temporalio.exceptions import ApplicationError
 
 from app.core.logging import get_correlation_id, set_correlation_id
 from app.db.session import SessionLocal
+from app.events.envelope import EventType
+from app.events.outbox import record_event
 from app.models import (
     Appointment,
     AppointmentStatusHistory,
@@ -193,6 +195,14 @@ class PublishActivities:
             service = db.get(Service, service_id)
             service.status = ServiceStatus.PUBLISHED
             service.published_at = datetime.now(UTC)
+
+            record_event(
+                db,
+                EventType.SERVICE_PUBLISHED,
+                service_id,
+                {"service_id": service_id},
+            )
+
             db.commit()
 
     @activity.defn
@@ -467,6 +477,14 @@ class SchedulingActivities:
             _record_transition(
                 db, appointment, AppointmentStatus.CONFIRMED, _ACTOR_SAGA
             )
+
+            record_event(
+                db,
+                EventType.APPOINTMENT_CONFIRMED,
+                appointment_id,
+                {"appointment_id": appointment_id, "slot_id": appointment.slot_id},
+            )
+
             db.commit()
             slot_id = appointment.slot_id
         logger.info(
@@ -509,6 +527,17 @@ class SchedulingActivities:
                 _ACTOR_SAGA_COMPENSATION,
                 input.reason,
             )
+
+            record_event(
+                db,
+                EventType.APPOINTMENT_CANCELLED,
+                input.appointment_id,
+                {
+                    "appointment_id": input.appointment_id,
+                    "slot_id": appointment.slot_id,
+                },
+            )
+
             db.commit()
             slot_id = appointment.slot_id
         # The compensation path is the one a reviewer will want to see in the

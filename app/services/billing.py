@@ -12,6 +12,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.events.envelope import EventType
+from app.events.outbox import record_event
 from app.models import Appointment, Billing
 from app.models.enums import BillingStatus
 
@@ -53,5 +55,14 @@ class BillingChecker:
             idempotency_key=idempotency_key,
         )
         db.add(billing)
+        db.flush()
+
+        record_event(
+            db,
+            EventType.BILLING_UPDATED,
+            billing.appointment_id,
+            {"billing_id": billing.id, "appointment_id": appointment.id},
+        )
+
         db.commit()
         return billing

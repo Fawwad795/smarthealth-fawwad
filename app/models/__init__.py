@@ -32,6 +32,7 @@ from app.models.content_chunk import ContentChunk
 from app.models.department import Department
 from app.models.failed_job import FailedJob
 from app.models.notification import Notification
+from app.models.outbox_event import OutboxEvent
 from app.models.patient import Patient
 from app.models.provider import Provider
 from app.models.provider_schedule import ProviderSchedule
@@ -54,6 +55,7 @@ __all__ = [
     "Department",
     "FailedJob",
     "Notification",
+    "OutboxEvent",
     "Patient",
     "Provider",
     "ProviderSchedule",
