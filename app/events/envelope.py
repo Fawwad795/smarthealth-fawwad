@@ -10,6 +10,7 @@ written down.
 from enum import Enum
 
 from app.core.config import settings
+from app.models import OutboxEvent
 
 # Bumped only when the shape of `data` changes incompatibly. Stored on the
 # outbox row rather than stamped at publish time, because it describes the
@@ -61,3 +62,20 @@ def topic_for(event_type: str) -> str:
     ordering guarantee between the two at all.
     """
     return f"{settings.kafka_topic_prefix}.{_TOPIC_SUFFIX[aggregate_of(event_type)]}"
+
+
+def build_envelope(event: "OutboxEvent") -> dict[str, object]:
+    """The wire format, built from a queued row.
+
+    occurred_at comes from created_at rather than a column of its own:
+    they are the same moment, and created_at is filled by Postgres, so
+    every event across all four processes is stamped by one clock.
+    """
+    return {
+        "event_id": event.event_id,
+        "event_type": event.event_type,
+        "version": event.version,
+        "occurred_at": event.created_at.isoformat(),
+        "correlation_id": event.correlation_id,
+        "data": event.data,
+    }

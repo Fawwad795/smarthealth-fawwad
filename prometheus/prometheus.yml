@@ -1,0 +1,34 @@
+# Prometheus scrape config for App (Week 3+).
+#
+# Copy to `prometheus/prometheus.yml` in your repo root — docker-compose.yml
+# mounts it from there.
+#
+# `api:8000` is your API container's name inside the Compose network. If you
+# name your service something else, change it here or Prometheus will show the
+# target as DOWN at http://localhost:9090/targets.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: app-api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["api:8000"]
+
+  # Uncomment once you expose metrics from your Celery worker or Kafka
+  # consumer (e.g. via prometheus_client.start_http_server on port 8001).
+  # - job_name: app-worker
+  #   metrics_path: /metrics
+  #   static_configs:
+  #     - targets: ["worker:8001"]
+  #
+  # - job_name: app-consumer
+  #   metrics_path: /metrics
+  #   static_configs:
+  #     - targets: ["consumer:8002"]
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

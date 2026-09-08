@@ -16,7 +16,7 @@
 #     docker compose up -d          # postgres, redis, temporal, temporal-ui
 #
 #   Weeks 3-5 (adds Kafka, Kafka UI, Prometheus):
-#     docker compose --profile week3 up -d
+#     docker compose up -d          # they are no longer behind a profile
 #
 #   Stop everything (keeps data):        docker compose down
 #   Stop and wipe all data:              docker compose down -v
@@ -115,10 +115,6 @@ services:
       - "8233:8080"
     restart: unless-stopped
 
-  # ---------------------------------------------------------------------------
-  # Week 3+ services. Started only with:  --profile week3
-  # ---------------------------------------------------------------------------
-
   # Kafka in KRaft mode (no ZooKeeper). Single broker, single partition
   # defaults - fine for this assignment, not for production.
   #
@@ -130,7 +126,6 @@ services:
   kafka:
     image: apache/kafka:3.7.0
     container_name: app-kafka
-    profiles: ["week3"]
     ports:
       - "29092:29092"
     environment:
@@ -165,7 +160,6 @@ services:
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
     container_name: app-kafka-ui
-    profiles: ["week3"]
     depends_on:
       kafka:
         condition: service_healthy
@@ -186,7 +180,6 @@ services:
   prometheus:
     image: prom/prometheus:latest
     container_name: app-prometheus
-    profiles: ["week3"]
     ports:
       - "9090:9090"
     volumes:

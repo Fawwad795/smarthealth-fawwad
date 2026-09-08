@@ -1,5 +1,5 @@
 """Tests for the Celery task layer itself: dead-lettering on permanent
-failure, and the periodic rollup task's own entry point.
+failure, and each periodic task's own entry point.
 
 Both tasks run eagerly (celery_app.conf.task_always_eager, set in
 conftest.py) -- .delay() executes inline in this same process. The
@@ -15,9 +15,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.logging import correlation_id_var, get_correlation_id
-from app.models import AnalyticsDaily, FailedJob
+from app.events import relay
+from app.events.envelope import EventType
+from app.events.outbox import record_event
+from app.models import AnalyticsDaily, FailedJob, OutboxEvent
 from app.workers.celery_app import celery_app
 from app.workers.tasks.analytics import rollup_today
+from app.workers.tasks.events import publish_outbox_events
 from app.workers.tasks.reminders import send_appointment_reminder
 
 
@@ -137,5 +141,56 @@ def test_rollup_task_mints_its_own_id(
         rollup_today.delay()
         assert seen[0] is not None
         assert seen[0] != "req-leftover-from-something-else"
+    finally:
+        correlation_id_var.reset(token)
+
+
+def test_outbox_relay_task_publishes_what_is_waiting(
+    monkeypatch: pytest.MonkeyPatch, worker_session: None, db_session: Session
+) -> None:
+    """The Beat-scheduled entry point, exercised end to end bar the broker.
+
+    relay.publish is replaced rather than the relay itself, so the task's
+    own wiring -- opening a session, delegating, committing -- is what runs
+    here. Testing it by mocking publish_pending_events would prove only
+    that the task calls a function.
+    """
+    monkeypatch.setattr(relay, "publish", lambda topic, key, value: None)
+    record_event(db_session, EventType.APPOINTMENT_BOOKED, 1, {"appointment_id": 1})
+    db_session.commit()
+
+    publish_outbox_events.delay()
+
+    pending = (
+        db_session.execute(
+            select(OutboxEvent).where(OutboxEvent.published_at.is_(None))
+        )
+        .scalars()
+        .all()
+    )
+    assert pending == []
+
+
+def test_outbox_relay_task_mints_its_own_correlation_id(
+    monkeypatch: pytest.MonkeyPatch, worker_session: None, db_session: Session
+) -> None:
+    """Beat has no upstream request, so the relay run identifies itself.
+
+    This is not the id the events carry -- each envelope already holds the
+    correlation id of whatever request created it. This one only ties the
+    relay's own log lines together for one run.
+    """
+    seen: list[str | None] = []
+
+    def spy(db: Session, limit: int = relay.BATCH_SIZE) -> int:
+        seen.append(get_correlation_id())
+        return 0
+
+    monkeypatch.setattr(relay, "publish_pending_events", spy)
+    token = correlation_id_var.set("req-left-over")
+    try:
+        publish_outbox_events.delay()
+        assert seen[0] is not None
+        assert seen[0] != "req-left-over"
     finally:
         correlation_id_var.reset(token)
