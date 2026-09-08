@@ -1,11 +1,18 @@
 """FastAPI application factory."""
 
-from fastapi import Depends, FastAPI
+from collections.abc import Awaitable, Callable
+
+from fastapi import Depends, FastAPI, Request, Response
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.error_handlers import register_exception_handlers
+from app.core.logging import (
+    CORRELATION_ID_HEADER,
+    configure_logging,
+    set_correlation_id,
+)
 from app.db.session import get_db
 
 from app.api.v1.appointments import router as appointments_router
@@ -80,6 +87,34 @@ def create_app() -> FastAPI:
     )
 
     register_exception_handlers(app)
+
+    configure_logging()
+
+    @app.middleware("http")
+    async def add_correlation_id(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        """Give every request an id, and hand it back in the response.
+
+        Reuses the caller's X-Request-ID when they send one, so a client
+        retrying a booking can be traced across both attempts, and mints one
+        otherwise. Returning it in the response header is what lets someone
+        reporting a bug quote an id to grep for.
+
+        The id is read back from the local variable rather than the
+        ContextVar after call_next: Starlette runs the rest of the app in a
+        child task, which inherits a *copy* of this context, so writes made
+        downstream are not visible here. Reads downstream work fine, which
+        is the only direction this design needs.
+
+        Registered ahead of the routers so it also wraps error responses --
+        a 404 or a 500 carries the header too, which is precisely when
+        someone needs it.
+        """
+        correlation_id = set_correlation_id(request.headers.get(CORRELATION_ID_HEADER))
+        response = await call_next(request)
+        response.headers[CORRELATION_ID_HEADER] = correlation_id
+        return response
 
     app.include_router(auth_router, prefix="/api/v1")
     app.include_router(departments_router, prefix="/api/v1")
