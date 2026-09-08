@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
+from app.core.logging import get_correlation_id
 from app.db.session import SessionLocal
 from app.models import (
     Appointment,
@@ -354,8 +355,16 @@ class SchedulingActivities:
         Temporal retries this Activity, the task's own check-before-insert
         (app/services/notification.py) is what actually prevents a second
         reminder, not anything here.
+
+        The correlation id is passed explicitly rather than inherited: the
+        broker is a process boundary and carries nothing but the message.
+        It is whatever this Activity's own context holds, which is the id
+        the workflow was started with -- so the reminder's log lines file
+        under the same booking as the request that caused it.
         """
-        send_appointment_reminder.delay(appointment_id)
+        send_appointment_reminder.delay(
+            appointment_id, correlation_id=get_correlation_id()
+        )
 
     @activity.defn
     def confirm(self, appointment_id: int) -> None:

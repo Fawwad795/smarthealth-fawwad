@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from temporalio.exceptions import ApplicationError
 
 from app.core.config import settings
+from app.core.logging import correlation_id_var, get_correlation_id
 from app.models import (
     Appointment,
     AppointmentStatusHistory,
@@ -334,3 +335,28 @@ def test_schedule_reminders_queues_a_celery_task(
         )
     ).scalar_one()
     assert notification.type == NotificationType.APPOINTMENT_REMINDER
+
+
+def test_schedule_reminders_passes_the_correlation_id_to_celery(
+    monkeypatch: pytest.MonkeyPatch,
+    worker_session: None,
+    activities: SchedulingActivities,
+    appointment: Appointment,
+) -> None:
+    """The Activity's own context id must reach the Celery task, since the
+    broker carries nothing else across the process boundary."""
+    seen: list[str | None] = []
+
+    def spy(db: Session, appointment_id: int) -> None:
+        seen.append(get_correlation_id())
+
+    monkeypatch.setattr(
+        "app.workers.tasks.reminders.notification_service.send_appointment_reminder",
+        spy,
+    )
+    token = correlation_id_var.set("req-saga")
+    try:
+        activities.schedule_reminders(appointment.id)
+        assert seen == ["req-saga"]
+    finally:
+        correlation_id_var.reset(token)
