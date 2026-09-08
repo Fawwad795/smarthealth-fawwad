@@ -34,6 +34,7 @@ from app.models.failed_job import FailedJob
 from app.models.notification import Notification
 from app.models.outbox_event import OutboxEvent
 from app.models.patient import Patient
+from app.models.processed_event import ProcessedEvent
 from app.models.provider import Provider
 from app.models.provider_schedule import ProviderSchedule
 from app.models.provider_service import ProviderService
@@ -57,6 +58,7 @@ __all__ = [
     "Notification",
     "OutboxEvent",
     "Patient",
+    "ProcessedEvent",
     "Provider",
     "ProviderSchedule",
     "ProviderService",

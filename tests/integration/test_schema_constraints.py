@@ -19,7 +19,7 @@ same test would prove nothing.
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -28,6 +28,7 @@ from app.models import (
     AppointmentStatusHistory,
     Department,
     Patient,
+    ProcessedEvent,
     Provider,
     Service,
     Slot,
@@ -354,3 +355,47 @@ def test_patient_can_rejoin_a_queue_after_being_offered(
         db_session.query(Waitlist).filter(Waitlist.patient_id == patient.id).count()
         == 2
     )
+
+
+def test_the_same_event_cannot_be_processed_twice_by_one_consumer(
+    db_session: Session,
+) -> None:
+    """pk_processed_events: the reason the table exists at all.
+
+    Kafka delivers at-least-once, and the outbox relay makes that
+    concrete -- a batch that fails part-way rolls back and republishes
+    rows the broker already accepted. The second delivery is expected,
+    and must be refused here rather than counted twice.
+    """
+    db_session.add(ProcessedEvent(consumer="app-analytics", event_id="evt-1"))
+    db_session.flush()
+
+    db_session.add(ProcessedEvent(consumer="app-analytics", event_id="evt-1"))
+    with pytest.raises(IntegrityError, match="pk_processed_events"):
+        db_session.flush()
+
+
+def test_a_second_consumer_may_process_an_event_the_first_handled(
+    db_session: Session,
+) -> None:
+    """consumer is part of the key, not merely recorded beside it.
+
+    Idempotency is per-consumer. Keyed on event_id alone, a second
+    consumer would skip every event the first had already seen -- and it
+    would look exactly like correct de-duplication while doing it. This
+    test is what would catch the key being narrowed later.
+    """
+    db_session.add(ProcessedEvent(consumer="app-analytics", event_id="evt-2"))
+    db_session.flush()
+
+    db_session.add(ProcessedEvent(consumer="app-reporting", event_id="evt-2"))
+    db_session.flush()
+
+    stored = (
+        db_session.execute(
+            select(ProcessedEvent).where(ProcessedEvent.event_id == "evt-2")
+        )
+        .scalars()
+        .all()
+    )
+    assert {row.consumer for row in stored} == {"app-analytics", "app-reporting"}
