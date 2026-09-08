@@ -15,7 +15,11 @@ from temporalio.exceptions import ApplicationError
 
 from app.models import ContentChunk, Department, Service
 from app.models.enums import ContentSourceType, ServiceStatus
-from app.temporal.activities import ChunkContentInput, PublishActivities
+from app.temporal.activities import (
+    ChunkContentInput,
+    PublishActivities,
+    ServiceInput,
+)
 
 
 def _service(
@@ -45,7 +49,7 @@ def test_validate_service_passes_when_complete(
     activities: PublishActivities, db_session: Session, department: Department
 ) -> None:
     service = _service(db_session, department)
-    activities.validate_service(service.id)
+    activities.validate_service(ServiceInput(service.id))
 
 
 def test_validate_service_raises_non_retryable_error_listing_missing_fields(
@@ -54,7 +58,7 @@ def test_validate_service_raises_non_retryable_error_listing_missing_fields(
     service = _service(db_session, department, description=None, prep_instructions=None)
 
     with pytest.raises(ApplicationError) as exc_info:
-        activities.validate_service(service.id)
+        activities.validate_service(ServiceInput(service.id))
 
     assert exc_info.value.non_retryable is True
     assert "description" in str(exc_info.value)
@@ -66,7 +70,7 @@ def test_structure_content_combines_department_and_service_fields(
 ) -> None:
     service = _service(db_session, department)
 
-    text = activities.structure_content(service.id)
+    text = activities.structure_content(ServiceInput(service.id))
 
     assert department.name in text
     assert service.name in text
@@ -119,7 +123,7 @@ def test_mark_published_sets_status_and_timestamp(
 ) -> None:
     service = _service(db_session, department)
 
-    activities.mark_published(service.id)
+    activities.mark_published(ServiceInput(service.id))
 
     db_session.refresh(service)
     assert service.status == ServiceStatus.PUBLISHED
@@ -137,7 +141,7 @@ def test_mark_publish_failed_sets_the_failed_status(
     service.status = ServiceStatus.PUBLISHING
     db_session.flush()
 
-    activities.mark_publish_failed(service.id)
+    activities.mark_publish_failed(ServiceInput(service.id))
 
     db_session.refresh(service)
     assert service.status == ServiceStatus.PUBLISH_FAILED

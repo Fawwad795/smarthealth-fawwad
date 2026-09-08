@@ -54,6 +54,17 @@ def get_correlation_id() -> str | None:
     return correlation_id_var.get()
 
 
+def ensure_correlation_id() -> str:
+    """The current context's id, minting and storing one if there is none.
+
+    Used at a process boundary, where an id has to be handed to another
+    process but the caller might not be inside a request -- a script, a
+    test, or a scheduled job. Unlike set_correlation_id() it never
+    replaces an id that is already there.
+    """
+    return set_correlation_id(get_correlation_id())
+
+
 class CorrelationIdFilter(logging.Filter):
     """Staples the current correlation ID onto every log record.
 

@@ -9,6 +9,7 @@ routes do.
 """
 
 import hashlib
+import logging
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
@@ -19,7 +20,7 @@ from sqlalchemy.orm import Session
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
-from app.core.logging import get_correlation_id
+from app.core.logging import get_correlation_id, set_correlation_id
 from app.db.session import SessionLocal
 from app.models import (
     Appointment,
@@ -42,6 +43,11 @@ from app.services.billing import BillingChecker
 from app.services.slot import reserve_slot_uncommitted
 from app.workers.tasks.reminders import send_appointment_reminder
 
+# Every saga step logs one line, so `grep <correlation-id>` tells a booking's
+# whole story across the API, this worker and the Celery worker. Ids only --
+# never a patient name, contact detail or free-text reason (rule 6.6).
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class ChunkContentInput:
@@ -55,6 +61,33 @@ class ChunkContentInput:
 
     service_id: int
     text: str
+    correlation_id: str | None = None
+
+
+@dataclass
+class ServiceInput:
+    """The service id plus the correlation id, for the publish Activities
+    that need nothing else.
+
+    correlation_id defaults to None so a caller outside a request -- a
+    script, a test -- can omit it, and so that adding the field did not
+    break replay of workflow history recorded before it existed. That
+    replay-safety is the same property ChunkContentInput's docstring
+    describes, and the reason this is a dataclass and not a second
+    positional argument.
+    """
+
+    service_id: int
+    correlation_id: str | None = None
+
+
+@dataclass
+class AppointmentInput:
+    """The appointment id plus the correlation id, shared by the five
+    scheduling Activities that need nothing else. See ServiceInput."""
+
+    appointment_id: int
+    correlation_id: str | None = None
 
 
 class PublishActivities:
@@ -74,7 +107,7 @@ class PublishActivities:
         self._session_factory = session_factory
 
     @activity.defn
-    def validate_service(self, service_id: int) -> None:
+    def validate_service(self, input: ServiceInput) -> None:
         """Raise a non-retryable error listing every missing field, or
         return None if the service has everything the workflow needs.
 
@@ -83,6 +116,8 @@ class PublishActivities:
         Temporal's default retry policy would otherwise keep retrying this
         for hours.
         """
+        set_correlation_id(input.correlation_id)
+        service_id = input.service_id
         with self._session_factory() as db:
             service = db.get(Service, service_id)
             errors = []
@@ -98,7 +133,7 @@ class PublishActivities:
                 )
 
     @activity.defn
-    def structure_content(self, service_id: int) -> str:
+    def structure_content(self, input: ServiceInput) -> str:
         """Combine this service's fields into one enriched text block --
         the input the chunk activity splits into content_chunks rows.
 
@@ -107,6 +142,8 @@ class PublishActivities:
         specialty is a documented Week 4 improvement (task 4.3), not added
         here -- a service isn't tied to one single provider.
         """
+        set_correlation_id(input.correlation_id)
+        service_id = input.service_id
         with self._session_factory() as db:
             service = db.get(Service, service_id)
             return (
@@ -124,6 +161,7 @@ class PublishActivities:
         Definition of Done) and how a retried attempt stays idempotent --
         run once or run twice, the end state is identical either way.
         """
+        set_correlation_id(input.correlation_id)
         with self._session_factory() as db:
             db.execute(
                 delete(ContentChunk).where(
@@ -147,8 +185,10 @@ class PublishActivities:
             return 1
 
     @activity.defn
-    def mark_published(self, service_id: int) -> None:
+    def mark_published(self, input: ServiceInput) -> None:
         """Transition the service to PUBLISHED -- the workflow's last step."""
+        set_correlation_id(input.correlation_id)
+        service_id = input.service_id
         with self._session_factory() as db:
             service = db.get(Service, service_id)
             service.status = ServiceStatus.PUBLISHED
@@ -156,13 +196,15 @@ class PublishActivities:
             db.commit()
 
     @activity.defn
-    def mark_publish_failed(self, service_id: int) -> None:
+    def mark_publish_failed(self, input: ServiceInput) -> None:
         """Transition the service to PUBLISH_FAILED.
 
         Called only after validate_service's non-retryable rejection --
         the Workflow's clean-failure path, not something Activities decide
         for themselves.
         """
+        set_correlation_id(input.correlation_id)
+        service_id = input.service_id
         with self._session_factory() as db:
             service = db.get(Service, service_id)
             service.status = ServiceStatus.PUBLISH_FAILED
@@ -175,6 +217,7 @@ class RejectInput:
 
     appointment_id: int
     reason: str
+    correlation_id: str | None = None
 
 
 @dataclass
@@ -183,6 +226,7 @@ class ReleaseSlotInput:
 
     appointment_id: int
     reason: str
+    correlation_id: str | None = None
 
 
 _ACTOR_SAGA = "SAGA"
@@ -219,6 +263,13 @@ class SchedulingActivities:
 
     Same session_factory injection as PublishActivities, same reason: no
     Depends(get_db) inside a Temporal Activity.
+
+    Every Activity re-establishes the correlation id from its input before
+    doing anything else. The id has to arrive as data because the worker is
+    a separate process from the API that started the workflow -- a
+    ContextVar crosses no process boundary. Setting it unconditionally also
+    stops an Activity inheriting a leftover id from whatever this worker
+    thread ran previously.
     """
 
     def __init__(
@@ -229,7 +280,7 @@ class SchedulingActivities:
         self._session_factory = session_factory
 
     @activity.defn
-    def validate_eligibility(self, appointment_id: int) -> None:
+    def validate_eligibility(self, input: AppointmentInput) -> None:
         """Raise a non-retryable error listing every reason this booking
         can't proceed, or return None if it's eligible.
 
@@ -239,6 +290,8 @@ class SchedulingActivities:
         failure here is non-retryable -- same reasoning as
         validate_service.
         """
+        set_correlation_id(input.correlation_id)
+        appointment_id = input.appointment_id
         with self._session_factory() as db:
             appointment = db.get(Appointment, appointment_id)
             service = db.get(Service, appointment.service_id)
@@ -272,6 +325,7 @@ class SchedulingActivities:
         Idempotent: REQUESTED is the only legal starting point, so if
         this appointment already moved on, do nothing.
         """
+        set_correlation_id(input.correlation_id)
         with self._session_factory() as db:
             appointment = db.get(Appointment, input.appointment_id)
             if appointment.status != AppointmentStatus.REQUESTED:
@@ -280,9 +334,14 @@ class SchedulingActivities:
                 db, appointment, AppointmentStatus.REJECTED, _ACTOR_SAGA, input.reason
             )
             db.commit()
+        # Logged after the commit, not before: a line claiming a transition
+        # that then rolled back is worse than no line at all. The reason text
+        # is deliberately omitted -- it is stored on the history row, and
+        # keeping free text out of logs is what keeps PHI out of them.
+        logger.info("appointment rejected appointment_id=%s", input.appointment_id)
 
     @activity.defn
-    def reserve_slot(self, appointment_id: int) -> None:
+    def reserve_slot(self, input: AppointmentInput) -> None:
         """Reserve this appointment's slot, or raise if it's already taken.
 
         Checks for an existing slot_reservations row for this
@@ -294,6 +353,8 @@ class SchedulingActivities:
         transaction, so there's no window where the slot is flipped but
         unrecorded.
         """
+        set_correlation_id(input.correlation_id)
+        appointment_id = input.appointment_id
         with self._session_factory() as db:
             appointment = db.get(Appointment, appointment_id)
             existing = db.execute(
@@ -322,9 +383,13 @@ class SchedulingActivities:
                 db, appointment, AppointmentStatus.SLOT_RESERVED, _ACTOR_SAGA
             )
             db.commit()
+            slot_id = appointment.slot_id
+        logger.info(
+            "slot reserved appointment_id=%s slot_id=%s", appointment_id, slot_id
+        )
 
     @activity.defn
-    def billing_precheck(self, appointment_id: int) -> None:
+    def billing_precheck(self, input: AppointmentInput) -> None:
         """Run the simulated billing pre-check, or raise if it fails.
 
         Idempotent by construction: BillingChecker.precheck() already
@@ -332,6 +397,8 @@ class SchedulingActivities:
         2.8), so a retried call finds -- and reuses -- the first
         attempt's result rather than re-deciding pass/fail from scratch.
         """
+        set_correlation_id(input.correlation_id)
+        appointment_id = input.appointment_id
         with self._session_factory() as db:
             appointment = db.get(Appointment, appointment_id)
             billing = BillingChecker().precheck(
@@ -343,9 +410,10 @@ class SchedulingActivities:
                     type="BILLING_FAILED",
                     non_retryable=True,
                 )
+        logger.info("billing pre-check passed appointment_id=%s", appointment_id)
 
     @activity.defn
-    def schedule_reminders(self, appointment_id: int) -> None:
+    def schedule_reminders(self, input: AppointmentInput) -> None:
         """Queue the Week 3 Celery reminder task for this appointment.
 
         Fire-and-forget from the saga's point of view: .delay() just drops
@@ -362,18 +430,23 @@ class SchedulingActivities:
         the workflow was started with -- so the reminder's log lines file
         under the same booking as the request that caused it.
         """
+        set_correlation_id(input.correlation_id)
+        appointment_id = input.appointment_id
         send_appointment_reminder.delay(
             appointment_id, correlation_id=get_correlation_id()
         )
+        logger.info("reminder task queued appointment_id=%s", appointment_id)
 
     @activity.defn
-    def confirm(self, appointment_id: int) -> None:
+    def confirm(self, input: AppointmentInput) -> None:
         """Confirm the appointment: the saga's last step on the happy path.
 
         Idempotent: if this appointment is already CONFIRMED, every write
         below is a no-op -- returning immediately avoids re-flipping an
         already-BOOKED slot or writing a duplicate history row.
         """
+        set_correlation_id(input.correlation_id)
+        appointment_id = input.appointment_id
         with self._session_factory() as db:
             appointment = db.get(Appointment, appointment_id)
             if appointment.status == AppointmentStatus.CONFIRMED:
@@ -395,6 +468,12 @@ class SchedulingActivities:
                 db, appointment, AppointmentStatus.CONFIRMED, _ACTOR_SAGA
             )
             db.commit()
+            slot_id = appointment.slot_id
+        logger.info(
+            "appointment confirmed appointment_id=%s slot_id=%s",
+            appointment_id,
+            slot_id,
+        )
 
     @activity.defn
     def release_slot(self, input: ReleaseSlotInput) -> None:
@@ -406,6 +485,7 @@ class SchedulingActivities:
         not for a patient-requested cancel (task 2.10), even though that
         will reuse similar release logic.
         """
+        set_correlation_id(input.correlation_id)
         with self._session_factory() as db:
             appointment = db.get(Appointment, input.appointment_id)
             if appointment.status == AppointmentStatus.CANCELLED:
@@ -430,3 +510,11 @@ class SchedulingActivities:
                 input.reason,
             )
             db.commit()
+            slot_id = appointment.slot_id
+        # The compensation path is the one a reviewer will want to see in the
+        # logs, so it says plainly that this was the saga undoing itself.
+        logger.info(
+            "slot released by compensation appointment_id=%s slot_id=%s",
+            input.appointment_id,
+            slot_id,
+        )

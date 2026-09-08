@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from temporalio.exceptions import ApplicationError
 
 from app.core.config import settings
-from app.core.logging import correlation_id_var, get_correlation_id
+from app.core.logging import get_correlation_id
 from app.models import (
     Appointment,
     AppointmentStatusHistory,
@@ -31,7 +31,12 @@ from app.models.enums import (
     SlotReservationStatus,
     SlotStatus,
 )
-from app.temporal.activities import RejectInput, ReleaseSlotInput, SchedulingActivities
+from app.temporal.activities import (
+    AppointmentInput,
+    RejectInput,
+    ReleaseSlotInput,
+    SchedulingActivities,
+)
 
 
 @pytest.fixture()
@@ -60,7 +65,7 @@ def test_validate_eligibility_passes_when_published_and_offered(
     service.status = ServiceStatus.PUBLISHED
     db_session.flush()
 
-    activities.validate_eligibility(appointment.id)  # does not raise
+    activities.validate_eligibility(AppointmentInput(appointment.id))  # does not raise
 
 
 def test_validate_eligibility_raises_listing_every_reason(
@@ -69,7 +74,7 @@ def test_validate_eligibility_raises_listing_every_reason(
     # appointment's service defaults to DRAFT (not published) and has no
     # provider_service_link -- two independent reasons, both expected back.
     with pytest.raises(ApplicationError) as exc_info:
-        activities.validate_eligibility(appointment.id)
+        activities.validate_eligibility(AppointmentInput(appointment.id))
 
     assert exc_info.value.type == "APPOINTMENT_INELIGIBLE"
     assert exc_info.value.non_retryable is True
@@ -86,7 +91,7 @@ def test_reserve_slot_reserves_and_records_history(
     appointment: Appointment,
     slot: Slot,
 ) -> None:
-    activities.reserve_slot(appointment.id)
+    activities.reserve_slot(AppointmentInput(appointment.id))
 
     db_session.refresh(slot)
     db_session.refresh(appointment)
@@ -101,9 +106,11 @@ def test_reserve_slot_reserves_and_records_history(
 def test_reserve_slot_is_idempotent(
     activities: SchedulingActivities, db_session: Session, appointment: Appointment
 ) -> None:
-    activities.reserve_slot(appointment.id)
+    activities.reserve_slot(AppointmentInput(appointment.id))
 
-    activities.reserve_slot(appointment.id)  # simulates a Temporal retry
+    activities.reserve_slot(
+        AppointmentInput(appointment.id)
+    )  # simulates a Temporal retry
 
     reservations = (
         db_session.execute(
@@ -128,7 +135,7 @@ def test_reserve_slot_raises_when_slot_already_taken(
     db_session.flush()
 
     with pytest.raises(ApplicationError) as exc_info:
-        activities.reserve_slot(appointment.id)
+        activities.reserve_slot(AppointmentInput(appointment.id))
 
     assert exc_info.value.type == "SLOT_UNAVAILABLE"
     assert exc_info.value.non_retryable is True
@@ -140,7 +147,7 @@ def test_reserve_slot_raises_when_slot_already_taken(
 def test_billing_precheck_passes_by_default(
     activities: SchedulingActivities, appointment: Appointment
 ) -> None:
-    activities.billing_precheck(appointment.id)  # does not raise
+    activities.billing_precheck(AppointmentInput(appointment.id))  # does not raise
 
 
 def test_billing_precheck_raises_when_forced(
@@ -149,7 +156,7 @@ def test_billing_precheck_raises_when_forced(
     monkeypatch.setattr(settings, "billing_force_fail", True)
 
     with pytest.raises(ApplicationError) as exc_info:
-        activities.billing_precheck(appointment.id)
+        activities.billing_precheck(AppointmentInput(appointment.id))
 
     assert exc_info.value.type == "BILLING_FAILED"
 
@@ -163,9 +170,9 @@ def test_confirm_completes_the_happy_path(
     appointment: Appointment,
     slot: Slot,
 ) -> None:
-    activities.reserve_slot(appointment.id)
+    activities.reserve_slot(AppointmentInput(appointment.id))
 
-    activities.confirm(appointment.id)
+    activities.confirm(AppointmentInput(appointment.id))
 
     db_session.refresh(appointment)
     db_session.refresh(slot)
@@ -181,12 +188,14 @@ def test_confirm_completes_the_happy_path(
 def test_confirm_is_idempotent(
     activities: SchedulingActivities, db_session: Session, appointment: Appointment
 ) -> None:
-    activities.reserve_slot(appointment.id)
-    activities.confirm(appointment.id)
+    activities.reserve_slot(AppointmentInput(appointment.id))
+    activities.confirm(AppointmentInput(appointment.id))
     db_session.refresh(appointment)
     first_booked_at = appointment.booked_at
 
-    activities.confirm(appointment.id)  # simulates a retry after a lost result
+    activities.confirm(
+        AppointmentInput(appointment.id)
+    )  # simulates a retry after a lost result
 
     db_session.refresh(appointment)
     assert appointment.booked_at == first_booked_at
@@ -204,7 +213,7 @@ def test_release_slot_compensates_correctly(
     appointment: Appointment,
     slot: Slot,
 ) -> None:
-    activities.reserve_slot(appointment.id)
+    activities.reserve_slot(AppointmentInput(appointment.id))
 
     activities.release_slot(
         ReleaseSlotInput(appointment.id, "billing pre-check failed")
@@ -230,7 +239,7 @@ def test_release_slot_compensates_correctly(
 def test_release_slot_is_idempotent(
     activities: SchedulingActivities, db_session: Session, appointment: Appointment
 ) -> None:
-    activities.reserve_slot(appointment.id)
+    activities.reserve_slot(AppointmentInput(appointment.id))
     activities.release_slot(
         ReleaseSlotInput(appointment.id, "billing pre-check failed")
     )
@@ -309,7 +318,7 @@ def test_validate_eligibility_flags_slot_belonging_to_a_different_provider(
     db_session.flush()
 
     with pytest.raises(ApplicationError) as exc_info:
-        activities.validate_eligibility(appointment.id)
+        activities.validate_eligibility(AppointmentInput(appointment.id))
 
     assert "slot does not belong to this provider" in str(exc_info.value)
 
@@ -327,7 +336,7 @@ def test_schedule_reminders_queues_a_celery_task(
     notification it wrote, instead of it landing in a separate, invisible
     connection.
     """
-    activities.schedule_reminders(appointment.id)
+    activities.schedule_reminders(AppointmentInput(appointment.id))
 
     notification = db_session.execute(
         select(Notification).where(
@@ -343,8 +352,14 @@ def test_schedule_reminders_passes_the_correlation_id_to_celery(
     activities: SchedulingActivities,
     appointment: Appointment,
 ) -> None:
-    """The Activity's own context id must reach the Celery task, since the
-    broker carries nothing else across the process boundary."""
+    """The id on the workflow's input must reach the Celery task.
+
+    Note what this deliberately does *not* rely on: the caller's ambient
+    context. The Activity re-establishes from its input, because in
+    production the workflow that supplied it ran in a different process and
+    nothing ambient survived the trip. Putting the id in the input and
+    reading it back inside the task is the path that actually runs.
+    """
     seen: list[str | None] = []
 
     def spy(db: Session, appointment_id: int) -> None:
@@ -354,9 +369,9 @@ def test_schedule_reminders_passes_the_correlation_id_to_celery(
         "app.workers.tasks.reminders.notification_service.send_appointment_reminder",
         spy,
     )
-    token = correlation_id_var.set("req-saga")
-    try:
-        activities.schedule_reminders(appointment.id)
-        assert seen == ["req-saga"]
-    finally:
-        correlation_id_var.reset(token)
+
+    activities.schedule_reminders(
+        AppointmentInput(appointment.id, correlation_id="req-saga")
+    )
+
+    assert seen == ["req-saga"]
