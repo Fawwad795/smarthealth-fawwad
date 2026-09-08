@@ -9,11 +9,11 @@ docstring promised would replace it.
 
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
-from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
 from app.temporal.activities import ChunkContentInput, ServiceInput
 from app.temporal.workflows import PublishServiceWorkflow
+from tests.temporal_env import start_test_env
 
 _TASK_QUEUE = "test_publish-workflow"
 
@@ -59,7 +59,7 @@ class _RecordingActivities:
 
 async def test_publish_workflow_runs_every_step_in_order() -> None:
     fakes = _RecordingActivities()
-    async with await WorkflowEnvironment.start_time_skipping() as env:
+    async with await start_test_env() as env:
         async with Worker(
             env.client,
             task_queue=_TASK_QUEUE,
@@ -89,7 +89,7 @@ async def test_publish_workflow_runs_every_step_in_order() -> None:
 
 async def test_publish_workflow_stops_cleanly_on_validation_failure() -> None:
     fakes = _RecordingActivities(fail_validation=True)
-    async with await WorkflowEnvironment.start_time_skipping() as env:
+    async with await start_test_env() as env:
         async with Worker(
             env.client,
             task_queue=_TASK_QUEUE,

@@ -11,11 +11,11 @@ import pytest
 from temporalio import activity
 from temporalio.client import WorkflowFailureError
 from temporalio.exceptions import ApplicationError
-from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
 from app.temporal.activities import AppointmentInput, RejectInput, ReleaseSlotInput
 from app.temporal.workflows import AppointmentSchedulingWorkflow
+from tests.temporal_env import start_test_env
 
 
 _TASK_QUEUE = "test_scheduling-workflow"
@@ -103,7 +103,7 @@ class _RecordingActivities:
 async def _run(
     fakes: _RecordingActivities, workflow_id: str, correlation_id: str = "req-wf"
 ) -> None:
-    async with await WorkflowEnvironment.start_time_skipping() as env:
+    async with await start_test_env() as env:
         async with Worker(
             env.client,
             task_queue=_TASK_QUEUE,
