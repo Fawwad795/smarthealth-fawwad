@@ -10,22 +10,10 @@ from datetime import UTC, date, datetime, timedelta
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from app.models import AnalyticsDaily, Appointment
+from app.events.handlers import handle_appointment_booked, handle_visit_completed
+from app.models import AnalyticsDaily, Appointment, Slot, Visit
+from app.models.enums import VisitStatus
 from app.services import analytics as analytics_service
-
-
-def _book_on(db: Session, appointment: Appointment, when: datetime) -> date:
-    """Stamp an appointment as booked at a given moment; return its day.
-
-    The shared fixture stops at REQUESTED, and that is correct -- booked_at
-    is written when the saga confirms, not when the row is created.
-    Reconciliation buckets appointments by booked_at, so a test about
-    counting bookings has to say when the booking actually happened rather
-    than assume the fixture did it.
-    """
-    appointment.booked_at = when
-    db.flush()
-    return when.date()
 
 
 def _book_on(db: Session, appointment: Appointment, when: datetime) -> date:
@@ -131,3 +119,71 @@ def test_reconciliation_endpoint_is_admin_only(
         ).status_code
         == 200
     )
+
+
+# --- the forward direction ------------------------------------------------
+# Every test above starts by breaking something and checks the drift is
+# reported. None of them proves the *normal* path produces no drift -- and a
+# handler and a recompute that were wrong in the same way would agree with
+# each other while both being wrong. These two run the real handlers and then
+# ask for the drift report.
+
+DAY = date(2026, 6, 15)
+
+
+def _on(hour: int, minute: int = 0) -> datetime:
+    """A moment on DAY. Fixed, so the assertions name one known bucket."""
+    return datetime(2026, 6, 15, hour, minute, tzinfo=UTC)
+
+
+def test_handled_events_leave_the_aggregates_agreeing_with_the_raw_tables(
+    db_session: Session, appointment: Appointment, slot: Slot
+) -> None:
+    """A booking and a completed visit, aggregated by the real handlers."""
+    _book_on(db_session, appointment, _on(9))
+    slot.start_time = _on(8)
+    slot.end_time = _on(8, 30)
+    visit = Visit(
+        appointment_id=appointment.id,
+        status=VisitStatus.COMPLETED,
+        checked_in_at=_on(8, 15),
+        completed_at=_on(9),
+    )
+    db_session.add(visit)
+    db_session.flush()
+
+    handle_appointment_booked(db_session, {"data": {"appointment_id": appointment.id}})
+    handle_visit_completed(db_session, {"data": {"visit_id": visit.id}})
+    db_session.flush()
+
+    assert analytics_service.reconcile_date(db_session, DAY) == {}
+
+
+def test_a_visit_still_in_progress_is_not_reported_as_drift(
+    db_session: Session, appointment: Appointment, slot: Slot
+) -> None:
+    """A patient who has checked in but has not been seen out yet.
+
+    No visit.completed event exists for this visit, so no handler has run
+    and nothing has been aggregated. The recompute has to agree. If it
+    counts the wait at check-in instead, every clinic with a patient
+    mid-visit sees phantom drift for as long as that visit is open --
+    which is most of the working day.
+    """
+    _book_on(db_session, appointment, _on(9))
+    slot.start_time = _on(8)
+    slot.end_time = _on(8, 30)
+    db_session.add(
+        Visit(
+            appointment_id=appointment.id,
+            status=VisitStatus.CHECKED_IN,
+            checked_in_at=_on(8, 15),
+            completed_at=None,
+        )
+    )
+    db_session.flush()
+
+    handle_appointment_booked(db_session, {"data": {"appointment_id": appointment.id}})
+    db_session.flush()
+
+    assert analytics_service.reconcile_date(db_session, DAY) == {}

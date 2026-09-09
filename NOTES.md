@@ -1203,3 +1203,97 @@ One unplanned preamble first.
 **Open questions**
 
 - None.
+
+### Day 5 - 2026-09-10
+
+**Goal:** 3.11 (tests), 3.12 (`docs/events.md`, `docs/runbook.md`,
+architecture diagram), 3.13 (crash-recovery demo).
+
+**Done**
+
+- **3.11** Retry covered both ways: a transient `OperationalError` retries
+  five times and dead-letters at `attempts=6`; a blip that clears on the
+  third attempt writes nothing.
+- **3.11** `test_event_replay.py` -- one `visit.completed` through the real
+  loop twice, count stays 1. Mutation-checked by forcing `claim_event` to
+  return True.
+- **3.11** The forward reconciliation test found a real bug: the wait-time
+  recompute counted every visit checked in that day, the handler only
+  completed ones. Fixed.
+- **3.12** `docs/events.md` and `docs/runbook.md` written. README diagram
+  redrawn (outbox, Prometheus, consumer -> Postgres); two stale lines fixed.
+- **3.13** 30 bookings and 20 publishes fired as a trickle, worker SIGKILLed
+  mid-flight both times: 11 sagas frozen at SLOT_RESERVED, 4 services at
+  PUBLISHING, 29 workflows Running with no worker. All resumed on restart,
+  0 left running, exactly 1 chunk per service.
+- Live replay against real Kafka: same `event_id` twice -> "event processed"
+  then "duplicate event skipped", count +1.
+- 387 -> 393 tests, 97.66% coverage.
+
+**Decisions**
+
+| Decision | Why |
+|---|---|
+| Backoff asserted as the ceiling, not the delay | `retry_jitter` picks randomly inside `min(max, factor * 2**retries)` |
+| The crash demo fires a trickle, not a burst | A burst makes "mid-flight" a race; a trickle guarantees done, part-done and not-started at once |
+| Wait-time recompute filters on COMPLETED | It has to read what the handler writes, or it reports drift that was never real |
+| The `appointment.booked` fix is deferred | It changes which event drives a graded metric -- not a Friday-afternoon change |
+| Demo order: analytics before crash recovery | Zero-cost mitigation for that bug, and the reconciliation catching real drift is the better story anyway |
+
+**Cost time**
+
+- `docker compose cp`/`exec` needed `MSYS_NO_PATHCONV=1` *and* a Windows-form
+  source path -- `//tmp` for exec arguments, `/tmp` for cp destinations.
+- Ruff never flagged a duplicated `_book_on` in `test_reconciliation.py`:
+  F811 ignores names starting with an underscore, which is every test helper
+  in this repo.
+- The crash demo's drift looked like a demo artefact and was a real bug --
+  28 consumer dead-letters reading "appointment 51 does not exist" about an
+  appointment that exists.
+- `jq` is not installed here; caught before it reached the runbook.
+
+**Explain out loud**
+
+- Celery's eager mode runs retries inline, so the retry count is observable
+  in a test even though the nesting is not production's shape.
+- A test that has only ever been seen passing proves nothing -- breaking the
+  dedupe guard on purpose is what turns the replay test into evidence.
+- 29 workflows Running with no worker alive *is* the durability guarantee,
+  made visible.
+- "Row missing" and "not ready yet" collapsing into the same `None` is how a
+  permanent-error branch quietly swallows a transient one.
+
+**Carrying into Week 4**
+
+- The `appointment.booked` -> `appointment.confirmed` handler fix. ~1h15m
+  including a crash-demo re-run, which is the only thing that proves it.
+- 28 dead-lettered events are unrecoverable; the numbers themselves were
+  repaired.
+- UTC bucket limitation, unchanged.
+- `docs/diagrams/architecture.svg` needs re-exporting from the new mermaid.
+
+**Open questions**
+
+- None.
+
+---
+
+## Weekly self-check
+
+### Week 3 - 2026-09-10
+
+1. **Finished / broken:** 3.1-3.13 all complete. 393 tests, 97.66%
+   coverage. One real bug found by the crash demo and deliberately
+   deferred rather than rushed: a Temporal worker outage dead-letters
+   `appointment.booked` events, so booking counts need `--repair` until
+   the handler moves to `appointment.confirmed`. Recorded in
+   `docs/design.md`, `docs/prd.md` 7 and the runbook.
+2. **Not fully understood yet:** how the consumer behaves with more than
+   one instance -- `processed_events` is keyed per consumer group and the
+   rebalance path has never been exercised, only reasoned about.
+3. **Most time spent:** making "mid-flight" deterministic for the crash
+   demo. Both workflows finish in ~200ms, so killing the worker at the
+   right moment was a coin toss until the load was spread into a trickle.
+   After that the demo was decisive rather than suggestive.
+4. **Carrying into Week 4:** the handler fix above, and re-exporting the
+   architecture diagram. Nothing from the 3.x task list.

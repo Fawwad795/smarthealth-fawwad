@@ -86,7 +86,20 @@ def compute_analytics_for_date(db: Session, target_date: date) -> dict[str, floa
         .select_from(Visit)
         .join(Appointment, Visit.appointment_id == Appointment.id)
         .join(Slot, Appointment.slot_id == Slot.id)
-        .where(Visit.checked_in_at >= day_start, Visit.checked_in_at < day_end)
+        .where(
+            # Completed only, and bucketed by check-in. Both halves matter.
+            # handle_visit_completed is the only writer of these two
+            # columns and it runs on visit.completed, so a visit that has
+            # checked in but not been seen out has contributed nothing yet.
+            # Counting it here would report drift against an aggregate that
+            # is behaving correctly -- and since a clinic has someone
+            # mid-visit for most of the working day, that phantom drift
+            # would be the normal state of the report rather than the
+            # exception.
+            Visit.status == VisitStatus.COMPLETED,
+            Visit.checked_in_at >= day_start,
+            Visit.checked_in_at < day_end,
+        )
     ).one()
 
     return {

@@ -459,6 +459,12 @@ migrating rows that had already been created without it.
 | A permanent failure dead-letters and then commits the offset; a transient one rewinds with `seek` | An offset is a position rather than a checklist, so refusing to move it blocks every message behind one bad one | Misclassifying a failure either loses an event or stalls a partition |
 | Handlers bucket by the raw column the reconciliation reads, not the envelope's `occurred_at` | The two are microseconds apart, but either side of midnight they disagree, and the check would report drift that was never real | Each event costs a lookup of the row it is counting |
 | The analytics series is not paginated; a 366-day range cap bounds it instead | Paginating a chart makes the client reassemble it, and `total` would only restate the number of days it asked for | Deviates from the project-wide `{items, total, limit, offset}` convention for list endpoints |
+| Metrics are published by three processes, not one | A process can only count what it saw, and `reserve_slot` runs in the Temporal worker, not the API | Every domain counter must be summed with `sum by (job)`; reading one target under-reports |
+| HTTP metrics are labelled by route template, never the URL | One label per appointment id is unbounded cardinality — the standard way people take down their own Prometheus | Unmatched paths share a single `unmatched` label, so a genuine 404 pattern is invisible in the metric |
+| `/health/ready` returns the per-dependency breakdown, and 503 rather than 500 | The reader is a monitor, not an API client: *which* dependency is the whole payload, and a load balancer treats "not ready" differently from "broken" | It is the one endpoint that does not use the project-wide error envelope |
+| Reconciliation writes nothing; `--repair` is a separate, manual action | A check that fixes what it finds destroys the evidence before anyone reads the report | Drift persists until a human acts, so it has to be alerted on — hence the script exiting 1 |
+| A missing `analytics_daily` row is compared as zeros, not skipped | A consumer that died before ever writing a day would otherwise look healthy | A genuinely quiet day is recomputed to prove it is quiet |
+| The wait-time recompute counts only COMPLETED visits | `handle_visit_completed` is its only writer and runs on `visit.completed`, so a visit still in progress has contributed nothing yet | Found on Day 5; the recompute previously counted every visit checked in that day, so a clinic mid-visit saw phantom drift for most of the working day |
 
 **Enum member names and values are kept identical** (`AVAILABLE = "AVAILABLE"`).
 SQLAlchemy persists a Python enum's `.name`, while a `str`-based enum serialises
@@ -513,6 +519,39 @@ stuck appointment rather than restarting the saga. A sweeper for rows left
 Tasks 2.10 (partly) and 2.11, carried into Week 3. Consequently the waitlist can
 be joined but nothing promotes an entry to `OFFERED`, because promotion is what
 cancellation triggers.
+
+**Known limitation (Week 3): analytics buckets are UTC calendar days.**
+Every event handler and the reconciliation check bucket by UTC midnight, not by
+the clinic's local midnight. The two always agree with each other — they read the
+same column — so this never shows up as drift. It shows up as the boundary being
+in the wrong place: a clinic several hours from UTC sees its late-afternoon
+appointments counted on the following day.
+
+Not fixed, and deliberately so. It touches four handler sites, three boundary
+computations, eight test files and needs a backfill of every stored row, and it
+is in neither the Week 3 task list nor the Definition of Done. Slots already
+store UTC and clinics already own a timezone, so the conversion point exists —
+this is a change of which timezone the aggregates use, not new machinery.
+
+**Known bug (Week 3): a worker outage loses booking counts.**
+`appointment.booked` is queued when the appointment is still `REQUESTED`, but
+`booked_at` is written later, by the saga's `confirm` Activity.
+`handle_appointment_booked` reads `booked_at` with `scalar_one_or_none()`, so a
+missing row and an unconfirmed one are indistinguishable — both look like "does
+not exist", which the handler treats as permanent and dead-letters.
+
+Normally invisible: the relay runs every 5s and a saga finishes in ~200ms, so
+`booked_at` is always set by the time the event ships. Day 5's crash-recovery
+demo held the sagas frozen for ~40s while the relay kept publishing, and all 27
+booking events were dead-lettered — the aggregate silently under-counted until
+`--repair` was run.
+
+The fix is two lines: maintain `appointments_booked` from `appointment.confirmed`
+instead, which guarantees `booked_at` exists and matches what the reconciliation
+already counts. Deferred rather than rushed at the end of the week, because it
+changes which event drives a graded metric. Making the unconfirmed case
+*transient* instead is the wrong fix: a REJECTED appointment never gets a
+`booked_at`, so the consumer would retry forever and stall the partition.
 
 ---
 

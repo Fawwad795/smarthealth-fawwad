@@ -10,6 +10,7 @@ that session_scope() makes at call time.
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.core.logging import correlation_id_var, get_correlation_id
@@ -48,6 +49,95 @@ def test_reminder_task_dead_letters_a_permanent_failure(
     assert failed.job_type == "app.workers.tasks.reminders.send_appointment_reminder"
     assert failed.attempts == 1
     assert "999999999" in failed.error
+
+
+def _always_unavailable() -> None:
+    """Raise the one exception the reminder task treats as transient.
+
+    OperationalError is the single class in the task's autoretry_for, so
+    raising it is what puts the task on the retry path rather than the
+    dead-letter-immediately path the test above takes.
+    """
+    raise OperationalError("SELECT 1", {}, Exception("server closed the connection"))
+
+
+def test_a_transient_failure_retries_with_backoff_then_dead_letters(
+    monkeypatch: pytest.MonkeyPatch, worker_session: None, db_session: Session
+) -> None:
+    """The other half of the dead-letter story, and the one the DoD names.
+
+    The test above proves the task gives up on something hopeless. This
+    proves it perseveres with something temporary.
+    """
+    monkeypatch.setattr(celery_app.conf, "task_eager_propagates", False)
+
+    attempts: list[int] = []
+
+    def failing(db: Session, appointment_id: int) -> None:
+        attempts.append(appointment_id)
+        _always_unavailable()
+
+    monkeypatch.setattr(
+        "app.workers.tasks.reminders.notification_service.send_appointment_reminder",
+        failing,
+    )
+
+    countdowns: list[object] = []
+    original_retry = send_appointment_reminder.retry
+
+    def recording_retry(*args: object, **kwargs: object) -> object:
+        countdowns.append(kwargs.get("countdown"))
+        return original_retry(*args, **kwargs)
+
+    monkeypatch.setattr(send_appointment_reminder, "retry", recording_retry)
+
+    result = send_appointment_reminder.apply(args=(1,))
+
+    assert result.failed()
+    # The first run plus max_retries=5 more.
+    assert len(attempts) == 6
+    assert len(countdowns) == 6
+
+    # Every retry asked for a delay, and the ceiling doubles each time:
+    # Celery computes min(retry_backoff_max, factor * 2 ** retries) and,
+    # because retry_jitter is on, picks a random value inside it. The
+    # ceiling is deterministic and worth asserting; the value is not.
+    assert all(0 <= countdown <= 2**i for i, countdown in enumerate(countdowns))
+
+    rows = db_session.execute(select(FailedJob)).scalars().all()
+    assert [row.attempts for row in rows] == [6]
+
+
+def test_a_transient_failure_that_clears_is_not_dead_lettered(
+    monkeypatch: pytest.MonkeyPatch, worker_session: None, db_session: Session
+) -> None:
+    """A blip that resolves must leave nothing behind.
+
+    Retrying is only worth doing if a later attempt is allowed to succeed.
+    A task that dead-lettered anyway would fill the dead-letter table with
+    work that actually completed, and failed_jobs feeds the "failed
+    background jobs" metric -- so the number on the dashboard would be
+    wrong in the direction that causes a pointless investigation.
+    """
+    monkeypatch.setattr(celery_app.conf, "task_eager_propagates", False)
+
+    attempts: list[int] = []
+
+    def unavailable_until_the_third_attempt(db: Session, appointment_id: int) -> None:
+        attempts.append(appointment_id)
+        if len(attempts) < 3:
+            _always_unavailable()
+
+    monkeypatch.setattr(
+        "app.workers.tasks.reminders.notification_service.send_appointment_reminder",
+        unavailable_until_the_third_attempt,
+    )
+
+    result = send_appointment_reminder.apply(args=(1,))
+
+    assert result.successful()
+    assert len(attempts) == 3
+    assert db_session.execute(select(FailedJob)).scalars().all() == []
 
 
 def _spy_on_reminder(monkeypatch: pytest.MonkeyPatch, seen: list[str | None]) -> None:
