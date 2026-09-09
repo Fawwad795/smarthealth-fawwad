@@ -17,6 +17,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import AppError
+from app.events.envelope import EventType
+from app.events.outbox import record_event
 from app.models import Appointment, AppointmentStatusHistory, Visit
 from app.models.enums import AppointmentStatus, VisitStatus
 from app.services.appointment_scheduling import get_appointment
@@ -160,6 +162,13 @@ def complete_visit(db: Session, appointment_id: int, actor: str) -> Visit:
         )
     )
     appointment.status = AppointmentStatus.COMPLETED
+
+    record_event(
+        db,
+        EventType.VISIT_COMPLETED,
+        visit.id,
+        {"visit_id": visit.id, "appointment_id": appointment.id},
+    )
 
     db.commit()
     db.refresh(visit)

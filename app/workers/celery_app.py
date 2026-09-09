@@ -8,8 +8,10 @@ shares.
 """
 
 from celery import Celery
+from celery.signals import setup_logging
 
 from app.core.config import settings
+from app.core.logging import configure_logging
 
 celery_app = Celery(
     "app",
@@ -18,7 +20,11 @@ celery_app = Celery(
     # Importing celery_app alone does not register tasks defined elsewhere --
     # each module has to be explicitly listed here, same as worker.py
     # explicitly lists every Workflow/Activity rather than auto-discovering.
-    include=["app.workers.tasks.reminders", "app.workers.tasks.analytics"],
+    include=[
+        "app.workers.tasks.reminders",
+        "app.workers.tasks.analytics",
+        "app.workers.tasks.events",
+    ],
 )
 
 # Celery 5.4 warns on startup that this default changes in 6.0 -- pin the
@@ -34,4 +40,24 @@ celery_app.conf.beat_schedule = {
         "task": "app.workers.tasks.analytics.rollup_today",
         "schedule": 300.0,  # every 5 minutes
     },
+    "outbox-relay": {
+        "task": "app.workers.tasks.events.publish_outbox_events",
+        # Short, because this is the delay between a booking committing
+        # and its event reaching Kafka. The HTTP response never waits on
+        # it either way -- this only sets how stale the analytics can be.
+        "schedule": 5.0,
+    },
 }
+
+
+@setup_logging.connect
+def configure_celery_logging(**kwargs: object) -> None:
+    """Install our JSON handler instead of Celery's own.
+
+    Celery rips out the root logger's handlers on worker startup and
+    installs its prose format -- unless something is connected to this
+    signal, which it reads as "the application handles logging". So this
+    function existing at all is the real fix; the body just points the
+    worker at the same configuration the API uses.
+    """
+    configure_logging()

@@ -59,6 +59,14 @@ class Settings(BaseSettings):
     celery_broker_url: str
     celery_result_backend: str
 
+    # --- Kafka (Week 3+) ---
+    # `kafka:9092` is the in-container address. From the laptop it is
+    # localhost:29092 -- see the two listeners in docker-compose.yml.
+    kafka_bootstrap_servers: str = "kafka:9092"
+    kafka_consumer_group: str = "app-analytics"
+    # Topics are <prefix>.<aggregate>: app.appointments, app.visits, ...
+    kafka_topic_prefix: str = "app"
+
     # --- Domain rules ---
     # How long an Idempotency-Key is remembered before a retried request
     # would be treated as brand new. Read by app/services/idempotency.py.

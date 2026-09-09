@@ -8,6 +8,7 @@ from migrations makes the suite a continuous check that the chain is correct.
 """
 
 from collections.abc import Generator
+from contextlib import nullcontext
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import pytest
@@ -20,6 +21,7 @@ from sqlalchemy.orm import Session
 from fastapi.testclient import TestClient
 
 from app.core.config import settings
+from app.core.logging import correlation_id_var
 from app.models import (
     Appointment,
     AppointmentStatusHistory,
@@ -154,6 +156,45 @@ def db_session(engine: Engine) -> Generator[Session, None, None]:
         if transaction.is_active:
             transaction.rollback()
         connection.close()
+
+
+@pytest.fixture
+def worker_session(monkeypatch: pytest.MonkeyPatch, db_session: Session) -> None:
+    """Points every session_scope() caller at the test's transaction.
+
+    Code running outside a request -- Celery tasks in eager mode, the
+    dead-letter handler -- would otherwise open a real connection to the
+    dev database, and the rows it wrote would be invisible to db_session.
+    nullcontext hands back the test's own session and, unlike a real
+    Session context manager, does not close it on exit.
+
+    Patching app.db.session.SessionLocal reaches every caller because
+    session_scope() resolves that name at call time. Requesting this
+    fixture is a side effect; it yields nothing.
+    """
+    monkeypatch.setattr("app.db.session.SessionLocal", lambda: nullcontext(db_session))
+
+
+@pytest.fixture(autouse=True)
+def isolate_correlation_id() -> Generator[None, None, None]:
+    """Reset the correlation-ID ContextVar around every test.
+
+    Eager-mode Celery tasks call set_correlation_id() inside the test's own
+    context, so without this a task test leaks its id into whatever runs
+    next -- which is how test_filter_tags_none_outside_any_request started
+    failing only when it ran after the Celery tests. That is the same
+    cross-contamination a prefork worker would suffer between two tasks,
+    reproduced inside the suite; production is protected because every task
+    sets the var unconditionally, but the suite needs its own guard.
+
+    Autouse because the leak crosses files -- an opt-in fixture only helps
+    the tests that remember to ask for it, which are not the ones that break.
+    """
+    token = correlation_id_var.set(None)
+    try:
+        yield
+    finally:
+        correlation_id_var.reset(token)
 
 
 # --- Domain fixtures -------------------------------------------------------

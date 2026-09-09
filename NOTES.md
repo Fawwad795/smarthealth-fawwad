@@ -950,3 +950,80 @@ task + `failed_jobs`, periodic analytics rollup + Celery Beat).
 **Open questions**
 
 - None.
+
+### Day 2 - 2026-09-08
+
+**Goal:** 3.8 (structured JSON logging + correlation IDs across API, Temporal
+and Celery) and 3.3 (Kafka producer, via the outbox).
+
+**Done**
+
+- Carry-over: `session_scope()` in `app/db/session.py` -- one seam for
+  non-request code, replacing four per-module `SessionLocal` monkeypatches.
+- **3.8a** `app/core/logging.py`: ContextVar, `CorrelationIdFilter`,
+  `JsonFormatter`, `configure_logging()`. Middleware reads or mints
+  `X-Request-ID` and returns it. uvicorn's own handlers cleared so its
+  access log is the same JSON.
+- **3.8b** The id crosses both process boundaries: Celery task kwarg, and
+  Temporal input dataclasses (`AppointmentInput`, `ServiceInput`; nine
+  Activities changed). Each saga step logs one line, ids only.
+- **3.3a** `app/events/`: envelope, six event types, `outbox_events` table +
+  migration, `record_event()` at seven emit points inside the transaction
+  that already existed.
+- **3.3b** `confluent-kafka`, producer with delivery confirmation, relay
+  claiming rows `FOR UPDATE SKIP LOCKED`, Celery Beat every 5s.
+  Kafka/kafka-ui/Prometheus off the `week3` profile.
+- 273 -> 324 tests, 98.25% coverage.
+
+**Decisions**
+
+| Decision | Why |
+|---|---|
+| Correlation ID via workflow/activity args, not Temporal headers + interceptors | What the brief specifies; far less machinery for one string |
+| `correlation_id` defaults to None on every input dataclass | Replay-safe for history recorded before the field existed |
+| Topics per aggregate, not per event type | One appointment's events share a partition, so `booked` precedes `confirmed` |
+| Aggregate derived from the event name, not stored | Two columns cannot disagree if there is only one |
+| Outbox relay is a Celery Beat task, not a new container | Fire-and-forget work is Celery's half of the division of labour |
+| `message.timeout.ms` inside the flush window | The outbox owns retries; librdkafka must not be a second retry layer |
+
+**Cost time**
+
+- Five transcription slips in the event names and emit points -- names and
+  values crossed over. **ruff, black and mypy passed on all of them**; only
+  the suite caught them, as an `AttributeError` from inside `enum.py`.
+- The workflow tests *hung* rather than failed: an `AttributeError` in an
+  Activity is not an `ApplicationError`, so Temporal retried it forever.
+  Had to exclude both files to get a usable failure list.
+- Wrote a test that could not fail -- comparing two lists built from the
+  same run passes vacuously when both are empty.
+- Third stale-image incident in two days: `api` had been crash-looping
+  since yesterday's Celery change while `docker compose ps` still said
+  `Up`, and `test` predated `confluent-kafka`.
+- ContextVar leaked between tests -- eager Celery tasks set it in the
+  test's own context. Needed an autouse reset fixture.
+- Ran black over `migrations/`, reformatting 14 unrelated files; `make fmt`
+  deliberately scopes to `app tests scripts`.
+
+**Explain out loud**
+
+- `from X import Y` binds at import time, `X.Y` at call time -- you can only
+  replace what is resolved late.
+- Ambient context (ContextVar) for cross-cutting values nothing acts on;
+  explicit injection for dependencies code actually uses.
+- The dual-write problem: no ordering of commit/produce is safe, so make the
+  announcement a database write and accept duplicates instead.
+- `produce()` only queues; only a delivery callback separates *sent* from
+  *abandoned*.
+
+**Carrying into Day 3**
+
+- 3.4 (consumer container) and 3.5 (`processed_events`) -- the duplicates the
+  relay can emit are absorbed there.
+- Prometheus `app-api` target is DOWN (404) until 3.9 adds `/metrics`.
+- Consider `pytest-timeout` so a hanging Temporal test fails instead of
+  stalling the suite.
+- `docs/events.md` still to write (3.12).
+
+**Open questions**
+
+- None.

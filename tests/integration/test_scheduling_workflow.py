@@ -14,7 +14,7 @@ from temporalio.exceptions import ApplicationError
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
-from app.temporal.activities import RejectInput, ReleaseSlotInput
+from app.temporal.activities import AppointmentInput, RejectInput, ReleaseSlotInput
 from app.temporal.workflows import AppointmentSchedulingWorkflow
 
 
@@ -38,6 +38,7 @@ class _RecordingActivities:
         billing_error_type: str = "BILLING_FAILED",
     ) -> None:
         self.calls: list[str] = []
+        self.correlation_ids: list[str | None] = []
         self._fail_eligibility = fail_eligibility
         self._eligibility_error_type = eligibility_error_type
         self._fail_reserve = fail_reserve
@@ -46,8 +47,9 @@ class _RecordingActivities:
         self._billing_error_type = billing_error_type
 
     @activity.defn
-    async def validate_eligibility(self, appointment_id: int) -> None:
+    async def validate_eligibility(self, input: AppointmentInput) -> None:
         self.calls.append("validate_eligibility")
+        self.correlation_ids.append(input.correlation_id)
         if self._fail_eligibility:
             raise ApplicationError(
                 "service is not published",
@@ -58,10 +60,12 @@ class _RecordingActivities:
     @activity.defn
     async def reject(self, input: RejectInput) -> None:
         self.calls.append("reject")
+        self.correlation_ids.append(input.correlation_id)
 
     @activity.defn
-    async def reserve_slot(self, appointment_id: int) -> None:
+    async def reserve_slot(self, input: AppointmentInput) -> None:
         self.calls.append("reserve_slot")
+        self.correlation_ids.append(input.correlation_id)
         if self._fail_reserve:
             raise ApplicationError(
                 "slot is no longer available",
@@ -70,8 +74,9 @@ class _RecordingActivities:
             )
 
     @activity.defn
-    async def billing_precheck(self, appointment_id: int) -> None:
+    async def billing_precheck(self, input: AppointmentInput) -> None:
         self.calls.append("billing_precheck")
+        self.correlation_ids.append(input.correlation_id)
         if self._fail_billing:
             raise ApplicationError(
                 "billing pre-check failed",
@@ -80,19 +85,24 @@ class _RecordingActivities:
             )
 
     @activity.defn
-    async def schedule_reminders(self, appointment_id: int) -> None:
+    async def schedule_reminders(self, input: AppointmentInput) -> None:
         self.calls.append("schedule_reminders")
+        self.correlation_ids.append(input.correlation_id)
 
     @activity.defn
-    async def confirm(self, appointment_id: int) -> None:
+    async def confirm(self, input: AppointmentInput) -> None:
         self.calls.append("confirm")
+        self.correlation_ids.append(input.correlation_id)
 
     @activity.defn
     async def release_slot(self, input: ReleaseSlotInput) -> None:
         self.calls.append("release_slot")
+        self.correlation_ids.append(input.correlation_id)
 
 
-async def _run(fakes: _RecordingActivities, workflow_id: str) -> None:
+async def _run(
+    fakes: _RecordingActivities, workflow_id: str, correlation_id: str = "req-wf"
+) -> None:
     async with await WorkflowEnvironment.start_time_skipping() as env:
         async with Worker(
             env.client,
@@ -110,7 +120,7 @@ async def _run(fakes: _RecordingActivities, workflow_id: str) -> None:
         ):
             await env.client.execute_workflow(
                 AppointmentSchedulingWorkflow.run,
-                1,
+                AppointmentInput(1, correlation_id),
                 id=workflow_id,
                 task_queue=_TASK_QUEUE,
             )
@@ -190,3 +200,31 @@ async def test_scheduling_workflow_reraises_unexpected_billing_error() -> None:
         await _run(fakes, "test-scheduling-unexpected-billing-error")
 
     assert fakes.calls == ["validate_eligibility", "reserve_slot", "billing_precheck"]
+
+
+async def test_the_correlation_id_reaches_every_activity() -> None:
+    """The whole point of threading the id through the workflow input: a
+    booking's log lines from the API, the saga's Activities and the Celery
+    reminder all carry one id.
+
+    Asserting one id per recorded call, rather than just "it appears
+    somewhere", is what would catch an Activity being invoked with a bare
+    id instead of its input object -- that Activity would log under a
+    freshly minted id and quietly fall out of the trace.
+
+    The happy path's five Activities are named explicitly first, because
+    comparing two lists built from the same run is vacuously true if both
+    turn out empty.
+    """
+    fakes = _RecordingActivities()
+
+    await _run(fakes, "test-scheduling-correlation")
+
+    assert fakes.calls == [
+        "validate_eligibility",
+        "reserve_slot",
+        "billing_precheck",
+        "schedule_reminders",
+        "confirm",
+    ]
+    assert fakes.correlation_ids == ["req-wf"] * 5

@@ -13,11 +13,11 @@ import logging
 from temporalio.worker import Worker
 
 from app.core.config import settings
+from app.core.logging import configure_logging
 from app.temporal.activities import PublishActivities, SchedulingActivities
 from app.temporal.client import get_temporal_client
 from app.temporal.workflows import PublishServiceWorkflow, AppointmentSchedulingWorkflow
 
-logging.basicConfig(level=settings.log_level)
 logger = logging.getLogger(__name__)
 
 
@@ -57,4 +57,8 @@ async def run_worker() -> None:
 
 
 if __name__ == "__main__":
+    # Configured here rather than at import: this block is the real entry
+    # point, and the test that calls run_worker() directly should not have
+    # the root logger swapped out from under it.
+    configure_logging()
     asyncio.run(run_worker())
