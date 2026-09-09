@@ -263,11 +263,11 @@ leak `password_hash` and patient data).
 |---|---|
 | `docs/design.md` | Data model / ERD, module breakdown, publish workflow and scheduling saga, the slot concurrency approach, decisions and tradeoffs |
 | `docs/events.md` | Every event: envelope, catalogue, topics, the outbox, and how a replay changes nothing |
+| `docs/runbook.md` | Diagnosing a stuck booking, missing reminders, wrong analytics numbers and a silent consumer |
 | `docs/prd.md` | Requirements, milestones, and the requirement → implementation → test traceability table |
 | `NOTES.md` | Working log and weekly tracking tables |
 
-Planned, not yet written: `docs/runbook.md` (Week 3) and `docs/ai-layer.md`
-(Weeks 4–5).
+Planned, not yet written: `docs/ai-layer.md` (Weeks 4–5).
 
 ### `.claude/` — working context
 
