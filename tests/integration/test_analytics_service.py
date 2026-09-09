@@ -20,7 +20,12 @@ from app.models import (
     Visit,
 )
 from app.models.enums import AppointmentStatus, VisitStatus
-from app.services.analytics import compute_analytics_for_date, increment_daily
+from app.services.analytics import (
+    appointments_series,
+    compute_analytics_for_date,
+    increment_daily,
+    summarise_range,
+)
 
 TARGET_DATE = date(2026, 6, 15)
 
@@ -136,3 +141,69 @@ def test_increment_daily_leaves_columns_it_was_not_given_alone(
     row = db_session.get(AnalyticsDaily, TARGET_DATE)
     assert row.appointments_booked == 5
     assert row.completed_visits == 1
+
+
+def test_summarise_range_reads_only_the_days_asked_for(db_session: Session) -> None:
+    """The range is a filter, not a suggestion.
+
+    A summary that quietly included every day would look right on a fresh
+    database and wrong on a real one -- the failure would only appear
+    once there was history either side of the range.
+    """
+    increment_daily(db_session, date(2026, 6, 14), appointments_booked=100)
+    increment_daily(db_session, TARGET_DATE, appointments_booked=2)
+    increment_daily(db_session, date(2026, 6, 16), appointments_booked=100)
+    db_session.flush()
+
+    summary = summarise_range(db_session, TARGET_DATE, TARGET_DATE)
+
+    assert summary["appointments_booked"] == 2
+
+
+def test_summarise_range_divides_the_two_wait_components(
+    db_session: Session,
+) -> None:
+    """The average is computed here, on read, from the stored total and
+    count -- which is the whole reason the row stores them separately.
+    """
+    increment_daily(db_session, TARGET_DATE, wait_seconds_total=900.0, wait_count=1)
+    increment_daily(db_session, TARGET_DATE, wait_seconds_total=300.0, wait_count=1)
+    db_session.flush()
+
+    summary = summarise_range(db_session, TARGET_DATE, TARGET_DATE)
+
+    assert summary["avg_wait_seconds"] == 600.0
+    assert summary["cancellation_rate"] is None
+
+
+def test_rates_are_null_rather_than_zero_when_there_is_nothing_to_divide(
+    db_session: Session,
+) -> None:
+    """Zero and "no data" are different facts.
+
+    A month with no bookings did not have a 0% cancellation rate, and a
+    dashboard drawing 0% would be stating something false rather than
+    admitting it has nothing to show.
+    """
+    summary = summarise_range(db_session, TARGET_DATE, TARGET_DATE)
+
+    assert summary["cancellation_rate"] is None
+    assert summary["avg_wait_seconds"] is None
+    assert summary["appointments_booked"] == 0
+
+
+def test_the_series_returns_zero_for_days_with_no_row(db_session: Session) -> None:
+    """increment_daily only creates a row when something happens, so a
+    quiet day is simply absent from the table. The series fills it in:
+    a chart with holes is a worse answer than one with zeros.
+    """
+    increment_daily(db_session, date(2026, 6, 16), appointments_booked=3)
+    db_session.flush()
+
+    series = appointments_series(db_session, date(2026, 6, 15), date(2026, 6, 17))
+
+    assert series == [
+        {"date": date(2026, 6, 15), "appointments_booked": 0},
+        {"date": date(2026, 6, 16), "appointments_booked": 3},
+        {"date": date(2026, 6, 17), "appointments_booked": 0},
+    ]

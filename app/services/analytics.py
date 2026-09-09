@@ -23,6 +23,8 @@ from app.models import (
     AnalyticsDaily,
     Appointment,
     AppointmentStatusHistory,
+    FailedJob,
+    Patient,
     Slot,
     Visit,
 )
@@ -122,3 +124,82 @@ def increment_daily(db: Session, target_date: date, **deltas: float) -> None:
         | {"updated_at": func.now()},
     )
     db.execute(stmt)
+
+
+def summarise_range(db: Session, start_date: date, end_date: date) -> dict[str, object]:
+    """The six metrics for a date range.
+
+    Four come from analytics_daily, summed -- the endpoint never touches
+    appointments or visits. The other two are single scalar counts:
+    nothing announces a new patient or a failed job, so no event could
+    maintain an aggregate for them, and a stored copy would be a second
+    source of truth for a number these tables already hold. Total
+    patients is not a per-day figure at all.
+    """
+    booked, completed, cancellations, wait_total, wait_count = db.execute(
+        select(
+            func.coalesce(func.sum(AnalyticsDaily.appointments_booked), 0),
+            func.coalesce(func.sum(AnalyticsDaily.completed_visits), 0),
+            func.coalesce(func.sum(AnalyticsDaily.cancellations), 0),
+            func.coalesce(func.sum(AnalyticsDaily.wait_seconds_total), 0.0),
+            func.coalesce(func.sum(AnalyticsDaily.wait_count), 0),
+        ).where(
+            AnalyticsDaily.date >= start_date,
+            AnalyticsDaily.date <= end_date,
+        )
+    ).one()
+
+    total_patients = db.execute(select(func.count()).select_from(Patient)).scalar_one()
+
+    # failed_jobs stores a timestamp, not a date, so the range has to be
+    # widened into one -- half-open at the top so the last day is whole.
+    range_start = datetime.combine(start_date, time.min, tzinfo=UTC)
+    range_end = datetime.combine(end_date, time.min, tzinfo=UTC) + timedelta(days=1)
+    failed_jobs = db.execute(
+        select(func.count())
+        .select_from(FailedJob)
+        .where(FailedJob.created_at >= range_start, FailedJob.created_at < range_end)
+    ).scalar_one()
+
+    return {
+        "start_date": start_date,
+        "end_date": end_date,
+        "total_patients": total_patients,
+        "appointments_booked": booked,
+        "completed_visits": completed,
+        "cancellations": cancellations,
+        # None, not 0: nothing was booked, so there is no rate to report.
+        "cancellation_rate": (cancellations / booked) if booked else None,
+        "avg_wait_seconds": (wait_total / wait_count) if wait_count else None,
+        "failed_jobs": failed_jobs,
+    }
+
+
+def appointments_series(
+    db: Session, start_date: date, end_date: date
+) -> list[dict[str, object]]:
+    """Appointments booked per day, one entry per day in the range.
+
+    Days with no row are returned as zero rather than omitted.
+    increment_daily only creates a row when something happens, so a quiet
+    day is simply absent -- and a chart with holes in it is a worse
+    answer than one with zeros, since the client would have to know the
+    convention to draw it correctly.
+    """
+    booked_by_day = dict(
+        db.execute(
+            select(AnalyticsDaily.date, AnalyticsDaily.appointments_booked).where(
+                AnalyticsDaily.date >= start_date,
+                AnalyticsDaily.date <= end_date,
+            )
+        ).all()
+    )
+
+    day_count = (end_date - start_date).days + 1
+    return [
+        {
+            "date": day,
+            "appointments_booked": booked_by_day.get(day, 0),
+        }
+        for day in (start_date + timedelta(days=offset) for offset in range(day_count))
+    ]
