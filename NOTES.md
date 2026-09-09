@@ -1115,3 +1115,91 @@ endpoints). Two unplanned preambles first.
 - The DoD says all six metrics are "served from aggregates", but total
   patients and failed jobs have no event that could maintain one, so both are
   counted directly. Is that acceptable, or should a seventh event type exist?
+
+### Day 4 - 2026-09-10
+
+**Goal:** 3.9 (`/metrics`), 3.10 (`/health/ready`), 3.7 (reconciliation).
+One unplanned preamble first.
+
+**Done**
+
+- **Preamble** Seed now repairs a drifted login instead of skipping it, and
+  `main()` prints the accounts it owns. The account that "stopped
+  authenticating" was never seeded.
+- **3.9** `app/core/metrics.py`; HTTP counter + latency histogram from
+  middleware; four domain counters; worker and consumer each publish on
+  8001/8002. All four Prometheus targets UP -- `app-api` had been DOWN
+  since Day 2.
+- **3.10** `/health/ready` checks Postgres, Redis, Kafka, Temporal
+  concurrently, each with a deadline. `/health/db` retired as its Week 1
+  docstring promised.
+- **3.7** `reconcile_date`/`reconcile_range`/`repair_date`,
+  `scripts/reconcile_analytics.py`, `GET /analytics/reconciliation`
+  (ADMIN only).
+- Stale rollup rows cleared via `--repair`; drift then injected by hand to
+  watch the check fail.
+- Mentor answered Day 3's open question: counting total patients and failed
+  jobs directly is acceptable. No seventh event type.
+- 378 -> 387 tests, 97.66% coverage.
+
+**Decisions**
+
+| Decision | Why |
+|---|---|
+| Metrics from three processes, not one | A process can only count what it saw; `reserve_slot` runs in the worker, not the API |
+| Accept that every process registers all four domain counters | Importing the module registers them; the API imports activities anyway. Names stay honest, `sum` by job is the query |
+| Label HTTP metrics by route template, never the URL | One metric per appointment id is how you exhaust your own Prometheus |
+| Unmatched paths share one label | Otherwise anyone mints unlimited labels by requesting nonsense |
+| `appointments_booked` counted at CONFIRMED, not at reservation | A reserved slot can still be compensated back |
+| `/health/ready` returns the per-dependency breakdown, not the error envelope | Reader is a monitor, not an API client; "which one" is the whole payload |
+| 503, not 500 | Not broken, just not ready -- a load balancer treats them differently |
+| Socket timeouts on the shared Redis client, not just the check | A hung Redis should not block a booking either |
+| Reconciliation writes nothing; `--repair` is separate and manual | A check that fixes what it finds can never report anything |
+| A missing aggregate row counts as zeros, not "skip" | A consumer that died before writing a day would otherwise look healthy |
+| Reconciliation endpoint is ADMIN only | The other analytics routes answer clinic questions; this one answers whether our pipeline works |
+| Script exits 1 on unrepaired drift | A check that always exits 0 cannot be alerted on |
+
+**Cost time**
+
+- The seed printed "Seed complete" while repairing nothing. `_get_or_create_patient`
+  returns early when the profile exists, before its own commit, so the new hash
+  was flushed and discarded. Staff accounts had been riding on a later helper's
+  commit by luck.
+- The suite cannot catch that: `db_session` rolls back and the assertion re-reads
+  the same session, so a flush is indistinguishable from a commit. Five green
+  tests against a script that did nothing.
+- `verify_password` raises on a hash too corrupt to parse, so the first repair
+  crashed on exactly the row it existed to fix.
+- Two transcription slips again -- `app.middlewayre`, `from redis import redis`.
+- My own test bug: assumed the `appointment` fixture had a `booked_at`. It stops
+  at REQUESTED, which is correct -- `booked_at` is the saga's to write.
+- Redis and Postgres readiness checks take ~3.9s, not the 2s designed for: both
+  drivers retry a refused connection once, so the timeout is per attempt, not
+  per check. Comment corrected to say so.
+
+**Explain out loud**
+
+- A metric is a tally in one process's memory. Three programs, three tills.
+- Labelling by URL instead of route template is unbounded cardinality -- the
+  standard way people take down their own monitoring.
+- A dependency that is *down* refuses instantly; one that is *hung* accepts and
+  says nothing. The timeout is the whole game.
+- Detection and repair must be separate actions, or the evidence is gone before
+  anyone reads the report.
+
+**Carrying into Day 5**
+
+- 3.11 tests, 3.12 `docs/events.md` + `docs/runbook.md` + architecture diagram,
+  3.13 crash-recovery demo.
+- Runbook must document `sum by (job)` for the domain counters, and
+  `--repair` as the drift response.
+- Buckets are UTC calendar days, not clinic-local. Deliberately deferred:
+  ~2.5-4h (4 handler sites, 3 boundary computations, 8 test files, and a
+  full backfill since every stored row is bucketed the old way), it is in
+  neither 7.1 nor the DoD, and Day 5 already holds 12h of estimates. Write
+  it up as a known limitation in `docs/design.md` during 3.12 instead --
+  what the boundary is, why UTC, what it costs a clinic far from UTC.
+
+**Open questions**
+
+- None.
