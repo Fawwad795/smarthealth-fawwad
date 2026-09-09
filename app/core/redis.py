@@ -10,7 +10,15 @@ import redis
 
 from app.core.config import settings
 
-redis_client = redis.from_url(settings.redis_url, decode_responses=True)
+redis_client = redis.from_url(
+    settings.redis_url,
+    decode_responses=True,
+    # A server that is *down* refuses instantly, but one that is *hung*
+    # accepts the connection and then says nothing. These two limits are
+    # what turn that second case into an error instead of a wait forever.
+    socket_connect_timeout=settings.redis_timeout_seconds,
+    socket_timeout=settings.redis_timeout_seconds,
+)
 
 
 def get_redis() -> redis.Redis:
