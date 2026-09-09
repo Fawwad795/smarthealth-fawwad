@@ -33,9 +33,13 @@ from app.temporal.client import get_temporal_client
 
 logger = logging.getLogger(__name__)
 
-# How long any single check may take before it counts as a failure. Short
-# enough that a monitor polling every 10 seconds never overlaps itself,
-# long enough not to trip over an ordinary slow moment.
+# How long any single *attempt* may take before it counts as a failure.
+# Not the ceiling on a whole check: the Redis and Postgres drivers each
+# retry a refused connection once, so those two take about twice this in
+# practice -- measured at ~3.9s against a stopped container. Bounded and
+# safe, but it is two attempts, not one. Short enough that a monitor
+# polling every 10 seconds never overlaps itself, long enough not to trip
+# over an ordinary slow moment.
 CHECK_TIMEOUT_SECONDS = 2.0
 
 # The order they are reported in. Named once so the checks and their labels
