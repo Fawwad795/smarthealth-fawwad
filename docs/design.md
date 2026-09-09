@@ -514,6 +514,19 @@ Tasks 2.10 (partly) and 2.11, carried into Week 3. Consequently the waitlist can
 be joined but nothing promotes an entry to `OFFERED`, because promotion is what
 cancellation triggers.
 
+**Known limitation (Week 3): analytics buckets are UTC calendar days.**
+Every event handler and the reconciliation check bucket by UTC midnight, not by
+the clinic's local midnight. The two always agree with each other — they read the
+same column — so this never shows up as drift. It shows up as the boundary being
+in the wrong place: a clinic several hours from UTC sees its late-afternoon
+appointments counted on the following day.
+
+Not fixed, and deliberately so. It touches four handler sites, three boundary
+computations, eight test files and needs a backfill of every stored row, and it
+is in neither the Week 3 task list nor the Definition of Done. Slots already
+store UTC and clinics already own a timezone, so the conversion point exists —
+this is a change of which timezone the aggregates use, not new machinery.
+
 ---
 
 ## 4. Open questions
