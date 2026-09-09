@@ -21,6 +21,7 @@ from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
 from app.core.logging import get_correlation_id, set_correlation_id
+from app.core.metrics import appointments_booked, double_booking_prevented
 from app.db.session import SessionLocal
 from app.events.envelope import EventType
 from app.events.outbox import record_event
@@ -378,6 +379,12 @@ class SchedulingActivities:
 
             won = reserve_slot_uncommitted(db, appointment.slot_id)
             if not won:
+                # The number this whole atomic-UPDATE design exists to
+                # produce. Two patients went for one slot and one was
+                # turned away -- without this counter the system has no
+                # way to show that ever happened, only that it never
+                # went wrong.
+                double_booking_prevented.inc()
                 raise ApplicationError(
                     "slot is no longer available",
                     type="SLOT_UNAVAILABLE",
@@ -487,6 +494,14 @@ class SchedulingActivities:
 
             db.commit()
             slot_id = appointment.slot_id
+
+        # Counted here and not in reserve_slot: a reserved slot is only a
+        # held slot, and the saga can still compensate and hand it back.
+        # An appointment is booked when it is CONFIRMED. The early return
+        # at the top means Temporal retrying an already-confirmed
+        # appointment does not count it a second time.
+        appointments_booked.inc()
+
         logger.info(
             "appointment confirmed appointment_id=%s slot_id=%s",
             appointment_id,

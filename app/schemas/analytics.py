@@ -85,3 +85,32 @@ class AnalyticsSummaryResponse(BaseModel):
     cancellation_rate: float | None
     avg_wait_seconds: float | None
     failed_jobs: int
+
+
+class FieldDrift(BaseModel):
+    """One column where the aggregate and the raw tables disagree."""
+
+    stored: float
+    actual: float
+
+
+class DayDrift(BaseModel):
+    """One day, and every field of it that disagrees."""
+
+    date: date
+    fields: dict[str, FieldDrift]
+
+
+class ReconciliationResponse(BaseModel):
+    """The drift report.
+
+    days_checked is here so an empty drifted_days list can be read
+    correctly. "Nothing drifted" and "nothing was checked" look identical
+    otherwise, and only one of them is good news.
+    """
+
+    start_date: date
+    end_date: date
+    days_checked: int
+    in_sync: bool
+    drifted_days: list[DayDrift]

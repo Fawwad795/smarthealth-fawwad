@@ -17,17 +17,15 @@ scrape_configs:
     static_configs:
       - targets: ["api:8000"]
 
-  # Uncomment once you expose metrics from your Celery worker or Kafka
-  # consumer (e.g. via prometheus_client.start_http_server on port 8001).
-  # - job_name: app-worker
-  #   metrics_path: /metrics
-  #   static_configs:
-  #     - targets: ["worker:8001"]
-  #
-  # - job_name: app-consumer
-  #   metrics_path: /metrics
-  #   static_configs:
-  #     - targets: ["consumer:8002"]
+  - job_name: app-worker
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["temporal-worker:8001"]
+
+  - job_name: app-consumer
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["consumer:8002"]
 
   - job_name: prometheus
     static_configs:
