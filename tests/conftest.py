@@ -38,6 +38,7 @@ from app.core.redis import get_redis
 from app.core.security import create_access_token
 from app.db.session import get_db
 from app.main import app
+from app.workers.celery_app import celery_app
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -46,6 +47,15 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 # database on the same server.
 _server, _, TEST_DB_NAME = settings.test_database_url.rpartition("/")
 ADMIN_URL = f"{_server}/postgres"
+
+# Tests must never wait on a real Celery worker or touch the real broker.
+# Eager mode runs a task's function synchronously, inline, in the calling
+# process -- so calling .delay() in a test executes immediately instead of
+# needing celery-worker to be up. task_eager_propagates makes a task's
+# exception raise in the test itself instead of being swallowed into the
+# (unused, in eager mode) result object.
+celery_app.conf.task_always_eager = True
+celery_app.conf.task_eager_propagates = True
 
 
 @pytest.fixture(scope="session")

@@ -869,3 +869,84 @@ table and join endpoint, cancel, and reschedule. Ran long enough that
    typing it.
 4. **Carrying into Week 3:** nothing from Week 2's task list. Celery,
    then Kafka, then observability.
+
+---
+
+## Week 3 - Async, Events & Observability
+
+### Day 1 - 2026-09-07
+
+**Goal:** 3.1 (Celery + Redis broker, trivial task) and 3.2 (reminder
+task + `failed_jobs`, periodic analytics rollup + Celery Beat).
+
+**Done**
+
+- **3.1** `app/workers/celery_app.py`, `celery-worker` compose service.
+  Trivial `add` task proved the broker + result backend round-trip live,
+  then deleted once real tasks existed.
+- **3.2a** `schedule_reminders` (Week 2's deliberate no-op) now queues a
+  real Celery task. `notifications` + `failed_jobs` tables, models,
+  migration. `DeadLetterTask` base class writes to `failed_jobs` on a
+  task's last failure.
+- **3.2b** `analytics_daily` table + `app/services/analytics.py`'s
+  rollup (five per-day metrics from raw tables, `INSERT ... ON CONFLICT
+  DO UPDATE`, not an increment). `celery-beat` compose service, 5-minute
+  schedule.
+- 265 -> 273 tests, 98.15% coverage, every file touched today at 100%.
+
+**Decisions**
+
+| Decision | Why |
+|---|---|
+| `celery-worker`/`celery-beat`, not `worker` | Avoids the exact naming collision the compose file's own comment already flagged |
+| Rollup recomputes-and-overwrites, not increments | Idempotent by construction - safe to run redundantly |
+| `total_patients` absent from `analytics_daily` | A running count, not a per-day bucket |
+| `DeadLetterTask` a shared Task base class | Any future Celery task gets dead-lettering for free |
+| Idempotency lives in one check-before-insert, not a DB constraint | Two retry layers (Temporal, Celery) funnel through one guard |
+
+**Cost time**
+
+- Two more `=`/`:` typos (`Notification.user_id`,
+  `AnalyticsDaily.appointments_booked`) - caught by Alembic's import
+  crashing, not review.
+- A copy-pasted `.where()` left `failed_jobs_count` filtering on
+  `Visit.checked_in_at` - a silent cartesian product masked by `visits`
+  being empty in dev data; caught by SQLAlchemy's own warning, not the
+  number being obviously wrong.
+- `temporal-worker` and the `test` image were both still on pre-Celery
+  builds from before 3.1 - `ModuleNotFoundError` until rebuilt.
+- Skipped the `verify` skill's lint/mypy/black pass after 3.2a - black
+  later reformatted 4 already-committed 3.2a files, needing a separate
+  style commit.
+- `task_eager_propagates` (on so every eager-mode test can just
+  `pytest.raises`) skips Celery's `on_failure` hook entirely and
+  re-raises directly - silently defeated the first version of the
+  dead-letter test.
+- `SessionLocal` has no test-time injection point, unlike Activities'
+  `session_factory` - worked around per-test via monkeypatching each
+  module's own `SessionLocal` name.
+
+**Explain out loud**
+
+- Scheduler vs. worker: Beat only enqueues on a clock, the same
+  mechanism as `.delay()` - it never executes task code itself.
+- Recompute-and-overwrite is a stronger guarantee than "safe to retry":
+  no run depends on a previous run's output, so redundant or concurrent
+  runs converge on the same answer.
+- One idempotency guard can safely sit under two unrelated retry layers
+  (Temporal retrying the Activity, Celery retrying the task) because it
+  lives at the point the effect actually happens.
+
+**Carrying into Day 2**
+
+- 3.3 (Kafka producer) next - the brief explicitly warns not to start
+  Kafka first.
+- `SessionLocal` needs a real injectable session factory before more
+  tasks repeat today's monkeypatch workaround.
+- Run `verify`'s static checks every subtask, not just before a day's
+  PR - today's black drift on already-committed files is exactly what
+  skipping it once caused.
+
+**Open questions**
+
+- None.

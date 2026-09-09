@@ -16,6 +16,9 @@ temporalio==1.9.0
 # --- Redis (Week 2+) ----------------------------------------------------
 redis==5.2.1
 
+# --- Celery (Week 3+) ----------------------------------------------------
+celery==5.4.0
+
 # --- Config / validation -----------------------------------------------
 pydantic==2.10.4
 pydantic-settings==2.7.0      # reads settings from env vars / .env

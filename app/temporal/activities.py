@@ -39,6 +39,7 @@ from app.models.enums import (
 )
 from app.services.billing import BillingChecker
 from app.services.slot import reserve_slot_uncommitted
+from app.workers.tasks.reminders import send_appointment_reminder
 
 
 @dataclass
@@ -344,18 +345,17 @@ class SchedulingActivities:
 
     @activity.defn
     def schedule_reminders(self, appointment_id: int) -> None:
-        """Placeholder for Week 3's Celery-backed reminders.
+        """Queue the Week 3 Celery reminder task for this appointment.
 
-        A structural no-op: the saga's shape (validate -> reserve ->
-        billing -> reminders -> confirm) is correct now, but nothing that
-        actually sends a reminder exists until Celery does. Kept as a
-        real Activity, not skipped, so wiring it to a Celery task later
-        is a one-line change here, not a saga redesign.
+        Fire-and-forget from the saga's point of view: .delay() just drops
+        a message on the broker and returns immediately, so this Activity
+        finishes in milliseconds regardless of whether celery-worker gets
+        to it now or in five minutes. Idempotent by inheritance -- if
+        Temporal retries this Activity, the task's own check-before-insert
+        (app/services/notification.py) is what actually prevents a second
+        reminder, not anything here.
         """
-        activity.logger.info(
-            "reminder scheduling is a Week 3 placeholder",
-            extra={"appointment_id": appointment_id},
-        )
+        send_appointment_reminder.delay(appointment_id)
 
     @activity.defn
     def confirm(self, appointment_id: int) -> None:
