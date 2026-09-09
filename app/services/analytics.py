@@ -203,3 +203,83 @@ def appointments_series(
         }
         for day in (start_date + timedelta(days=offset) for offset in range(day_count))
     ]
+
+
+def reconcile_date(db: Session, target_date: date) -> dict[str, dict[str, float]]:
+    """Compare one day's stored row against what the raw tables say.
+
+    Returns only the fields that disagree, each as {"stored": x, "actual":
+    y}. An empty dict means that day is in sync -- which is the answer we
+    want almost always, so it is the cheapest one to return.
+
+    A day with no stored row is treated as a row of zeros rather than
+    skipped. That distinction matters: a quiet day with no row and no
+    activity really is in sync, but a day where six appointments were
+    booked and no row exists is drift of exactly the kind this exists to
+    catch, and skipping missing rows would hide it.
+
+    Writes nothing, and must never start. A check that repaired what it
+    found could never report anything -- the evidence would be gone by the
+    time it spoke -- so repair_date() is a separate, deliberate act.
+    """
+    actual = compute_analytics_for_date(db, target_date)
+    row = db.get(AnalyticsDaily, target_date)
+    stored: dict[str, float] = (
+        {field: float(getattr(row, field)) for field in actual}
+        if row is not None
+        else dict.fromkeys(actual, 0.0)
+    )
+
+    return {
+        field: {"stored": stored[field], "actual": float(actual[field])}
+        for field in actual
+        # A tolerance, not ==, because wait_seconds_total is a float built
+        # by summing durations. Two arithmetically equal answers can differ
+        # in the last bit or two, and reporting that as drift would train
+        # everyone to ignore this check.
+        if abs(stored[field] - float(actual[field])) > 1e-6
+    }
+
+
+def reconcile_range(
+    db: Session, start_date: date, end_date: date
+) -> list[dict[str, object]]:
+    """Check every day in the range and return only the ones that disagree.
+
+    Day by day rather than one clever query: the per-day recompute already
+    exists and is known to read the same columns the handlers write, and
+    reusing it is what keeps the check and the thing being checked from
+    drifting apart on their own.
+    """
+    drifted: list[dict[str, object]] = []
+    current = start_date
+    while current <= end_date:
+        differences = reconcile_date(db, current)
+        if differences:
+            drifted.append({"date": current, "fields": differences})
+        current += timedelta(days=1)
+    return drifted
+
+
+def repair_date(db: Session, target_date: date) -> dict[str, float]:
+    """Overwrite one day's stored row with what the raw tables say.
+
+    The only function here that writes, and nothing calls it automatically.
+    Repair is a decision someone makes after reading a drift report, not a
+    thing that quietly happens -- an aggregate that silently heals itself
+    hides the bug that broke it, and the bug is the part worth knowing
+    about.
+
+    Recompute-and-overwrite, not an increment: the answer does not depend
+    on what was in the row before, so running this twice, or while the
+    consumer is also working, converges on the same numbers.
+    """
+    actual = compute_analytics_for_date(db, target_date)
+    statement = insert(AnalyticsDaily).values(date=target_date, **actual)
+    db.execute(
+        statement.on_conflict_do_update(
+            index_elements=[AnalyticsDaily.date], set_=actual
+        )
+    )
+    db.commit()
+    return actual

@@ -23,6 +23,7 @@ from app.schemas.analytics import (
     AnalyticsSummaryResponse,
     AppointmentsSeriesResponse,
     DateRange,
+    ReconciliationResponse,
 )
 from app.schemas.errors import error_responses
 from app.services import analytics as analytics_service
@@ -86,4 +87,39 @@ def get_appointments_series(
             "end_date": params.end_date,
             "buckets": buckets,
         }
+    )
+
+
+@router.get(
+    "/reconciliation",
+    response_model=ReconciliationResponse,
+    summary="Compare the aggregates against the raw tables and report drift",
+    responses=error_responses(
+        {
+            status.HTTP_403_FORBIDDEN: "Reconciliation is ADMIN only.",
+        }
+    ),
+)
+def get_reconciliation(
+    params: Annotated[DateRange, Query()],
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
+) -> ReconciliationResponse:
+    """Report any day where analytics_daily disagrees with the raw tables.
+
+    ADMIN only, one step tighter than the other two analytics routes.
+    Those answer questions about the clinic; this one answers a question
+    about whether our own pipeline is working, which is an operator's
+    concern rather than a front desk's.
+
+    Read-only. It never repairs what it finds -- scripts/reconcile_analytics.py
+    --repair is the deliberate way to do that.
+    """
+    drifted = analytics_service.reconcile_range(db, params.start_date, params.end_date)
+    return ReconciliationResponse(
+        start_date=params.start_date,
+        end_date=params.end_date,
+        days_checked=(params.end_date - params.start_date).days + 1,
+        in_sync=not drifted,
+        drifted_days=drifted,
     )
