@@ -1027,3 +1027,91 @@ and Celery) and 3.3 (Kafka producer, via the outbox).
 **Open questions**
 
 - None.
+
+### Day 3 - 2026-09-09
+
+**Goal:** 3.4 (consumer container), 3.5 (consumer idempotency), 3.6 (analytics
+endpoints). Two unplanned preambles first.
+
+**Done**
+
+- **Preamble** `pytest-timeout`, 120s. Day 2's hang would now fail with a
+  traceback instead of stalling the run.
+- **Preamble** Temporal test-server binary baked into the image
+  (`scripts/fetch_test_server.py`). The suite no longer downloads 83MB per
+  run and passes with `--network none` -- a Weeks 4-5 requirement that was
+  already broken and invisible.
+- **3.5a** `processed_events`, PK `(consumer, event_id)` + migration.
+- **3.4a** `app/workers/consumer.py` and its container: manual offsets,
+  poison message -> `failed_jobs` then commit, transient -> `seek` and retry.
+- **3.5b** `claim_event()` -- `ON CONFLICT DO NOTHING ... RETURNING`, sharing
+  the handler's transaction.
+- **3.4b** Handlers for booked/cancelled/completed. `analytics_daily`
+  reshaped; Beat rollup retired and `rollup_analytics_for_date` became the
+  read-only `compute_analytics_for_date` for 3.7.
+- **3.6** `GET /analytics/summary` and `GET /analytics/appointments`,
+  FRONT_DESK/ADMIN only.
+- 324 -> 370 tests, 97.53% coverage.
+
+**Decisions**
+
+| Decision | Why |
+|---|---|
+| Consumer is the sole writer of `analytics_daily`; the rollup becomes 3.7's check | A 5-minute recompute would overwrite increments, and a check that writes can never find drift |
+| PK `(consumer, event_id)`, not `event_id` alone | Idempotency is per-consumer; a second consumer would skip everything the first had seen |
+| `ON CONFLICT DO NOTHING ... RETURNING`, not a caught `IntegrityError` | A violated constraint aborts the transaction the handler still needs |
+| Permanent failure dead-letters then commits; transient rewinds | An offset is a position, so refusing to move blocks the partition forever |
+| `topic.metadata.refresh.interval.ms` 10s | A topic created after subscribe was invisible for five minutes |
+| `avg_wait_seconds` -> `wait_seconds_total` + `wait_count` | An average cannot be incremented; its components can |
+| `failed_jobs_count` dropped, counted directly | No event maintains it, and it duplicated a number `failed_jobs` already holds |
+| Handlers bucket by the same raw column the reconciliation reads | Otherwise a midnight-straddling event shows as drift that was never real |
+
+**Cost time**
+
+- Two more transcription slips, both in typed code: `envelope[event_id]`
+  missing its quotes (a `NameError` on the first real event), and a
+  `FailedJob` import I had removed an hour earlier. ruff caught both; review
+  would not have.
+- `pytest-timeout` failed a Temporal test at 60s on its first run. Cause was
+  an 83MB test-server download *inside* the test, measured at 7s and 65s on
+  two runs of the same suite -- the test was reporting network speed.
+- The first live event never arrived: the consumer had subscribed before
+  `app.visits` existed, and librdkafka refreshes topic metadata every five
+  minutes. Looked exactly like a dead consumer.
+- `worker_session`'s `nullcontext` does not roll back, so the "claim must not
+  outlive its work" test failed while production was already correct. Made
+  the rollback explicit rather than leave it to the session closing.
+- Coverage passed at 97% with `dispatch()` at 0% -- every loop test
+  monkeypatches it, so the routing seam was never executed.
+- Seeded patient `ayesha@example.com` no longer authenticates with
+  `SEED_PASSWORD`; used a throwaway registration for the live 403 check.
+
+**Explain out loud**
+
+- A Kafka offset is a position, not a checklist: you cannot accept the next
+  message while leaving this one outstanding.
+- Not committing is not enough to retry -- `poll()` advances the client's own
+  position anyway, so `seek()` is what makes a retry real inside a process.
+- A violated constraint aborts the whole transaction, which is why the
+  duplicate guard is an upsert rather than a `try/except`.
+- An aggregate is incrementally maintainable only if the new answer needs
+  just the old answer and the new item. Averages fail that and decompose into
+  a sum and a count, which do not.
+
+**Carrying into Day 4**
+
+- 3.7 reconciliation -- `compute_analytics_for_date` is ready and writes
+  nothing.
+- Stale `analytics_daily` rows written by the retired rollup will show as
+  real drift in 3.7. Decide whether to clear them or demo them.
+- 3.9 `/metrics` -- the Prometheus `app-api` target is still DOWN.
+- 3.10 `/health/ready`, 3.12 docs, 3.13 crash-recovery demo.
+- Buckets are UTC calendar days, not clinic-local. Known limitation, written
+  down, not fixed.
+- Dev seed has drifted -- some seeded users no longer match `SEED_PASSWORD`.
+
+**Open questions**
+
+- The DoD says all six metrics are "served from aggregates", but total
+  patients and failed jobs have no event that could maintain one, so both are
+  counted directly. Is that acceptable, or should a seventh event type exist?
