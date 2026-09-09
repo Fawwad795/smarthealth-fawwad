@@ -24,6 +24,12 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.logging import configure_logging, set_correlation_id
+from app.core.metrics import (
+    CONSUMER_METRICS_PORT,
+    events_consumed,
+    events_failed,
+    start_metrics_server,
+)
 from app.db.session import session_scope
 from app.events.dedupe import claim_event
 from app.events.envelope import EventType, all_topics
@@ -212,6 +218,7 @@ def _handle_one(consumer: Consumer, msg: Message) -> None:
                     envelope["event_id"],
                     envelope["event_type"],
                 )
+                events_consumed.labels(envelope["event_type"], "processed").inc()
             else:
                 db.rollback()
                 # A skip, not a failure: this event was handled earlier,
@@ -221,12 +228,18 @@ def _handle_one(consumer: Consumer, msg: Message) -> None:
                     envelope["event_id"],
                     envelope["event_type"],
                 )
+                # A duplicate is counted, not ignored. "How many replays are
+                # we absorbing" is a real question, and a silent skip makes
+                # a producer stuck in a retry loop invisible.
+                events_consumed.labels(envelope["event_type"], "duplicate").inc()
 
     except PermanentEventError as exc:
+        events_failed.labels("permanent").inc()
         _dead_letter(msg, exc)
         # Falls through to the commit below on purpose: the message is
         # recorded, and the stream must move past it.
     except Exception:
+        events_failed.labels("transient").inc()
         logger.exception("event handling failed; offset left for redelivery")
         _rewind(consumer, msg)
         time.sleep(RETRY_BACKOFF_SECONDS)
@@ -256,6 +269,7 @@ def consume_forever(consumer: Consumer, stop: threading.Event) -> None:
 def main() -> None:
     """Entry point for `python -m app.workers.consumer`."""
     configure_logging()
+    start_metrics_server(CONSUMER_METRICS_PORT)
     stop = threading.Event()
 
     def request_stop(signum: int, frame: object) -> None:

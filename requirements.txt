@@ -22,6 +22,9 @@ celery==5.4.0
 # --- Kafka (Week 3+) ----------------------------------------------------
 confluent-kafka==2.6.1        # librdkafka-backed; the maintained client
 
+# --- Metrics (Week 3+) ---------------------------------------------------
+prometheus-client==0.21.1     # the official Python client
+
 # --- Config / validation -----------------------------------------------
 pydantic==2.10.4
 pydantic-settings==2.7.0      # reads settings from env vars / .env

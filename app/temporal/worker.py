@@ -14,6 +14,7 @@ from temporalio.worker import Worker
 
 from app.core.config import settings
 from app.core.logging import configure_logging
+from app.core.metrics import WORKER_METRICS_PORT, start_metrics_server
 from app.temporal.activities import PublishActivities, SchedulingActivities
 from app.temporal.client import get_temporal_client
 from app.temporal.workflows import PublishServiceWorkflow, AppointmentSchedulingWorkflow
@@ -61,4 +62,8 @@ if __name__ == "__main__":
     # point, and the test that calls run_worker() directly should not have
     # the root logger swapped out from under it.
     configure_logging()
+    # Started here, not inside run_worker(): a test that calls run_worker()
+    # directly should not try to bind a port, and would fail the second
+    # time it ran if it did.
+    start_metrics_server(WORKER_METRICS_PORT)
     asyncio.run(run_worker())

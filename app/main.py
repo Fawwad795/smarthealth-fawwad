@@ -1,5 +1,6 @@
 """FastAPI application factory."""
 
+import time
 from collections.abc import Awaitable, Callable
 
 from fastapi import Depends, FastAPI, Request, Response
@@ -12,6 +13,12 @@ from app.core.logging import (
     CORRELATION_ID_HEADER,
     configure_logging,
     set_correlation_id,
+)
+from app.core.metrics import (
+    METRICS_PATH,
+    endpoint_label,
+    metrics_payload,
+    observe_request,
 )
 from app.db.session import get_db
 
@@ -117,6 +124,38 @@ def create_app() -> FastAPI:
         response.headers[CORRELATION_ID_HEADER] = correlation_id
         return response
 
+    @app.middleware("http")
+    async def record_http_metrics(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        """Count and time every request that passes through the app.
+
+        Written here rather than in each router because the numbers
+        Prometheus wants are identical for every endpoint, and anything that
+        has to be remembered per-route eventually gets forgotten on one.
+
+        /metrics skips itself deliberately. Prometheus scrapes it every 15
+        seconds forever, so counting those would bury real traffic under
+        scrapes within a day.
+
+        The recording sits in a finally block so a request that blew up is
+        still timed. A 500 that took 30 seconds is the most useful line on
+        the whole page, and it is precisely the one an early return loses.
+        If the app raised instead of returning, no status was ever set, and
+        500 is the honest label for that.
+        """
+        if request.url.path == METRICS_PATH:
+            return await call_next(request)
+
+        started = time.perf_counter()
+        status = "500"
+        try:
+            response = await call_next(request)
+            status = str(response.status_code)
+            return response
+        finally:
+            observe_request(request.method, endpoint_label(request), status, started)
+
     app.include_router(auth_router, prefix="/api/v1")
     app.include_router(analytics_router, prefix="/api/v1")
     app.include_router(departments_router, prefix="/api/v1")
@@ -140,6 +179,17 @@ def create_app() -> FastAPI:
         Redis, Kafka and Temporal."""
         db.execute(text("SELECT 1"))
         return {"status": "ok", "database": "reachable"}
+
+    @app.get(METRICS_PATH, tags=["health"], include_in_schema=False)
+    def metrics() -> Response:
+        """The page Prometheus scrapes.
+
+        Kept out of the OpenAPI schema: it is for a monitoring tool, not for
+        anyone reading the API docs, and its body is not JSON like every
+        other response here.
+        """
+        payload, content_type = metrics_payload()
+        return Response(content=payload, media_type=content_type)
 
     return app
 
