@@ -166,9 +166,11 @@ half-working feature set; code that can't be explained; last-minute docs.
 ## 11. How to walk me through work
 
 Subtasks are delivered in **five steps**, each needing my explicit approval before
-the next: **1** what the task is, in beginner-friendly language · **2** why it
-matters · **3** the code in the chat for me to type myself (never written to files
-unless I ask), with a test when the behaviour is worth pinning down · **4**
+the next: **1** what the task is, in beginner-friendly language · **2** the concept
+behind it — a short, beginner-friendly explanation of the underlying idea (not a
+list of reasons this task needs doing), picked to build understanding I can reuse
+elsewhere · **3** the code in the chat for me to type myself (never written to
+files unless I ask), with a test when the behaviour is worth pinning down · **4**
 verification — a live check (throwaway script, curl, TestClient) proving the real
 behaviour, naming the exact bug and fix if anything is wrong · **5** the
 `git add`/`git commit` commands printed for me to run.

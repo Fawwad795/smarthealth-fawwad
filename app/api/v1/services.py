@@ -17,6 +17,7 @@ from app.models.enums import UserRole
 from app.schemas.service import (
     ServiceCreate,
     ServiceListResponse,
+    ServicePublishStatusResponse,
     ServiceResponse,
     ServiceUpdate,
 )
@@ -28,6 +29,7 @@ from app.schemas.service_search import (
 from app.schemas.errors import error_responses
 from app.services import service_search as service_search_service
 from app.services import service as service_service
+from app.services import service_publish
 
 router = APIRouter(prefix="/services", tags=["services"])
 
@@ -167,3 +169,68 @@ def update_service(
     """
     service = service_service.update_service(db, service_id, data)
     return ServiceResponse.model_validate(service)
+
+
+@router.post(
+    "/{service_id}/publish",
+    response_model=ServicePublishStatusResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Start the publish workflow",
+    responses=error_responses(
+        {
+            status.HTTP_403_FORBIDDEN: "Admin only.",
+            status.HTTP_404_NOT_FOUND: "SERVICE_NOT_FOUND.",
+            status.HTTP_409_CONFLICT: "SERVICE_NOT_PUBLISHABLE -- not DRAFT or PUBLISH_FAILED.",
+        }
+    ),
+)
+async def publish_service(
+    service_id: int,
+    db: Session = Depends(get_db),
+    _current_user=Depends(require_role(UserRole.ADMIN)),
+) -> ServicePublishStatusResponse:
+    """Start the publish workflow for a service. ADMIN only.
+
+    202: the workflow has started, not necessarily finished -- poll GET
+    publish-status for the outcome. 404 if the service doesn't exist, 409
+    if it isn't DRAFT or PUBLISH_FAILED.
+    """
+    service, workflow_id = await service_publish.start_publish(db, service_id)
+    return ServicePublishStatusResponse(
+        service_id=service.id,
+        status=service.status,
+        published_at=service.published_at,
+        workflow_id=workflow_id,
+    )
+
+
+@router.get(
+    "/{service_id}/publish-status",
+    response_model=ServicePublishStatusResponse,
+    summary="Read where the publish lifecycle stands",
+    responses=error_responses(
+        {
+            status.HTTP_403_FORBIDDEN: "Staff only.",
+            status.HTTP_404_NOT_FOUND: "SERVICE_NOT_FOUND.",
+        }
+    ),
+)
+def get_publish_status(
+    service_id: int,
+    db: Session = Depends(get_db),
+    _current_user=Depends(require_role(*_STAFF_ROLES)),
+) -> ServicePublishStatusResponse:
+    """Report where this service's publish lifecycle currently stands.
+    Any staff role. 404 if the service doesn't exist.
+
+    Reads status/published_at straight off the service row -- the
+    workflow's Activities keep both in sync at every step, so this needs
+    no live query into Temporal itself.
+    """
+    service = service_service.get_service(db, service_id)
+    return ServicePublishStatusResponse(
+        service_id=service.id,
+        status=service.status,
+        published_at=service.published_at,
+        workflow_id=service_publish.publish_workflow_id(service.id),
+    )

@@ -12,7 +12,7 @@ Kept as I go, not written up at the end of the week.
 | Week | Focus | Must be true by Friday | Status |
 |---|---|---|---|
 | 1 | Foundation & core domain | Auth + roles + patient-data protection, providers/services/slots CRUD, migrations, seed, 80% coverage | ☑ 142 tests, 98% - PR #1 approved, deliberately left unmerged |
-| 2 | Temporal, scheduling & slots | No double-booking, no duplicate booking, publish workflow + scheduling saga with compensation, chunks produced, 80% coverage | ☐ |
+| 2 | Temporal, scheduling & slots | No double-booking, no duplicate booking, publish workflow + scheduling saga with compensation, chunks produced, 80% coverage | ☑ 264 tests, 98% - 2.1-2.13 complete |
 | 3 | Async, events, observability | Celery reminders/rollup with DLQ, events consumed idempotently, accurate analytics, correlation IDs (no PHI), `/metrics`, 80% coverage | ☐ |
 
 ### Part B (Weeks 4-5)
@@ -333,3 +333,539 @@ of them.
 **Open questions**
 
 - None.
+
+---
+
+## Week 2 - Temporal Workflows & Scheduling
+
+### Day 1 - 2026-08-29
+
+**Goal:** 2.1 (status transition guard, 409 on illegal entry) + 2.2
+(Temporal worker wired up, trivial workflow end-to-end).
+
+**Done**
+
+- **2.1** `service_publish.py` - `ensure_can_publish` /
+  `ensure_can_unpublish`. 10 unit tests, no database.
+- **2.2** `app/temporal/` - `client.py`, `ping_workflow.py` (temporary),
+  `worker.py`. New `temporal-worker` compose service. `temporalio==1.9.0`.
+- Verified live: worker connected, `PingWorkflow` ran end-to-end ->
+  `pong, Fawwad`.
+- 142 -> 152 tests, lint clean, no hardcoded status codes.
+
+**Decisions**
+
+| Decision | Why |
+|---|---|
+| Guard in its own module (`service_publish.py`) | Keeps `service.py` Temporal-unaware |
+| `INACTIVE` has no path back to `PUBLISHING` | Diagram only draws `PUBLISH_FAILED -> PUBLISHING` as retry |
+| Compose service `temporal-worker`, not `worker` | `worker` already reserved for Week 3's Celery worker |
+| `client.py` test deferred to 2.3 | Needs an async-test-infra call 2.3 forces anyway |
+
+**Cost time**
+
+- Named the compose service `worker`, collided with the file's own Week 3
+  plan - caught on re-read, not by me first.
+- `run_worker()` missing a docstring - caught by ruff (D103).
+- `docker compose exec` mangled a path on Git Bash again -
+  `MSYS_NO_PATHCONV=1`.
+- `ruff check .` on the whole repo flagged `migrations/` - false alarm,
+  `make lint` excludes it.
+
+**Explain out loud**
+
+- Workflow/Activity/Worker/Client - the kitchen analogy; durable execution
+  resumes mid-recipe after a crash.
+- `temporal:7233` only resolves inside the compose network, not the
+  laptop.
+- Same `client.py` file will run inside `api` too - one image, execution
+  follows the importer.
+- `@activity.defn`/`@workflow.defn` - registers a function with Temporal's
+  SDK.
+- `Client.connect()` is a real network call - why it has to be `async`.
+
+**Carrying into Day 2**
+
+- 2.3 - the real publish workflow, replaces `ping_workflow.py`.
+- Decide Temporal test-infra (`pytest-asyncio` + `WorkflowEnvironment` vs.
+  real container).
+- 2.4 follows once 2.3 exists.
+
+**Open questions**
+
+- Should `INACTIVE` have a re-publish path?
+
+---
+
+### Day 2 - 2026-08-30
+
+**Goal:** 2.3 (service publishing as a real Temporal Workflow) end to
+end, then 2.4 (publish endpoints).
+
+**Done**
+
+- Decided Day 1's test-infra question: `pytest-asyncio` +
+  `WorkflowEnvironment.start_time_skipping()`.
+- `content_chunks` model + migration.
+- `PublishActivities` - validate, structure, chunk, mark_published,
+  mark_publish_failed. Class with an injectable `session_factory`.
+- `PublishServiceWorkflow` - validate -> structure -> chunk ->
+  mark_published, with a clean-failure branch for `SERVICE_INCOMPLETE`.
+- Wired `worker.py` to the real workflow/activities; deleted
+  `ping_workflow.py`.
+- **2.4** `POST /services/{id}/publish` (202) + `GET publish-status`.
+- Verified live: full publish, duplicate-publish 409, worker-restart
+  resumption, validation failure -> `PUBLISH_FAILED`, retry after fix.
+- 152 -> 167 tests.
+
+**Decisions**
+
+| Decision | Why |
+|---|---|
+| `WorkflowEnvironment`, not a real container | Proves the real Workflow definition, not a mock; time-skipping fast-forwards timers |
+| `content_chunks` uses `source_type`/`source_id`, no FK | Matches the brief's generic schema |
+| `PublishActivities` as a class + injectable `session_factory` | Activities have no `Depends(get_db)`; Temporal's documented DI pattern |
+| `imports_passed_through()` around the activities import | Importing them pulls in the DB engine setup, which the sandbox rejects |
+| Deterministic workflow id (`publish-service-{id}`) | Second guard against a concurrent double-publish |
+| `GET publish-status` reads the DB row, not a live Temporal query | Simpler; Activities keep it in sync |
+
+**Cost time**
+
+- Sandbox rejected the workflow at startup (`RestrictedWorkflowAccessError`
+  on `pathlib.Path.expanduser`) - importing `PublishActivities` pulled in
+  the DB engine setup. Fixed with `imports_passed_through()`.
+- `api`'s image was stale (built before `temporalio`) -
+  `ModuleNotFoundError` until rebuilt.
+- Broke the "code in chat, not written directly" rule once, writing a
+  test file straight to disk - caught immediately.
+
+**Explain out loud**
+
+- Deterministic (Workflows) vs. idempotent (Activities) - different
+  questions.
+- Sync Activities need a `ThreadPoolExecutor` - one blocking call would
+  freeze Temporal's whole event loop, not just itself.
+- `session_factory` is dependency injection by hand - same idea as
+  `Depends(get_db)`.
+- Two independent guards against a double-publish: the status check
+  (small race window) and Temporal's workflow-id uniqueness.
+
+**Carrying into Day 3**
+
+- 2.5 - concurrency-safe slot reservation (atomic conditional UPDATE).
+- 2.6 - Appointment model, status enum, `appointment_status_history`
+  migration.
+- Weekly docs pass (2.13): publish race-window tradeoff,
+  publish-status's known limitation.
+
+**Open questions**
+
+- Should `INACTIVE` have a re-publish path? (carried from Day 1)
+- Should `GET publish-status` cross-check Temporal's own execution status
+  instead of relying on the DB column alone?
+- Is `POST /services/{id}/unpublish` expected this week, or does it wait
+  until scheduled? Only `/publish` was named in 2.4.
+
+---
+
+### Day 3 - 2026-08-31
+
+**Goal:** 2.5 (concurrency-safe slot reservation) + 2.6 (Appointment
+model, status enum, appointment_status_history migration).
+
+**Done**
+
+- **2.5** `reserve_slot()` in `app/services/slot.py` - one conditional
+  `UPDATE ... WHERE status = AVAILABLE ... RETURNING id`. Concurrency
+  test: 50 threads race one slot, exactly one wins.
+- **2.6** `AppointmentStatus` enum, `Appointment` model,
+  `AppointmentStatusHistory` model (append-only), migration.
+  `patient`/`service` fixtures added to `conftest.py`. 4 new
+  schema-constraint tests (status enums, idempotency uniqueness, FK
+  protecting history from a deleted appointment).
+- 168 -> 172 tests, lint clean, migration round-tripped
+  (upgrade/downgrade/upgrade).
+
+**Decisions**
+
+| Decision | Why |
+|---|---|
+| `reserve_slot` via Core `update().returning()`, not raw SQL | Matches the `select()` style used everywhere else in the codebase |
+| `updated_at` set explicitly in that UPDATE | `onupdate` isn't guaranteed applied to a hand-written Core statement |
+| Concurrency test opens its own engine sized for 50 connections | Shared `engine` fixture's default pool (5+10) would serialize most attempts before they reach Postgres |
+| `idempotency_key` unique + NOT NULL on `Appointment` | DB-level backstop alongside Redis (2.7) |
+| `AppointmentStatusHistory` a separate append-only table, not JSONB | Queryable, and matches "never delete, transition" (non-negotiable #4) |
+| `actor` a plain string, not an enum/FK to users | Not every actor is a user - the saga itself causes transitions |
+
+**Cost time**
+
+- `reserve_slot` first draft dropped `.returning(Slot.id)` and
+  `db.commit()` when typed by hand - `ResourceClosedError`, caught by
+  the concurrency test.
+- `Appointment` model typed with `service_id` missing entirely and
+  `slot_id`'s FK pointing at `services.id` instead of `slots.id` - not
+  visible from reading the file, only surfaced in the autogenerated
+  migration diff.
+- `book_at` typo for `booked_at`; a `TYPE_CHECKING` import referenced
+  `app.models.appointments` (plural, doesn't exist).
+- A multi-paragraph commit message drafted as one `-m` with embedded
+  blank lines didn't paragraph correctly - switched convention to one
+  `-m` per paragraph going forward.
+
+**Explain out loud**
+
+- Why SELECT-then-UPDATE is a race condition and a single conditional
+  UPDATE closes it - compare-and-swap, the database as sole arbiter.
+- Current-state column + append-only history table - balance vs.
+  statement, same shape as light event sourcing.
+- Why the concurrency test can't use `db_session` - its transaction is
+  never actually committed, so a second connection can't see the row.
+
+**Carrying into Day 4**
+
+- 2.7 - Booking idempotency (`Idempotency-Key` header, Redis).
+- 2.8 - Simulated `BillingChecker` + billing table.
+
+**Open questions**
+
+- Should `INACTIVE` have a re-publish path? (carried from Day 1)
+- Should `GET publish-status` cross-check Temporal's own execution status
+  instead of relying on the DB column alone? (carried from Day 2)
+- Is `POST /services/{id}/unpublish` expected this week, or does it wait
+  until scheduled? (carried from Day 2)
+- `AppointmentStatusHistory.actor` is a free string for now - worth a
+  fixed vocabulary before the saga starts writing to it in 2.9?
+
+---
+
+### Day 4 - 2026-08-31
+
+**Goal:** 2.7 (booking idempotency via Redis) + 2.8 (simulated
+`BillingChecker` + billing table). Both standalone, unwired -- tomorrow's
+saga (2.9) is what calls them.
+
+**Done**
+
+- **2.7** `app/core/redis.py` (client) + `app/services/idempotency.py`
+  (`get_cached_result`/`store_result`), TTL from
+  `settings.idempotency_key_ttl_seconds`.
+- **2.8** `BillingStatus` enum, `Billing` model + migration (unique
+  `appointment_id` and `idempotency_key`, FK RESTRICT),
+  `BillingChecker.precheck()` - idempotent, forceable failure via
+  `billing_force_fail`.
+- Fixed pre-existing `black` drift in 3 files untouched since before Day
+  3 (`temporal/client.py`, two test files) - separate commit.
+- 172 -> 179 tests (7 new + 1 coverage fix), lint clean, no hardcoded
+  status codes, migration round-tripped, everything also verified live
+  against the real containers, not just pytest.
+
+**Decisions**
+
+| Decision | Why |
+|---|---|
+| Redis check-then-remember, DB unique constraint as backstop | Redis answers "seen this key" before a row exists; the DB is the last-resort guarantee |
+| TTL read from `settings.idempotency_key_ttl_seconds` (86400s) | `.env.example` already declared this env var; my first draft hardcoded 3600s and ignored it |
+| `BillingChecker` is a class with one method today | `REFUNDED` is already in the vocabulary - a natural second method later, same reasoning as `PublishActivities` |
+| `billing.amount` is a fixed placeholder (`100.00`) | No pricing model exists anywhere in the domain; billing is explicitly simulated |
+| `billing_force_fail` is a global settings flag | Matches the brief's literal wording; 2.9's saga flips it on demand to exercise compensation |
+| `BillingChecker.precheck` takes `db: Session` directly | Mirrors `reserve_slot`'s plain style; the Temporal session-factory DI is 2.9's Activities wrapper's job, not this class's |
+
+**Cost time**
+
+- `docker compose build` (bare) silently skips services behind
+  `profiles:` - the `test` image kept running on a pre-`redis` image
+  until built explicitly (`docker compose build test`). Recurred a
+  second time later in the day for reasons I didn't fully pin down.
+- `settings.billing.force_fail` - a nested-attribute typo for
+  `settings.billing_force_fail`, caught by the test suite, not lint.
+- `black` flagged 3 files never touched today - drift since before Day
+  3 despite that day's notes saying "lint clean".
+- `app/core/redis.py` sat at 0% coverage - nothing, not even the test
+  suite, ever imported it. Caught by `/verify`, not by habit.
+
+**Explain out loud**
+
+- Four distinct idempotency mechanisms now exist (client/Redis,
+  data/atomic UPDATE, Activity-level, consumer-level later) - why each
+  is needed and none subsumes another.
+- A fake billing check has to be able to fail on purpose, or it proves
+  nothing about compensation.
+- Check-before-insert is now the same pattern across three unrelated
+  tasks (2.5, 2.7, 2.8) - one convention, not three coincidences.
+
+**Carrying into Day 5**
+
+- 2.9 - the scheduling saga (7h, the big one) - wires `reserve_slot`,
+  `BillingChecker` and the idempotency cache together as Temporal
+  Activities with compensation.
+- Still open: a fixed vocabulary for `AppointmentStatusHistory.actor`
+  before the saga starts writing to it.
+
+**Open questions**
+
+- Should `INACTIVE` have a re-publish path? (carried from Day 1)
+- Should `GET publish-status` cross-check Temporal's own execution status
+  instead of relying on the DB column alone? (carried from Day 2)
+- Is `POST /services/{id}/unpublish` expected this week? Leaning "no" -
+  the Week 2 Definition of Done never mentions it. (carried from Day 2)
+- Why did the `test` image's `redis` package regress after being fixed
+  once already today - worth watching for a third occurrence before
+  digging into BuildKit/profile caching further.
+
+---
+
+### Day 5 - 2026-08-31
+
+**Goal:** 2.9 - the appointment scheduling saga (validate -> reserve ->
+billing -> reminders -> confirm) as a Temporal Workflow with
+compensation, fully tested.
+
+**Done**
+
+- Resolved both carried opens: `INACTIVE` gets no re-publish path;
+  `AppointmentStatusHistory.actor` fixed as
+  `PATIENT`/`FRONT_DESK`/`PROVIDER`/`ADMIN` + `SAGA` + `SAGA_COMPENSATION`.
+- `slot_reservations` table + model + enum, migration round-tripped -
+  makes `reserve_slot` retry-safe.
+- `reserve_slot` split into `reserve_slot_uncommitted` + `reserve_slot`
+  so the saga can share one transaction with its own insert.
+- `SchedulingActivities` (7 methods, all idempotent) +
+  `AppointmentSchedulingWorkflow` (explicit compensation per failure
+  type). Worker registers both.
+- Verified live: happy path, compensation path, worker-crash resumption.
+- 179 -> 202 tests, 98% coverage.
+
+**Decisions**
+
+| Decision | Why |
+|---|---|
+| `slot_reservations` table, not `Appointment.status` | Reserve must survive a crash between the UPDATE and the status write |
+| `reserve_slot` split into uncommitted core + committing wrapper | One shared transaction with the saga's own insert |
+| `SAGA` vs `SAGA_COMPENSATION` as separate actors | Audit trail shows a rollback apart from an ordinary step |
+| `schedule_reminders` a real no-op Activity | Celery is Week 3; one-line change later |
+| Compensation `try`/`except` left unabstracted | Modeling each one explicitly is the lesson |
+| Crash-resumption proven live, not by a test | No reliable way to hit "mid-saga" timing in pytest |
+
+**Cost time**
+
+- `appointment.book_at` typo for `booked_at` - same field Day 3
+  mis-typed too.
+- Test file saved as `tes_scheduling_workflow.py` - pytest silently
+  skipped it.
+- First instinct (reuse `Appointment.status` for idempotency) would have
+  missed the actual crash window.
+
+**Explain out loud**
+
+- Compensation isn't rollback - `reserve_slot` already committed, so
+  undoing it is a new write.
+- The UPDATE and the `slot_reservations` insert share one commit, not
+  two.
+- Postgres row-level locking, not "who commits first," stops two
+  concurrent reserves both winning.
+
+**Carrying into Day 6**
+
+- 2.10 - `POST /appointments`, `GET` state, cancel/reschedule.
+- 2.11 - Visit lifecycle status flow.
+- 2.12 - remaining saga-level tests that need 2.10/2.11 to exist.
+- 2.13 - docs pass, not started for 2.9.
+
+**Open questions**
+
+- `GET publish-status` cross-check Temporal directly? (carried from Day 2)
+- Is `unpublish` expected this week? Leaning no. (carried from Day 2)
+- Is a live demo enough for "demonstrate it" on crash-resumption, or does
+  the mentor want an automated test too?
+
+---
+
+### Day 6 - 2026-09-01
+
+**Goal:** 2.10 in full - `POST /appointments` + `GET` state, the waitlist
+table and join endpoint, cancel, and reschedule. Ran long enough that
+2.11 and the rest of 2.12/2.13 continue on Day 7 instead.
+
+**Done**
+
+- **2.10a** `POST /appointments` (202 + id, starts the Day 5 saga) and
+  `GET /appointments/{id}`. `Idempotency-Key` wired to 2.7's Redis cache,
+  with `appointments.idempotency_key` as the DB backstop.
+- `resolve_acting_patient` in a new `app/services/patient.py`: a PATIENT
+  books for themselves, body `patient_id` ignored; staff must name one.
+- `get_redis` FastAPI dependency + `conftest` override, so route tests hit
+  test Redis (index 15) instead of the app's DB 0.
+- **2.10b** `waitlist` table, model, `WaitlistStatus`, migration with a
+  partial unique index (`WHERE status = 'WAITING'`), and `POST /waitlist`.
+- **2.10c** Cancel: `ensure_can_cancel` + `cancel_appointment` - releases
+  the slot (if one was held), transitions to CANCELLED, promotes the
+  oldest waiting entry. Same shape as `ensure_can_publish`.
+- `promote_next_waiting` in `waitlist.py` - oldest `WAITING` entry to
+  `OFFERED`, ordered `(created_at, id)`, doesn't commit itself.
+- **2.10d** Reschedule: `ensure_can_reschedule` + `reschedule_appointment`
+  - release old + reserve new in one transaction via
+  `reserve_slot_uncommitted`, so a lost race for the new slot leaves
+  nothing committed. `appointment.status` untouched; a CONFIRMED
+  appointment's new slot goes straight to BOOKED/COMMITTED. No
+  `appointment_status_history` row - `slot_reservations` is the trail.
+- Verified live against the real worker throughout: booking ran REQUESTED
+  -> CONFIRMED; a cancelled CONFIRMED appointment released its slot and
+  promoted a real waitlist entry; one appointment rescheduled twice left
+  an unbroken RELEASED/RELEASED/COMMITTED trail across three slots with
+  zero extra history rows; forcing a target slot to BOOKED and
+  rescheduling into it left the original completely untouched.
+- 202 -> 243 tests, 97% coverage.
+- **Not done:** the visit lifecycle (2.11), the rest of 2.12, `docs/prd.md`.
+
+**Decisions**
+
+| Decision | Why |
+|---|---|
+| `resolve_acting_patient` in its own service, not the router | The router had a `select()` and two business rules in it - caught by review, not by lint |
+| `get_redis` a dependency, not a module-level import | Route tests otherwise write 24h-TTL keys into the app's real Redis |
+| Waitlist entry points at a provider, not a slot | You don't know which slot frees up, only whose time you want |
+| Partial unique index, not a plain one | An OFFERED entry is history; a plain index locks a patient out of that queue permanently |
+| Queue order is `(created_at, id)` | Postgres `now()` is transaction-scoped, so two rows in one transaction tie |
+| 201 for a waitlist join, 202 for a booking | Nothing runs in the background for a join - no workflow to poll |
+| Two waitlist states only | Nothing can write a third until Week 3 notifications exist |
+| `ensure_can_cancel`/`ensure_can_reschedule` as standalone guards | Requested explicitly - same shape as `ensure_can_publish`, not inlined |
+| Cancel reuses `release_slot`'s outcome, never its code | `SAGA_COMPENSATION` is reserved for the saga's own rollback; a patient-requested cancel needs its own actor |
+| Reschedule writes no status-history row | The table logs status *transitions*; a slot move at unchanged status isn't one - `slot_reservations` already carries that trail |
+| Reschedule uses `reserve_slot_uncommitted`, not `reserve_slot` | A failed new-slot reservation must leave nothing committed, including the old slot's release |
+
+**Cost time**
+
+- `main.py` router registration never got typed - every appointment route
+  404'd until verification caught it.
+- After the refactor, `appointments.py` still passed `data` instead of
+  `data.patient_id`. A Pydantic model is iterable, so SQLAlchemy read it as
+  a composite primary key.
+- Two transcription typos in reschedule: `db.get(Slot, appointment.id)`
+  for `appointment.slot_id` (crashed immediately); the CONFIRMED branch
+  assigning RESERVED instead of COMMITTED (silent, caught only because
+  the test asserted the exact enum value).
+- The reschedule atomicity test failed for a reason that wasn't a code
+  bug: the `client` fixture's `db_session` override has no per-request
+  rollback, unlike real `get_db()`. A live check against the real API
+  proved production was already correct; fixed by testing the same claim
+  at the service layer with an explicit commit-then-rollback instead.
+- `black` drift on 7 files, 2 untouched since Days 3 and 5. Third
+  recurrence - a pre-commit hook is the actual fix.
+- The Redis test-isolation bug was caught by reading the code, not by a
+  failing test: the suite would have passed once and failed on re-run.
+
+**Explain out loud**
+
+- Why a client idempotency key and the atomic slot UPDATE solve different
+  problems - one patient's own retry vs. two patients racing.
+- Why a `select()` in a router is a layering bug, and what moved to fix it.
+- Why the waitlist index carries a `WHERE` clause, and what breaks without it.
+- Why `now()` ties inside one transaction, and why `id` is the tiebreak.
+- Compensation vs. a patient's own cancel: same slot-release outcome,
+  different actor recorded, and why that distinction matters later.
+- Reschedule's atomicity is a different guarantee from the slot UPDATE's:
+  one writer's two changes staying together, not two writers racing.
+
+**Carrying into Day 7**
+
+- **Branch plan: Day 7 branches off `week-2-workflows-day-6`**, its own
+  PR targeting day-6's. Day 6's PR (#8) is now complete as-is - 2.10 in
+  full plus most of 2.13 - and gets no more pushes.
+- 2.11 - visit lifecycle (`CHECKED_IN -> IN_PROGRESS -> COMPLETED`),
+  idempotent, 409 on illegal jumps. The one Week 2 MUST still unbuilt.
+- 2.12 remainder - illegal visit transitions need 2.11 to exist first.
+  Concurrency, duplicate booking and saga compensation are already covered.
+- 2.13 remainder - `docs/prd.md` and the traceability table.
+- Uncovered in `appointment_scheduling.py`: the DB-backstop branch when
+  Redis misses but the row exists, and the `IntegrityError` race.
+- A pre-commit hook for black.
+
+**Open questions**
+
+- Should `GET publish-status` cross-check Temporal directly? (from Day 2)
+- Is `unpublish` expected? Leaning no. (from Day 2)
+- Live demo enough for crash-resumption, or an automated test too? (Day 5)
+- A booking stuck REQUESTED because Temporal was down at `start_workflow`
+  has no retry. Worth a sweeper, or is documenting it enough?
+
+---
+
+### Day 7 - 2026-09-02
+
+**Goal:** close Week 2 - 2.11 (visit lifecycle), the 2.12 gaps, and
+2.13's remaining `docs/prd.md`.
+
+**Done**
+
+- Closed all three carried opens: `publish-status` does not cross-check
+  Temporal, `unpublish` is not expected for now, and a live demo is
+  enough for crash-resumption.
+- **2.11** `visits` table, model, enum, migration (round-tripped);
+  `unique(appointment_id)` makes it a real 1:1.
+- `app/services/visit.py` - `check_in`/`start_visit`/`complete_visit`,
+  each with its own `ensure_can_*` guard. `complete_visit` is the only
+  one that also moves `Appointment.status` and writes history.
+- `app/api/v1/visits.py` under `/appointments/{id}/visit` - transitions
+  are staff-only, a patient can read their own.
+- **2.12** audited: 4 of 5 cases already covered. Closed
+  `mark_publish_failed`, the Redis-evicted idempotency backstop and
+  three 404s, into their existing test files.
+- **2.13** `docs/prd.md` with the traceability table; ERD extended to
+  all 17 tables.
+- 243 -> 264 tests, 98% coverage.
+
+**Decisions**
+
+| Decision | Why |
+|---|---|
+| Visit lifecycle is not a Temporal workflow | Each move is a human action at its own pace; nothing is mid-flight to resume |
+| No `visit_status_history` table | `status` plus the two timestamps are the whole trail for a linear flow |
+| Idempotent retry and illegal jump handled separately | Repeating a transition is a no-op; skipping or reversing one is a 409 |
+| Check-in returns an existing visit whatever state it reached | A retry must not create a second row *or* drag a started visit back |
+| No end-to-end saga compensation test | Real Activities under `WorkflowEnvironment` share the test session across the worker's threads; two halves plus a live demo instead |
+
+**Cost time**
+
+- `visit.status - VisitStatus.COMPLETED` - a `-` where `=` belonged.
+  Third transcription typo on this branch; all three caught by tests,
+  none by review.
+
+**Explain out loud**
+
+- Why the visit lifecycle is a status column and a guard rather than a
+  workflow - who owes the next step, the system or a human.
+- Why a retried check-in is a 200 no-op but completing an unstarted
+  visit is a 409.
+- What `from_attributes=True` does, and why `AppointmentResponse`
+  deliberately does not have it.
+
+**Carrying into Week 3**
+
+- Celery first, then Kafka, then observability - do not start Kafka on
+  Monday.
+- Still uncovered: the `IntegrityError` race in `request_appointment`.
+- A booking stuck REQUESTED if Temporal was down at `start_workflow`.
+- A pre-commit hook for black.
+
+**Open questions**
+
+- None.
+
+---
+
+## Weekly self-check
+
+### Week 2 - 2026-09-02
+
+1. **Finished / broken:** 2.1-2.13 all complete. 264 tests, 98%
+   coverage. Nothing known broken; three known gaps recorded in
+   `docs/prd.md` rather than left implicit.
+2. **Not fully understood yet:** what should happen to a booking whose
+   workflow never started because Temporal was down - the row sits
+   REQUESTED and nothing retries it.
+3. **Most time spent:** writing the code, and working out Temporal's
+   model - what belongs in an Activity vs. a Workflow, why Workflows
+   must be deterministic, and the reasoning behind each piece before
+   typing it.
+4. **Carrying into Week 3:** nothing from Week 2's task list. Celery,
+   then Kafka, then observability.

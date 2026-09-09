@@ -14,10 +14,10 @@ How SmartHealth is put together, and why. Updated as work lands.
 
 ## 1. Data model
 
-### 1.1 ERD — Week 1 core domain
+### 1.1 ERD — core domain through Week 2
 
-Ten entities. Appointments, billing, visits and the waitlist arrive in Week 2 and
-are deliberately absent here; the shapes below are what they will attach to.
+Seventeen entities. The ten Week 1 shapes plus everything the scheduling saga and
+visit lifecycle attach to them.
 
 ```mermaid
 erDiagram
@@ -31,6 +31,18 @@ erDiagram
     PROVIDER ||--o{ SLOT : "has"
     PROVIDER ||--o{ PROVIDER_SERVICE : "is qualified for"
     SERVICE ||--o{ PROVIDER_SERVICE : "delivered by"
+
+    PATIENT ||--o{ APPOINTMENT : "books"
+    PROVIDER ||--o{ APPOINTMENT : "sees"
+    SERVICE ||--o{ APPOINTMENT : "for"
+    SLOT ||--o{ APPOINTMENT : "occupies"
+    APPOINTMENT ||--o{ APPOINTMENT_STATUS_HISTORY : "logs"
+    APPOINTMENT ||--o{ SLOT_RESERVATION : "holds"
+    SLOT ||--o{ SLOT_RESERVATION : "held by"
+    APPOINTMENT ||--o| BILLING : "pre-checked by"
+    APPOINTMENT ||--o| VISIT : "becomes"
+    PROVIDER ||--o{ WAITLIST : "queued for"
+    PATIENT ||--o{ WAITLIST : "waits on"
 
     CLINIC {
         bigint id PK
@@ -126,7 +138,84 @@ erDiagram
         timestamptz created_at
         timestamptz updated_at
     }
+
+    APPOINTMENT {
+        bigint id PK
+        bigint patient_id FK "NOT NULL, indexed"
+        bigint provider_id FK "NOT NULL, indexed"
+        bigint slot_id FK "NOT NULL, indexed"
+        bigint service_id FK "NOT NULL, indexed"
+        text status "enum REQUESTED|SLOT_RESERVED|CONFIRMED|COMPLETED|REJECTED|CANCELLED"
+        text idempotency_key UK "the client's Idempotency-Key header"
+        timestamptz booked_at "null until CONFIRMED"
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    APPOINTMENT_STATUS_HISTORY {
+        bigint id PK
+        bigint appointment_id FK "NOT NULL, indexed"
+        text from_status "null only on the creation row"
+        text to_status "NOT NULL"
+        text actor "PATIENT|FRONT_DESK|PROVIDER|ADMIN|SAGA|SAGA_COMPENSATION"
+        text reason "operational only, never patient text"
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    SLOT_RESERVATION {
+        bigint id PK
+        bigint appointment_id FK "NOT NULL, indexed"
+        bigint slot_id FK "NOT NULL, indexed"
+        text status "enum RESERVED|RELEASED|COMMITTED"
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    BILLING {
+        bigint id PK
+        bigint appointment_id FK "UNIQUE, NOT NULL"
+        numeric amount "fixed placeholder; no pricing model exists"
+        text status "enum PENDING|CHECKED|FAILED|REFUNDED"
+        text idempotency_key UK
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    VISIT {
+        bigint id PK
+        bigint appointment_id FK "UNIQUE, NOT NULL"
+        text status "enum CHECKED_IN|IN_PROGRESS|COMPLETED, indexed"
+        timestamptz checked_in_at "NOT NULL; the row exists only from check-in"
+        timestamptz completed_at "null until COMPLETED"
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    WAITLIST {
+        bigint id PK
+        bigint provider_id FK "NOT NULL, indexed"
+        bigint patient_id FK "NOT NULL, indexed"
+        text status "enum WAITING|OFFERED, indexed"
+        timestamptz created_at "with id, the queue position"
+        timestamptz updated_at
+    }
+
+    CONTENT_CHUNK {
+        bigint id PK
+        text source_type "enum SERVICE; generic by design"
+        bigint source_id "no FK -- see decisions"
+        int chunk_index
+        text text
+        int token_count
+        text text_hash
+        timestamptz embedded_at "null until Week 4"
+        timestamptz created_at
+        timestamptz updated_at
+    }
 ```
+
+Exported copies of this and every other diagram here live in `docs/diagrams/`.
 
 **Conventions applied to every table.** Integer (`bigint`) identity primary keys.
 `created_at` / `updated_at` as `timestamptz`, always UTC-aware — never a naive
@@ -341,6 +430,21 @@ migrating rows that had already been created without it.
 | Email uniqueness enforced on `lower(email)` | Postgres compares text byte-for-byte, so a plain unique constraint would let one person hold two accounts differing only in capitalisation, each with its own patient row and booking history. Enforcing it in the database means a seed script or psql session cannot bypass it | Every lookup must be written `WHERE lower(email) = :email` or the index is not used |
 | `weekday` is `0 = Monday`, matching Python's `date.weekday()` | The slot generator is Python walking dates; the Postgres `EXTRACT(DOW)` convention would put a `+1 % 7` in the hottest logic of Week 1, and an off-by-one there produces slots on the wrong days with no error at all | Disagrees with `EXTRACT(DOW)` if the column is ever read from raw SQL; guarded by `CHECK (weekday BETWEEN 0 AND 6)` and stated on the column |
 
+### Week 2
+
+| Decision | Why | Tradeoff |
+|---|---|---|
+| A separate `slot_reservations` table, rather than inferring the hold from `appointments.status` | The reserve must survive a crash between the UPDATE and the status write; a status column set in a later statement cannot record that window | A second row per booking attempt, and a table that only exists to make one Activity idempotent |
+| `reserve_slot` split into an uncommitted core plus a committing wrapper | Lets the saga's Activity share one transaction with its own `slot_reservations` insert, so the flip and the record commit together | Two functions where callers might expect one; the uncommitted one is a footgun if called directly |
+| Deterministic workflow ids (`publish-service-{id}`, `schedule-appointment-{id}`) | Temporal rejects a second execution under a live id, which is a second guard against a concurrent double-publish independent of the status check | An id already used cannot be reused after completion without a policy decision |
+| Booking idempotency in Redis **and** a unique constraint on `appointments.idempotency_key` | Redis answers "seen this key" before any row exists; the constraint is the last-resort guarantee if Redis is evicted or unavailable | Two mechanisms to keep in step, and a race between them handled by catching the unique violation |
+| `get_redis` as a FastAPI dependency, not a module-level import | Tests can point route code at the test Redis database exactly as they do with `get_db`; without it the suite writes 24h-TTL keys into the app's real Redis and fails on its *second* run | One more dependency threaded through the endpoint signature |
+| Each compensation written out explicitly, not behind a generic mechanism | The failure modes differ — two need no compensation at all — and a generic runner would hide that asymmetry | Repetition in the Workflow body; a fourth failure mode means another explicit branch |
+| Patient resolution ("self or on behalf of") in `services/patient.py`, not in the routers | Booking and waitlist-joining ask the identical question, and a duplicated access-control rule is how one copy silently drifts | An extra indirection between the router and the thing it is creating |
+| Waitlist entries point at a provider, not a slot | Someone joining a queue does not know which slot will free up, only whose time they want; a per-slot queue dies the moment that slot is booked | Cannot express "I only want Tuesday mornings" |
+| Waitlist uniqueness is a **partial** index (`WHERE status = 'WAITING'`) | An `OFFERED` entry is history and must not block a fresh join; a plain unique index would lock a patient out of that queue permanently after their first offer | Partial indexes are easy to lose in an autogenerated migration — pinned by a test that rejoins after an offer |
+| Queue position is `(created_at, id)`, not a position column | A position needs renumbering whenever anyone leaves, and Postgres `now()` is transaction-scoped so timestamps alone can tie | Relies on `id` ordering matching arrival order, which sequences give but do not promise under concurrency |
+
 **Enum member names and values are kept identical** (`AVAILABLE = "AVAILABLE"`).
 SQLAlchemy persists a Python enum's `.name`, while a `str`-based enum serialises
 its `.value` through Pydantic — so if the two differ, the database holds one
@@ -382,6 +486,19 @@ a user has.** A user with `role = 'patient'` could in principle have a provider 
 and no patient row. Enforced in the service layer at creation, and covered by a
 test.
 
+**Known gap (Week 2): a booking whose workflow never started stays `REQUESTED`.**
+The row is committed before `start_workflow` is called, so if Temporal is
+unreachable at that moment nothing retries it and no compensation runs — deleting
+the row is not an option. A retry with the same `Idempotency-Key` returns the
+stuck appointment rather than restarting the saga. A sweeper for rows left
+`REQUESTED` past a threshold is the fix; the same window exists in
+`start_publish`, where the status is rolled back but the gap is identical.
+
+**Known gap (Week 2): cancel, reschedule and the visit lifecycle are not built.**
+Tasks 2.10 (partly) and 2.11, carried into Week 3. Consequently the waitlist can
+be joined but nothing promotes an entry to `OFFERED`, because promotion is what
+cancellation triggers.
+
 ---
 
 ## 4. Open questions
@@ -415,9 +532,100 @@ browsing before they register is the point of task 1.8.
 
 ## 6. Publish workflow and scheduling saga
 
-*Week 2.*
+Both run on Temporal. A Workflow function orchestrates and nothing else — no
+clock, no `random`, no database, no network — because Temporal replays it on
+recovery and it must make the same decisions every time. All I/O lives in
+Activities, which can be retried at any point and are therefore idempotent.
+
+Activities are methods on a class holding an injectable `session_factory`, not
+bare functions: an Activity has no `Depends(get_db)` to override, so that
+factory is how a test points them at the test database.
+
+### 6.1 Service publishing
+
+```mermaid
+flowchart LR
+    D([DRAFT]) -->|POST /publish| P([PUBLISHING])
+    P --> V[validate_service] --> S[structure_content] --> C[chunk_content] --> M[mark_published]
+    M --> PUB([PUBLISHED])
+    V -->|SERVICE_INCOMPLETE| F([PUBLISH_FAILED])
+    F -->|retry| P
+    PUB -->|unpublish| I([INACTIVE])
+```
+
+`validate_service` returns every missing field at once and is **non-retryable** —
+a missing description is still missing on the next attempt. That failure is
+expected, so the Workflow catches it and ends cleanly in `PUBLISH_FAILED`;
+anything else is left to Temporal's retry policy. `chunk_content` deletes and
+re-inserts in one transaction, which is simultaneously how re-publishing replaces
+chunks atomically and how a retried attempt stays idempotent.
+
+### 6.2 Appointment scheduling saga
+
+```mermaid
+flowchart TD
+    R([REQUESTED]) --> VE[validate_eligibility]
+    VE -->|ok| RS[reserve_slot]
+    VE -->|APPOINTMENT_INELIGIBLE| REJ([REJECTED])
+    RS -->|ok| SR([SLOT_RESERVED])
+    RS -->|SLOT_UNAVAILABLE| REJ
+    SR --> BP[billing_precheck]
+    BP -->|ok| SCH[schedule_reminders] --> CO[confirm] --> C([CONFIRMED])
+    BP -->|BILLING_FAILED| REL[release_slot] --> CAN([CANCELLED])
+```
+
+Three failures are expected rather than bugs, and each has its own exit:
+
+| Failure | Compensation | Terminal state |
+|---|---|---|
+| Ineligible — service unpublished, provider doesn't offer it, slot isn't theirs | none; nothing was reserved | `REJECTED` |
+| Slot lost to a competing booking | none; this appointment never held it | `REJECTED` |
+| Billing pre-check fails | `release_slot` — slot back to `AVAILABLE`, reservation `RELEASED` | `CANCELLED` |
+
+**Compensation is not rollback.** `reserve_slot` already committed, so undoing it
+is a new write, not a transaction abort. The appointment row is never deleted.
+
+Every transition writes `appointment_status_history` with an actor: `PATIENT` /
+`FRONT_DESK` / `ADMIN` for human actions, `SAGA` for a saga step, and
+`SAGA_COMPENSATION` for a rollback — so the audit trail distinguishes a
+compensating write from an ordinary one.
+
+How each Activity survives a retry:
+
+| Activity | Retry-safe because |
+|---|---|
+| `validate_eligibility` | read-only |
+| `reserve_slot` | checks for an existing `(appointment, slot)` reservation first |
+| `billing_precheck` | `BillingChecker` reuses an existing billing row |
+| `schedule_reminders` | no-op until Week 3 |
+| `confirm` | returns early if already `CONFIRMED` |
+| `release_slot` | returns early if already `CANCELLED` |
+| `reject` | acts only from `REQUESTED` |
+
+`GET /appointments/{id}` and `GET /services/{id}/publish-status` read the status
+column rather than querying Temporal: the Activities keep it in sync at every
+step. The cost is that a workflow lost before its first Activity leaves a row
+claiming `REQUESTED` forever — see the known gaps in [3](#3-decisions-and-tradeoffs).
 
 ## 7. Slot concurrency
 
-*Week 2 — the atomic reservation in [2.1](#21-slotsstatus-is-an-enum-because-the-concurrency-guarantee-needs-something-to-guard-on)
-proven under ~50 concurrent bookings against a single slot.*
+The atomic conditional UPDATE, and why SELECT-then-check-then-UPDATE races, are
+in [2.1](#21-slotsstatus-is-an-enum-because-the-concurrency-guarantee-needs-something-to-guard-on).
+Week 2 added three things on top.
+
+**Proven, not asserted.** A test fires 50 threads at one slot and asserts exactly
+one wins. It opens its own engine sized for 50 connections — the shared fixture's
+default pool (5 + 10 overflow) would serialise most attempts before they reached
+Postgres, and the test would pass while testing nothing.
+
+**`slot_reservations` makes reserving retry-safe.** The UPDATE alone cannot tell a
+retry from a fresh attempt: a retried Activity sees the slot already `RESERVED`
+and would wrongly conclude a competitor won it. So `reserve_slot` checks for an
+existing reservation row for that `(appointment, slot)` pair first. The UPDATE and
+the insert commit together, so there is no window where the slot is flipped but
+unrecorded — which is why `reserve_slot` is split into an uncommitted core and a
+committing wrapper.
+
+**Two different guarantees.** The UPDATE protects one row from two writers;
+`ex_slots_no_overlap` ([2.2](#22-one-provider-cannot-have-two-overlapping-slots))
+protects two rows from overlapping in time. Neither substitutes for the other.

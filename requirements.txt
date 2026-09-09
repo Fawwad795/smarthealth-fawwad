@@ -1,4 +1,4 @@
-# Week 1 dependencies. Versions are pinned so the image builds identically
+# Versions are pinned so the image builds identically
 # for me today and for my mentor next month.
 
 # --- Web framework -----------------------------------------------------
@@ -9,6 +9,12 @@ uvicorn[standard]==0.34.0
 sqlalchemy==2.0.36
 alembic==1.14.0
 psycopg[binary]==3.2.3        # the modern (v3) Postgres driver
+
+# --- Temporal (Week 2+) -------------------------------------------------
+temporalio==1.9.0
+
+# --- Redis (Week 2+) ----------------------------------------------------
+redis==5.2.1
 
 # --- Config / validation -----------------------------------------------
 pydantic==2.10.4
@@ -26,3 +32,4 @@ pytest-cov==6.0.0
 httpx==0.28.1                 # FastAPI's TestClient needs this
 ruff==0.8.4
 black==24.10.0
+pytest-asyncio==0.24.0        # runs `async def test_...`; Temporal's client is async

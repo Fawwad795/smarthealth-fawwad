@@ -9,7 +9,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """Week 1 settings. Fields are added as each week needs them."""
+    """Settings fields are added as each week needs them."""
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -35,11 +35,31 @@ class Settings(BaseSettings):
 
     # --- Redis ---
     redis_url: str
+    # A separate Redis DB index, flushed by the test suite before/after
+    # every run. Same reasoning as test_database_url: tests must never
+    # share state with the app's real one.
+    test_redis_url: str = "redis://redis:6379/15"
 
     # --- Auth ---
     jwt_secret: str
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 60
+
+    # --- Temporal ---
+    # Host is `temporal` (the compose service name), matching the same
+    # container-vs-localhost rule as database_url.
+    temporal_host: str = "temporal:7233"
+    temporal_namespace: str = "default"
+    temporal_task_queue: str = "app-workflow"
+
+    # --- Domain rules ---
+    # How long an Idempotency-Key is remembered before a retried request
+    # would be treated as brand new. Read by app/services/idempotency.py.
+    idempotency_key_ttl_seconds: int = 86400
+    # Simulated billing failure switch, for exercising the Week 2 saga's
+    # compensation path (task 2.9) on demand. Never true outside a demo
+    # or a test that deliberately flips it.
+    billing_force_fail: bool = False
 
 
 # Imported everywhere as: from app.core.config import settings

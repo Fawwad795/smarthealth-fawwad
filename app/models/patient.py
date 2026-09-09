@@ -11,7 +11,9 @@ from app.db.base import Base
 from app.models.mixins import TimestampMixin
 
 if TYPE_CHECKING:
+    from app.models.appointment import Appointment
     from app.models.user import User
+    from app.models.waitlist import Waitlist
 
 
 class Patient(Base, TimestampMixin):
@@ -51,3 +53,5 @@ class Patient(Base, TimestampMixin):
     contact: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     user: Mapped["User"] = relationship(back_populates="patient")
+    appointments: Mapped[list["Appointment"]] = relationship(back_populates="patient")
+    waitlist_entries: Mapped[list["Waitlist"]] = relationship(back_populates="patient")

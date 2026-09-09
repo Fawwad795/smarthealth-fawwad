@@ -225,6 +225,23 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # The Temporal worker: polls TEMPORAL_TASK_QUEUE and executes whatever
+  # workflows/activities app/temporal/worker.py registers. Same image as
+  # `api`, different command -- see the Dockerfile's opening comment.
+  temporal-worker:
+    build: .
+    container_name: app-temporal-worker
+    command: python -m app.temporal.worker
+    env_file: [.env]
+    volumes:
+      - ".:/app"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      temporal:
+        condition: service_started    # temporal defines no healthcheck
+    restart: unless-stopped
+
   # The test suite. Not a long-running service -- it is meant to be run
   # one-shot and thrown away:
   #
@@ -246,6 +263,8 @@ services:
       - ".:/app"
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
 volumes:

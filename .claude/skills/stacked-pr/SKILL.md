@@ -50,14 +50,33 @@ Confirm afterwards with `git branch --show-current` and `git log --oneline -3`.
 
 The `--base` is the parent branch, **not `main`** — that is the whole point.
 
+Title is Title Case: `Week <N> Day <D>: <What Landed>`. Body is Markdown, one
+`## Task <N.M> - <Short Title>` section per task the day covered (matching the
+week's task numbering, not generic labels like "Summary"), ending in a `##
+Verified` section. No `🤖 Generated with [Claude Code]` trailer in the body —
+that convention applies to commit messages, not PR descriptions. Before
+drafting a later day's PR, read the previous day's actual PR
+(`gh pr view <number> --json body -q '.body'`) rather than relying on memory
+of the shape, since which task sections appear depends on what that day did.
+
 ```powershell
 git push -u origin week-<n>-<theme>-day-<d>
-gh pr create --base <parent-branch> --head week-<n>-<theme>-day-<d> --title 'week <n> day <d>: <what landed>' --body @'
-What this day covers, and why.
+gh pr create --base <parent-branch> --head week-<n>-<theme>-day-<d> --title 'Week <N> Day <D>: <What Landed>' --body @'
+## Task <N.M> - <Short Title>
 
-Verified: <tests run, live checks done>
+<a few terse bullets on what landed, including any sub-decisions or fixes
+worth naming -- this is a PR body, not NOTES.md or the Friday docs pass,
+so keep it as short as those keep their own entries>
 
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
+## Task <N.M2> - <Short Title>
+
+...one section per task...
+
+## Verified
+
+- `<old count>` → `<new count>` tests (all passing)
+- Lint clean, no hardcoded status codes
+- <live checks actually run, one bullet each>
 '@
 ```
 

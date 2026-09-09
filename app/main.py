@@ -1,5 +1,4 @@
-"""FastAPI application factory.
-"""
+"""FastAPI application factory."""
 
 from fastapi import Depends, FastAPI
 from sqlalchemy import text
@@ -9,11 +8,14 @@ from app.core.config import settings
 from app.core.error_handlers import register_exception_handlers
 from app.db.session import get_db
 
+from app.api.v1.appointments import router as appointments_router
 from app.api.v1.auth import router as auth_router
 from app.api.v1.departments import router as departments_router
 from app.api.v1.services import router as services_router
 from app.api.v1.providers import router as providers_router
 from app.api.v1.provider_schedules import router as provider_schedules_router
+from app.api.v1.visits import router as visits_router
+from app.api.v1.waitlist import router as waitlist_router
 
 
 def create_app() -> FastAPI:
@@ -53,6 +55,27 @@ def create_app() -> FastAPI:
                     "Weekly templates, and generating bookable slots from them."
                 ),
             },
+            {
+                "name": "appointments",
+                "description": (
+                    "Booking via the scheduling saga, plus cancel and "
+                    "reschedule. Booking is idempotent on Idempotency-Key."
+                ),
+            },
+            {
+                "name": "waitlist",
+                "description": (
+                    "Queues for a provider's time. An entry is offered when a "
+                    "slot is released."
+                ),
+            },
+            {
+                "name": "visits",
+                "description": (
+                    "CHECKED_IN to COMPLETED on the day. Every transition is "
+                    "idempotent."
+                ),
+            },
         ],
     )
 
@@ -63,6 +86,9 @@ def create_app() -> FastAPI:
     app.include_router(services_router, prefix="/api/v1")
     app.include_router(providers_router, prefix="/api/v1")
     app.include_router(provider_schedules_router, prefix="/api/v1")
+    app.include_router(appointments_router, prefix="/api/v1")
+    app.include_router(waitlist_router, prefix="/api/v1")
+    app.include_router(visits_router, prefix="/api/v1")
 
     @app.get("/health", tags=["health"])
     def health() -> dict[str, str]:

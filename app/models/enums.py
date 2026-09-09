@@ -68,6 +68,108 @@ class SlotStatus(StrEnum):
     BLOCKED = "BLOCKED"  # provider time off, never bookable
 
 
+class AppointmentStatus(StrEnum):
+    """Lifecycle of a booking, driven by the Week 2 scheduling saga.
+
+        REQUESTED --reserve--> SLOT_RESERVED --billing--> CONFIRMED --(visit)--> COMPLETED
+            |                       |
+         (ineligible)         (billing fails)
+            v                       v
+        REJECTED         compensate(release slot) -> CANCELLED
+                                                        ^
+                                patient cancel / reschedule
+
+    SLOT_RESERVED is its own state, not folded into CONFIRMED, because the
+    saga's compensation depends on knowing whether a slot was ever held for
+    this appointment -- see AppointmentStatusHistory.
+    """
+
+    REQUESTED = "REQUESTED"
+    SLOT_RESERVED = "SLOT_RESERVED"
+    CONFIRMED = "CONFIRMED"
+    COMPLETED = "COMPLETED"
+    REJECTED = "REJECTED"
+    CANCELLED = "CANCELLED"
+
+
+class BillingStatus(StrEnum):
+    """Lifecycle of a simulated billing pre-check for one appointment.
+
+    Real payment/insurance integration is out of scope (CLAUDE.md #4) --
+    this exists so the Week 2 scheduling saga (task 2.9) has a genuine
+    failure to compensate against. PENDING is the vocabulary's "not yet
+    checked" state; in practice precheck() decides CHECKED or FAILED in
+    one synchronous write, so PENDING is never actually persisted by this
+    simulation. REFUNDED is reserved for a future cancellation path.
+    """
+
+    PENDING = "PENDING"
+    CHECKED = "CHECKED"
+    FAILED = "FAILED"
+    REFUNDED = "REFUNDED"
+
+
+class ContentSourceType(StrEnum):
+    """What kind of row a content_chunks entry was generated from.
+
+    A single member for now -- services are the only thing this project
+    chunks. Kept as an enum (source_type + source_id) rather than a bare
+    service_id column because the brief's data model treats content_chunks
+    as generic: whatever gets chunked later says so through this column,
+    not through a schema change.
+    """
+
+    SERVICE = "SERVICE"
+
+
+class SlotReservationStatus(StrEnum):
+    """Lifecycle of one slot-hold attempt for one appointment.
+
+    Exists so reserve_slot's Activity can tell a genuine retry apart from
+    a fresh attempt -- the atomic UPDATE on slots alone can't: a retried
+    Activity call sees the slot already RESERVED and has no way to know
+    whether it reserved it moments ago or someone else beat it there.
+    """
+
+    RESERVED = "RESERVED"  # the saga is holding this slot
+    RELEASED = "RELEASED"  # compensation gave it back after a downstream failure
+    COMMITTED = "COMMITTED"  # the booking confirmed; the hold is now permanent
+
+
+class WaitlistStatus(StrEnum):
+    """Where one patient's place in a provider's queue currently stands.
+
+    Two members, not more. A released slot moves the oldest WAITING entry
+    to OFFERED, and that is as far as this project takes it: actually
+    telling the patient is a notification, which is Week 3's Celery work.
+    A third state for "they accepted the offer" would be unreachable code
+    today, and an enum member nothing can ever write is worse than absent
+    -- it reads as a feature that exists.
+    """
+
+    WAITING = "WAITING"  # in the queue, nothing offered yet
+    OFFERED = "OFFERED"  # a slot opened and this entry was the next in line
+
+
+class VisitStatus(StrEnum):
+    """How far along a patient's actual, in-person visit is.
+
+    Three members, and deliberately no "not started": a visits row is
+    created at check-in and never before, so the absence of the row is
+    what "hasn't arrived yet" means. Adding a fourth state for it would
+    need a row to exist with nothing to record in it.
+
+    CHECKED_IN -> IN_PROGRESS -> COMPLETED, strictly forward. This is not
+    a Temporal workflow: each move is a separate human action taken at
+    its own pace, so there is nothing to resume between them -- see
+    docs/design.md.
+    """
+
+    CHECKED_IN = "CHECKED_IN"  # arrived, waiting
+    IN_PROGRESS = "IN_PROGRESS"  # with the provider now
+    COMPLETED = "COMPLETED"  # done; the appointment completes with it
+
+
 def enum_column(enum_cls: type[StrEnum], name: str) -> SAEnum:
     """Build the column type for an enum: VARCHAR + CHECK, never a native type.
 

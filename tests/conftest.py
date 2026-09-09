@@ -8,9 +8,11 @@ from migrations makes the suite a continuous check that the chain is correct.
 """
 
 from collections.abc import Generator
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-
 import pytest
+import redis
+
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import Engine, create_engine, text
@@ -18,8 +20,21 @@ from sqlalchemy.orm import Session
 from fastapi.testclient import TestClient
 
 from app.core.config import settings
-from app.models import Clinic, Department, Provider, Specialty, User
-from app.models.enums import UserRole
+from app.models import (
+    Appointment,
+    AppointmentStatusHistory,
+    Clinic,
+    Department,
+    Patient,
+    Provider,
+    ProviderService,
+    Service,
+    Slot,
+    Specialty,
+    User,
+)
+from app.models.enums import AppointmentStatus, UserRole
+from app.core.redis import get_redis
 from app.core.security import create_access_token
 from app.db.session import get_db
 from app.main import app
@@ -71,6 +86,24 @@ def test_database() -> Generator[str, None, None]:
     with admin.connect() as conn:
         conn.execute(text(f'DROP DATABASE IF EXISTS "{TEST_DB_NAME}" WITH (FORCE)'))
     admin.dispose()
+
+
+@pytest.fixture(scope="session")
+def test_redis_client() -> Generator[redis.Redis, None, None]:
+    """A Redis client bound to the test DB (index 15), flushed before and
+    after the session so tests never depend on -- or leave behind --
+    leftover keys, and never touch the app's real DB 0.
+    """
+    if settings.test_redis_url == settings.redis_url:
+        raise RuntimeError(
+            "TEST_REDIS_URL must differ from REDIS_URL -- this fixture "
+            "flushes its database."
+        )
+    client = redis.from_url(settings.test_redis_url, decode_responses=True)
+    client.flushdb()
+    yield client
+    client.flushdb()
+    client.close()
 
 
 @pytest.fixture(scope="session")
@@ -190,6 +223,74 @@ def provider(
     return p
 
 
+@pytest.fixture()
+def patient(db_session: Session, patient_user: User) -> Patient:
+    p = Patient(user_id=patient_user.id, dob=date(1990, 1, 1))
+    db_session.add(p)
+    db_session.flush()
+    return p
+
+
+@pytest.fixture()
+def service(db_session: Session, department: Department) -> Service:
+    s = Service(department_id=department.id, name="Echocardiogram")
+    db_session.add(s)
+    db_session.flush()
+    return s
+
+
+@pytest.fixture()
+def slot(db_session: Session, provider: Provider) -> Slot:
+    start = datetime.now(timezone.utc) + timedelta(days=1)
+    s = Slot(
+        provider_id=provider.id,
+        start_time=start,
+        end_time=start + timedelta(minutes=30),
+    )
+    db_session.add(s)
+    db_session.flush()
+    return s
+
+
+@pytest.fixture()
+def provider_service_link(
+    db_session: Session, provider: Provider, service: Service
+) -> ProviderService:
+    ps = ProviderService(provider_id=provider.id, service_id=service.id)
+    db_session.add(ps)
+    db_session.flush()
+    return ps
+
+
+@pytest.fixture()
+def appointment(
+    db_session: Session,
+    patient: Patient,
+    provider: Provider,
+    service: Service,
+    slot: Slot,
+) -> Appointment:
+    a = Appointment(
+        patient_id=patient.id,
+        provider_id=provider.id,
+        slot_id=slot.id,
+        service_id=service.id,
+        idempotency_key="test-appointment-key",
+    )
+    db_session.add(a)
+    db_session.flush()
+    db_session.add(
+        AppointmentStatusHistory(
+            appointment_id=a.id,
+            from_status=None,
+            to_status=AppointmentStatus.REQUESTED,
+            actor="PATIENT",
+        )
+    )
+    db_session.flush()
+    return a
+
+
 # --- HTTP layer -------------------------------------------------------------
 # Everything above builds rows directly with the ORM. These fixtures are for
 # tests that go through the real FastAPI routes instead, which is what
@@ -197,21 +298,29 @@ def provider(
 
 
 @pytest.fixture()
-def client(db_session: Session) -> Generator[TestClient, None, None]:
-    """A TestClient that sees this test's own db_session, not a fresh
-    connection to the real dev database.
+def client(
+    db_session: Session, test_redis_client: redis.Redis
+) -> Generator[TestClient, None, None]:
+    """A TestClient that sees this test's own db_session and the test
+    Redis database, not the real ones.
 
     app's own get_db() opens a brand-new SessionLocal() against
     settings.database_url every time FastAPI resolves it -- that's the dev
     database, not the isolated, auto-rolled-back one db_session gives this
-    test. dependency_overrides swaps what Depends(get_db) resolves to, for
-    the lifetime of this fixture only.
+    test. get_redis() has the same problem against DB 0, where an
+    idempotency key would outlive the test by its full 24h TTL and make
+    the next run of the suite fail. dependency_overrides swaps what both
+    resolve to, for the lifetime of this fixture only.
     """
 
     def _get_test_db() -> Generator[Session, None, None]:
         yield db_session
 
+    def _get_test_redis() -> redis.Redis:
+        return test_redis_client
+
     app.dependency_overrides[get_db] = _get_test_db
+    app.dependency_overrides[get_redis] = _get_test_redis
     with TestClient(app) as test_client:
         yield test_client
     # Cleared even though the next test's client fixture would overwrite it

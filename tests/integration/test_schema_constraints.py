@@ -23,8 +23,18 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models import Department, Patient, Provider, Service, Slot, User
-from app.models.enums import UserRole
+from app.models import (
+    Appointment,
+    AppointmentStatusHistory,
+    Department,
+    Patient,
+    Provider,
+    Service,
+    Slot,
+    User,
+    Waitlist,
+)
+from app.models.enums import AppointmentStatus, UserRole, WaitlistStatus
 
 # Fixed, never datetime.now(). A test whose input changes on every run can
 # fail for reasons unrelated to the code, and the reflex that produces --
@@ -180,3 +190,167 @@ def test_department_with_services_cannot_be_deleted(
         db_session.execute(
             text("DELETE FROM departments WHERE id = :id"), {"id": department.id}
         )
+
+
+def test_status_outside_the_enum_is_rejected_for_appointments(
+    db_session: Session, provider: Provider, patient: Patient, service: Service
+) -> None:
+    """Same guarantee as slots.status, for appointments.status."""
+    slot = Slot(provider_id=provider.id, start_time=BASE, end_time=BASE + QUARTER)
+    db_session.add(slot)
+    db_session.flush()
+
+    with pytest.raises(IntegrityError, match="ck_appointments_status"):
+        db_session.execute(
+            text(
+                "INSERT INTO appointments "
+                "(patient_id, provider_id, slot_id, service_id, status, idempotency_key) "
+                "VALUES (:pt, :pr, :sl, :sv, 'PENDING', 'key-1')"
+            ),
+            {"pt": patient.id, "pr": provider.id, "sl": slot.id, "sv": service.id},
+        )
+
+
+def test_duplicate_idempotency_key_is_rejected(
+    db_session: Session, provider: Provider, patient: Patient, service: Service
+) -> None:
+    """The database-level half of idempotency -- task 2.7 wires the
+    Redis-based fast path in front of this.
+    """
+    slot_a = Slot(provider_id=provider.id, start_time=BASE, end_time=BASE + QUARTER)
+    slot_b = Slot(
+        provider_id=provider.id,
+        start_time=BASE + QUARTER,
+        end_time=BASE + 2 * QUARTER,
+    )
+    db_session.add_all([slot_a, slot_b])
+    db_session.flush()
+
+    db_session.add(
+        Appointment(
+            patient_id=patient.id,
+            provider_id=provider.id,
+            slot_id=slot_a.id,
+            service_id=service.id,
+            idempotency_key="shared-key",
+        )
+    )
+    db_session.flush()
+
+    db_session.add(
+        Appointment(
+            patient_id=patient.id,
+            provider_id=provider.id,
+            slot_id=slot_b.id,
+            service_id=service.id,
+            idempotency_key="shared-key",
+        )
+    )
+    with pytest.raises(IntegrityError, match="uq_appointments_idempotency_key"):
+        db_session.flush()
+
+
+def test_status_outside_the_enum_is_rejected_for_appointment_history(
+    db_session: Session, provider: Provider, patient: Patient, service: Service
+) -> None:
+    slot = Slot(provider_id=provider.id, start_time=BASE, end_time=BASE + QUARTER)
+    db_session.add(slot)
+    db_session.flush()
+    appointment = Appointment(
+        patient_id=patient.id,
+        provider_id=provider.id,
+        slot_id=slot.id,
+        service_id=service.id,
+        idempotency_key="key-history",
+    )
+    db_session.add(appointment)
+    db_session.flush()
+
+    with pytest.raises(IntegrityError, match="ck_appointment_status_history_to_status"):
+        db_session.execute(
+            text(
+                "INSERT INTO appointment_status_history "
+                "(appointment_id, to_status, actor) "
+                "VALUES (:aid, 'PENDING', 'SYSTEM')"
+            ),
+            {"aid": appointment.id},
+        )
+
+
+def test_appointment_with_history_cannot_be_deleted(
+    db_session: Session, provider: Provider, patient: Patient, service: Service
+) -> None:
+    """The guarantee this table exists for: once a transition is logged,
+    deleting the appointment it belongs to can't silently take the log
+    with it.
+    """
+    slot = Slot(provider_id=provider.id, start_time=BASE, end_time=BASE + QUARTER)
+    db_session.add(slot)
+    db_session.flush()
+    appointment = Appointment(
+        patient_id=patient.id,
+        provider_id=provider.id,
+        slot_id=slot.id,
+        service_id=service.id,
+        idempotency_key="key-history-2",
+    )
+    db_session.add(appointment)
+    db_session.flush()
+
+    db_session.add(
+        AppointmentStatusHistory(
+            appointment_id=appointment.id,
+            from_status=None,
+            to_status=AppointmentStatus.REQUESTED,
+            actor="PATIENT",
+        )
+    )
+    db_session.flush()
+
+    with pytest.raises(
+        IntegrityError,
+        match="fk_appointment_status_history_appointment_id_appointments",
+    ):
+        db_session.execute(
+            text("DELETE FROM appointments WHERE id = :id"), {"id": appointment.id}
+        )
+
+
+def test_patient_cannot_hold_two_waiting_places_in_one_queue(
+    db_session: Session, provider: Provider, patient: Patient
+) -> None:
+    """uq_waitlist_one_waiting_entry: joining a queue you are already
+    waiting in is a duplicate, not a second place.
+    """
+    db_session.add(Waitlist(provider_id=provider.id, patient_id=patient.id))
+    db_session.flush()
+
+    db_session.add(Waitlist(provider_id=provider.id, patient_id=patient.id))
+    with pytest.raises(IntegrityError, match="uq_waitlist_one_waiting_entry"):
+        db_session.flush()
+
+
+def test_patient_can_rejoin_a_queue_after_being_offered(
+    db_session: Session, provider: Provider, patient: Patient
+) -> None:
+    """The index is partial on purpose: an OFFERED entry is history and
+    must not block a fresh join. A plain unique index would lock someone
+    out of a queue permanently after their first offer -- which is the
+    exact bug this test exists to catch if the WHERE clause is ever lost.
+    """
+    db_session.add(
+        Waitlist(
+            provider_id=provider.id,
+            patient_id=patient.id,
+            status=WaitlistStatus.OFFERED,
+        )
+    )
+    db_session.flush()
+
+    db_session.add(Waitlist(provider_id=provider.id, patient_id=patient.id))
+    db_session.flush()
+
+    assert (
+        db_session.query(Waitlist).filter(Waitlist.patient_id == patient.id).count()
+        == 2
+    )

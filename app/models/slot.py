@@ -20,6 +20,7 @@ from app.models.enums import SlotStatus, enum_column
 from app.models.mixins import TimestampMixin
 
 if TYPE_CHECKING:
+    from app.models.appointment import Appointment
     from app.models.provider import Provider
 
 
@@ -103,3 +104,4 @@ class Slot(Base, TimestampMixin):
     )
 
     provider: Mapped["Provider"] = relationship(back_populates="slots")
+    appointments: Mapped[list["Appointment"]] = relationship(back_populates="slot")

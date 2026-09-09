@@ -66,3 +66,20 @@ class ServiceListResponse(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class ServicePublishStatusResponse(BaseModel):
+    """Where a service's publish lifecycle currently stands. Returned by
+    both POST /services/{id}/publish (right after starting) and GET
+    /services/{id}/publish-status (any time after) -- same shape, since
+    both answer the same question.
+
+    Built from status/published_at plus a computed workflow_id, not
+    model_validate(service): service_id isn't service.id, and workflow_id
+    isn't a column at all.
+    """
+
+    service_id: int
+    status: ServiceStatus
+    published_at: datetime | None
+    workflow_id: str

@@ -23,26 +23,40 @@ but __all__ also states the package's public surface and gives one list to
 check against.
 """
 
+from app.models.appointment import Appointment
+from app.models.appointment_status_history import AppointmentStatusHistory
+from app.models.billing import Billing
 from app.models.clinic import Clinic
+from app.models.content_chunk import ContentChunk
 from app.models.department import Department
 from app.models.patient import Patient
 from app.models.provider import Provider
 from app.models.provider_schedule import ProviderSchedule
 from app.models.provider_service import ProviderService
 from app.models.service import Service
+from app.models.slot_reservation import SlotReservation
 from app.models.slot import Slot
 from app.models.specialty import Specialty
 from app.models.user import User
+from app.models.visit import Visit
+from app.models.waitlist import Waitlist
 
 __all__ = [
+    "Appointment",
+    "AppointmentStatusHistory",
+    "Billing",
     "Clinic",
+    "ContentChunk",
     "Department",
     "Patient",
     "Provider",
     "ProviderSchedule",
     "ProviderService",
     "Service",
+    "SlotReservation",
     "Slot",
     "Specialty",
     "User",
+    "Visit",
+    "Waitlist",
 ]
