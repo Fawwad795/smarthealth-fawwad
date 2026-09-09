@@ -22,7 +22,7 @@ from datetime import date, datetime, timedelta, timezone
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.core.security import hash_password
+from app.core.security import hash_password, verify_password
 from app.db.session import SessionLocal
 from app.models import (
     Clinic,
@@ -47,6 +47,49 @@ from app.services import service as service_service
 
 # Synthetic-only, never used outside local/dev seeding -- see rule 9.
 SEED_PASSWORD = "ChangeMe123!"
+
+# Every account this script owns, for the summary main() prints. Day 3 lost
+# time trying SEED_PASSWORD against a hand-registered leftover that looked
+# exactly like seed data; a printed list is the cheapest way to tell the two
+# apart. A test asserts this list matches what seed() actually inserts, so it
+# cannot quietly rot.
+SEED_ACCOUNTS = (
+    "admin@medinova.example",
+    "frontdesk@medinova.example",
+    "dr.khan@medinova.example",
+    "dr.ahmed@medinova.example",
+    "dr.raza@medinova.example",
+    "patient.one@example.com",
+    "patient.two@example.com",
+    "patient.three@example.com",
+)
+
+
+def _reset_seed_password(db: Session, user: User) -> None:
+    """Put a seed-owned account back on SEED_PASSWORD if it has drifted.
+
+    A get-or-create that returns early on an existing row cannot repair
+    one -- so a seeded login that stopped working would stay broken
+    through every re-run, and re-running the seed is the obvious thing to
+    reach for. Re-asserting makes the seed converge on its declared state
+    rather than merely decline to duplicate it: the same property the
+    analytics rollup was given on Day 1.
+
+    Verified before rehashing because bcrypt is deliberately slow and the
+    common case is a hash that is already correct. The caller must commit
+    -- this only flushes.
+    """
+    try:
+        if verify_password(SEED_PASSWORD, user.password_hash):
+            return
+    except ValueError:
+        # A hash passlib cannot even parse is still a hash that is not
+        # SEED_PASSWORD -- and it is the case most in need of repair.
+        # The first version let this propagate, so the seed crashed on
+        # exactly the row it existed to fix.
+        pass
+    user.password_hash = hash_password(SEED_PASSWORD)
+    db.flush()
 
 
 def _get_or_create_clinic(db: Session) -> Clinic:
@@ -99,6 +142,7 @@ def _get_or_create_staff_user(db: Session, email: str, role: UserRole) -> User:
     email = email.lower()
     user = db.query(User).filter(func.lower(User.email) == email).first()
     if user is not None:
+        _reset_seed_password(db, user)
         return user
     user = User(email=email, password_hash=hash_password(SEED_PASSWORD), role=role)
     db.add(user)
@@ -225,6 +269,8 @@ def _get_or_create_patient(db: Session, email: str, dob: date) -> Patient:
         )
         db.add(user)
         db.flush()
+    else:
+        _reset_seed_password(db, user)
     patient = db.query(Patient).filter(Patient.user_id == user.id).first()
     if patient is not None:
         return patient
@@ -322,12 +368,20 @@ def main() -> None:
     """Entry point for `python -m scripts.seed`.
 
     Owns the Session -- opening and always closing it -- so seed() itself
-    stays agnostic about where its database connection came from.
+    stays agnostic about where its database connection came from, and
+    prints the accounts it owns so a live check never has to guess which
+    rows in a well-used dev database came from here.
     """
     db = SessionLocal()
     try:
         seed(db)
-        print("Seed complete.")
+        # seed()'s helpers commit only when they insert something, and
+        # several return early when the row already exists -- so a re-run
+        # that only *repairs* a row flushes without ever committing, and
+        # closing the session throws the repair away. main() owns the
+        # session, so it owns the final commit.
+        db.commit()
+        print("Seed complete. These accounts all share one password:")
     finally:
         db.close()
 
