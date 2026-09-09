@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.logging import get_correlation_id
-from app.models import FailedJob
+from app.models import FailedJob, ProcessedEvent
 from app.workers import consumer as consumer_module
 from tests.kafka_fakes import FakeConsumer, FakeMessage
 
@@ -217,3 +217,48 @@ def test_the_envelopes_correlation_id_is_set_for_the_handler(
     _run([_message(ENVELOPE, offset=11)])
 
     assert seen == ["req-loop-1"]
+
+
+def test_a_duplicate_delivery_is_skipped_but_still_advances_the_offset(
+    monkeypatch: pytest.MonkeyPatch, worker_session: None
+) -> None:
+    """The same event delivered twice must be handled once and committed twice.
+
+    Handled once is the point of the guard. Committed twice is just as
+    necessary: a skip is not a failure, and refusing to move the offset
+    past a duplicate would re-read it forever.
+    """
+    handled: list[str] = []
+    monkeypatch.setattr(
+        consumer_module,
+        "dispatch",
+        lambda db, envelope: handled.append(envelope["event_id"]),
+    )
+
+    fake = _run([_message(ENVELOPE, offset=11), _message(ENVELOPE, offset=12)])
+
+    assert handled == ["evt-loop-1"]
+    assert fake.committed == [11, 12]
+
+
+def test_a_failed_handler_leaves_the_event_unclaimed(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch, worker_session: None
+) -> None:
+    """The claim must not outlive the work it guards.
+
+    If a transient failure left the claim committed, the retry would find
+    the event already claimed and skip it -- turning a duplicate, which
+    is harmless, into a lost event, which is not.
+    """
+
+    def boom(db: Session, envelope: dict[str, Any]) -> None:
+        raise RuntimeError("database is briefly unreachable")
+
+    monkeypatch.setattr(consumer_module, "dispatch", boom)
+
+    _run([_message(ENVELOPE, offset=11)])
+
+    remaining = db_session.execute(
+        select(ProcessedEvent).where(ProcessedEvent.event_id == "evt-loop-1")
+    ).scalar_one_or_none()
+    assert remaining is None

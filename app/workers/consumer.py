@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.logging import configure_logging, set_correlation_id
 from app.db.session import session_scope
+from app.events.dedupe import claim_event
 from app.events.envelope import EventType, all_topics
 from app.models import FailedJob
 
@@ -193,14 +194,39 @@ def _handle_one(consumer: Consumer, msg: Message) -> None:
         set_correlation_id(envelope.get("correlation_id"))
 
         with session_scope() as db:
-            dispatch(db, envelope)
-            db.commit()
+            if claim_event(db, envelope["event_id"], settings.kafka_consumer_group):
+                try:
+                    dispatch(db, envelope)
+                    # One commit for the claim and whatever the handler
+                    # changed, so the two can never disagree about
+                    # whether this event was handled.
+                    db.commit()
+                except Exception:
+                    # Undo the claim explicitly rather than leaving it to
+                    # the session being closed on the way out. Closing
+                    # does roll back, but a claim outliving the work it
+                    # guards would turn a harmless duplicate into a
+                    # permanently lost event -- the worse of the two
+                    # failures -- and a guarantee that important should
+                    # be stated here rather than inherited from a
+                    # context manager's cleanup.
+                    db.rollback()
+                    raise
+                logger.info(
+                    "event processed event_id=%s type=%s",
+                    envelope["event_id"],
+                    envelope["event_type"],
+                )
+            else:
+                db.rollback()
+                # A skip, not a failure: this event was handled earlier,
+                # so its offset must still move past it below.
+                logger.info(
+                    "duplicate event skipped event_id=%s type=%s",
+                    envelope["event_id"],
+                    envelope["event_type"],
+                )
 
-        logger.info(
-            "event processed event_id=%s type=%s",
-            envelope["event_id"],
-            envelope["event_type"],
-        )
     except PermanentEventError as exc:
         _dead_letter(msg, exc)
         # Falls through to the commit below on purpose: the message is
