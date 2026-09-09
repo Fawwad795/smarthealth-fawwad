@@ -34,6 +34,18 @@ convention = "pep257"
 line-length = 88
 target-version = ["py311"]
 
+[tool.mypy]
+# Scoped to app/models only, not the whole app -- transcription typos on
+# model attributes are this project's single biggest bug class per
+# NOTES.md (book_at/booked_at was typed wrong twice on the same branch,
+# caught by tests both times, never by review). app/models is the one
+# layer that was already 100% clean against this check when it was
+# trialled, so this is pure signal with no cleanup debt attached. The
+# rest of app/ has real errors (mostly latent None-safety gaps) that are
+# a separate, larger decision -- not folded in here.
+files = ["app/models"]
+python_version = "3.11"
+
 [tool.pytest.ini_options]
 # "auto" runs every `async def test_...` under its own event loop without a
 # per-test @pytest.mark.asyncio decorator -- Temporal's client is async

@@ -53,11 +53,13 @@ not "all but one known failure".
 ## 4. Coverage
 
 ```bash
-docker compose run --rm test pytest --cov=app --cov-report=term-missing
+make test-cov    # or: docker compose run --rm test pytest --cov=app --cov-report=term-missing --cov-fail-under=80
 ```
 
-**≥80% is a MUST**, and the number alone is not the check — look at *which*
-lines are missing. Week 1 sat at 78% with every router file at 0%, because
+`--cov-fail-under=80` makes this a real gate — pytest exits non-zero below
+80%, not just a number left for a human to notice. **The number alone still
+isn't the whole check** — look at *which* lines are missing even when it
+passes. Week 1 sat at 78% with every router file at 0%, because
 the tests called service functions directly and never went through a route.
 The percentage looked nearly fine; the coverage was structurally wrong.
 
