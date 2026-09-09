@@ -22,7 +22,6 @@ celery_app = Celery(
     # explicitly lists every Workflow/Activity rather than auto-discovering.
     include=[
         "app.workers.tasks.reminders",
-        "app.workers.tasks.analytics",
         "app.workers.tasks.events",
     ],
 )
@@ -36,10 +35,6 @@ celery_app.conf.broker_connection_retry_on_startup = True
 # the only process that acts on it -- celery-worker just executes whatever
 # lands in the queue, the same as if a person's request had enqueued it.
 celery_app.conf.beat_schedule = {
-    "analytics-rollup": {
-        "task": "app.workers.tasks.analytics.rollup_today",
-        "schedule": 300.0,  # every 5 minutes
-    },
     "outbox-relay": {
         "task": "app.workers.tasks.events.publish_outbox_events",
         # Short, because this is the delay between a booking committing

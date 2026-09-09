@@ -263,6 +263,25 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # The Kafka consumer: reads published events and updates the analytics
+  # aggregates. Same image as `api`, different command -- the fourth role
+  # the Dockerfile's opening comment refers to. Waits for kafka to be
+  # healthy, not merely started: subscribing to a broker that is still
+  # forming its cluster fails in a way that looks like "no messages".
+  consumer:
+    build: .
+    container_name: app-consumer
+    command: python -m app.workers.consumer
+    env_file: [.env]
+    volumes:
+      - ".:/app"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+
   # The test suite. Not a long-running service -- it is meant to be run
   # one-shot and thrown away:
   #

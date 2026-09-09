@@ -79,3 +79,16 @@ def build_envelope(event: "OutboxEvent") -> dict[str, object]:
         "correlation_id": event.correlation_id,
         "data": event.data,
     }
+
+
+def all_topics() -> list[str]:
+    """Every topic this system publishes to -- the consumer's subscription.
+
+    Derived from the same map topic_for() uses, so an added event type
+    needs no second edit here. A hand-written list is exactly the "two
+    sources that can disagree" problem the aggregate-from-name rule
+    already avoids.
+    """
+    return [
+        f"{settings.kafka_topic_prefix}.{suffix}" for suffix in _TOPIC_SUFFIX.values()
+    ]

@@ -1,21 +1,31 @@
-"""Tests for app/services/analytics.py: the rollup's arithmetic against
-known raw data, and that re-running it overwrites rather than accumulates.
+"""app/services/analytics.py: the raw-truth computation and the incremental writer.
+
+The two have opposite jobs and are tested for opposite things.
+compute_analytics_for_date() must report what the raw tables say and
+write nothing -- it is the reconciliation check, and a check that writes
+cannot find drift. increment_daily() must add rather than replace, since
+it is called once per event.
 """
 
 from datetime import UTC, date, datetime
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import (
     AnalyticsDaily,
     Appointment,
     AppointmentStatusHistory,
-    FailedJob,
     Slot,
     Visit,
 )
 from app.models.enums import AppointmentStatus, VisitStatus
-from app.services.analytics import rollup_analytics_for_date
+from app.services.analytics import (
+    appointments_series,
+    compute_analytics_for_date,
+    increment_daily,
+    summarise_range,
+)
 
 TARGET_DATE = date(2026, 6, 15)
 
@@ -24,7 +34,7 @@ def _at(hour: int, minute: int = 0) -> datetime:
     return datetime(2026, 6, 15, hour, minute, tzinfo=UTC)
 
 
-def test_rollup_computes_each_metric_from_raw_data(
+def test_compute_reports_each_metric_from_the_raw_tables(
     db_session: Session, appointment: Appointment, slot: Slot
 ) -> None:
     appointment.booked_at = _at(9)
@@ -49,53 +59,151 @@ def test_rollup_computes_each_metric_from_raw_data(
             completed_at=_at(9, 0),
         )
     )
-    db_session.add(
-        FailedJob(
-            job_type="app.workers.tasks.reminders.send_appointment_reminder",
-            payload={},
-            error="boom",
-            attempts=5,
-            created_at=_at(8),
-        )
-    )
     db_session.flush()
 
-    rollup_analytics_for_date(db_session, TARGET_DATE)
+    assert compute_analytics_for_date(db_session, TARGET_DATE) == {
+        "appointments_booked": 1,
+        "completed_visits": 1,
+        "cancellations": 1,
+        "wait_seconds_total": 900.0,  # 15 minutes, in seconds
+        "wait_count": 1,
+    }
 
-    row = db_session.get(AnalyticsDaily, TARGET_DATE)
-    assert row.appointments_booked == 1
-    assert row.completed_visits == 1
-    assert row.cancellations == 1
-    assert row.failed_jobs_count == 1
-    assert row.avg_wait_seconds == 900.0  # 15 minutes, in seconds
 
+def test_compute_writes_nothing(db_session: Session, appointment: Appointment) -> None:
+    """The reason this function stopped being the rollup.
 
-def test_rollup_overwrites_a_stale_row_rather_than_accumulating(
-    db_session: Session, appointment: Appointment
-) -> None:
-    """A pre-existing (possibly stale) row must be overwritten, not added
-    to -- this is what makes the rollup safe to run redundantly.
+    Until Day 3 it recomputed and overwrote the row. That fought the
+    consumer's increments, and it made a reconciliation check vacuous --
+    comparing the aggregates against the query that had just written
+    them could never find drift. This test is what keeps the write out.
     """
-    db_session.add(AnalyticsDaily(date=TARGET_DATE, appointments_booked=999))
-    db_session.flush()
-
     appointment.booked_at = _at(9)
     db_session.flush()
 
-    rollup_analytics_for_date(db_session, TARGET_DATE)
+    compute_analytics_for_date(db_session, TARGET_DATE)
+
+    assert db_session.execute(select(AnalyticsDaily)).scalars().all() == []
+
+
+def test_compute_handles_a_day_with_no_data(db_session: Session) -> None:
+    """An empty day must report zeros rather than erroring or returning None.
+
+    wait_seconds_total in particular: SUM over no rows is NULL in SQL, and
+    a None here would propagate into the drift comparison as a difference
+    rather than as "nothing happened that day".
+    """
+    assert compute_analytics_for_date(db_session, date(2020, 1, 1)) == {
+        "appointments_booked": 0,
+        "completed_visits": 0,
+        "cancellations": 0,
+        "wait_seconds_total": 0.0,
+        "wait_count": 0,
+    }
+
+
+def test_increment_daily_creates_the_row_it_needs(db_session: Session) -> None:
+    """The first event of a day has no row to add to."""
+    increment_daily(db_session, TARGET_DATE, appointments_booked=1)
+    db_session.flush()
 
     row = db_session.get(AnalyticsDaily, TARGET_DATE)
     assert row.appointments_booked == 1
 
 
-def test_rollup_handles_a_day_with_no_data(db_session: Session) -> None:
-    """An empty day must not crash -- avg_wait_seconds in particular has to
-    stay null rather than erroring on an average of nothing.
+def test_increment_daily_adds_rather_than_replacing(db_session: Session) -> None:
+    """The difference between this and the rollup it replaced.
+
+    Called once per event, so a second call must reach 2. Replacing --
+    which is what ON CONFLICT DO UPDATE does by default, and what the old
+    rollup deliberately did -- would leave every day stuck at 1.
     """
-    empty_date = date(2020, 1, 1)
+    increment_daily(db_session, TARGET_DATE, appointments_booked=1)
+    increment_daily(db_session, TARGET_DATE, appointments_booked=1)
+    db_session.flush()
 
-    rollup_analytics_for_date(db_session, empty_date)
+    assert db_session.get(AnalyticsDaily, TARGET_DATE).appointments_booked == 2
 
-    row = db_session.get(AnalyticsDaily, empty_date)
-    assert row.appointments_booked == 0
-    assert row.avg_wait_seconds is None
+
+def test_increment_daily_leaves_columns_it_was_not_given_alone(
+    db_session: Session,
+) -> None:
+    """A visit.completed event must not zero the day's booking count.
+
+    Each handler passes only the columns its own event moves, so an
+    unnamed column has to keep its value. Building the SET clause from
+    the deltas rather than from every column is what makes that true.
+    """
+    increment_daily(db_session, TARGET_DATE, appointments_booked=5)
+    increment_daily(db_session, TARGET_DATE, completed_visits=1)
+    db_session.flush()
+
+    row = db_session.get(AnalyticsDaily, TARGET_DATE)
+    assert row.appointments_booked == 5
+    assert row.completed_visits == 1
+
+
+def test_summarise_range_reads_only_the_days_asked_for(db_session: Session) -> None:
+    """The range is a filter, not a suggestion.
+
+    A summary that quietly included every day would look right on a fresh
+    database and wrong on a real one -- the failure would only appear
+    once there was history either side of the range.
+    """
+    increment_daily(db_session, date(2026, 6, 14), appointments_booked=100)
+    increment_daily(db_session, TARGET_DATE, appointments_booked=2)
+    increment_daily(db_session, date(2026, 6, 16), appointments_booked=100)
+    db_session.flush()
+
+    summary = summarise_range(db_session, TARGET_DATE, TARGET_DATE)
+
+    assert summary["appointments_booked"] == 2
+
+
+def test_summarise_range_divides_the_two_wait_components(
+    db_session: Session,
+) -> None:
+    """The average is computed here, on read, from the stored total and
+    count -- which is the whole reason the row stores them separately.
+    """
+    increment_daily(db_session, TARGET_DATE, wait_seconds_total=900.0, wait_count=1)
+    increment_daily(db_session, TARGET_DATE, wait_seconds_total=300.0, wait_count=1)
+    db_session.flush()
+
+    summary = summarise_range(db_session, TARGET_DATE, TARGET_DATE)
+
+    assert summary["avg_wait_seconds"] == 600.0
+    assert summary["cancellation_rate"] is None
+
+
+def test_rates_are_null_rather_than_zero_when_there_is_nothing_to_divide(
+    db_session: Session,
+) -> None:
+    """Zero and "no data" are different facts.
+
+    A month with no bookings did not have a 0% cancellation rate, and a
+    dashboard drawing 0% would be stating something false rather than
+    admitting it has nothing to show.
+    """
+    summary = summarise_range(db_session, TARGET_DATE, TARGET_DATE)
+
+    assert summary["cancellation_rate"] is None
+    assert summary["avg_wait_seconds"] is None
+    assert summary["appointments_booked"] == 0
+
+
+def test_the_series_returns_zero_for_days_with_no_row(db_session: Session) -> None:
+    """increment_daily only creates a row when something happens, so a
+    quiet day is simply absent from the table. The series fills it in:
+    a chart with holes is a worse answer than one with zeros.
+    """
+    increment_daily(db_session, date(2026, 6, 16), appointments_booked=3)
+    db_session.flush()
+
+    series = appointments_series(db_session, date(2026, 6, 15), date(2026, 6, 17))
+
+    assert series == [
+        {"date": date(2026, 6, 15), "appointments_booked": 0},
+        {"date": date(2026, 6, 16), "appointments_booked": 3},
+        {"date": date(2026, 6, 17), "appointments_booked": 0},
+    ]

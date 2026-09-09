@@ -56,3 +56,17 @@ asyncio_mode = "auto"
 # matching db_session's own per-test scope -- so a test can never see
 # state left behind by the one that ran before it.
 asyncio_default_fixture_loop_scope = "function"
+# A hanging test reports nothing *and* blocks every test queued behind it,
+# so the whole run becomes unreadable -- seen on Day 2, when an
+# AttributeError inside a Temporal Activity was not an ApplicationError,
+# so Temporal retried it forever and the suite never returned.
+#
+# 120s, not 60s: the first test to call WorkflowEnvironment.start_time_
+# skipping() downloads the Temporal test-server binary, which measured
+# 7s and 65s on two runs of the same suite. That download is the real
+# problem -- it should be baked into the image, which would also restore
+# the no-network property Weeks 4-5 need -- and this ceiling is sized
+# around it until then. The number is deliberately loose: this guard is
+# here to tell *finite* from *infinite*, and a hung test hangs forever,
+# not for 90 seconds.
+timeout = 120

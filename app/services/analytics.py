@@ -1,8 +1,16 @@
-"""Analytics business logic: recomputing analytics_daily from raw data.
+"""Analytics: the aggregates the consumer maintains, and the raw truth to check them against.
 
-Called by the Week 3 Celery rollup task and, later, by task 3.7's
-reconciliation check -- both need exactly this "what does the raw data
-actually say" computation, just for different reasons.
+Two functions with opposite jobs. increment_daily() is how analytics_daily
+is *written* -- one event at a time, by the Kafka consumer, which is its
+only writer. compute_analytics_for_date() never writes: it recomputes the
+same numbers from the raw tables so task 3.7 can compare the two and
+report drift.
+
+Keeping the comparison read-only is the whole point. Until Week 3 Day 3 a
+Celery Beat task recomputed and overwrote this table every five minutes,
+which fought the consumer's increments and, worse, made a reconciliation
+check meaningless -- it would have been comparing the aggregates against
+the very query that had just written them.
 """
 
 from datetime import UTC, date, datetime, time, timedelta
@@ -16,20 +24,24 @@ from app.models import (
     Appointment,
     AppointmentStatusHistory,
     FailedJob,
+    Patient,
     Slot,
     Visit,
 )
 from app.models.enums import AppointmentStatus, VisitStatus
 
 
-def rollup_analytics_for_date(db: Session, target_date: date) -> None:
-    """Recompute one day's analytics_daily row from the raw tables and overwrite it.
+def compute_analytics_for_date(db: Session, target_date: date) -> dict[str, float]:
+    """What the raw tables say one day's numbers should be. Writes nothing.
 
-    A full recompute, not an increment -- see app/workers/tasks/analytics.py
-    for why that's the point. INSERT ... ON CONFLICT DO UPDATE is the same
-    single-statement reasoning as the slot reservation's atomic UPDATE,
-    applied to a row instead of a status: no separate SELECT to decide
-    whether to insert or update.
+    Returns the same keys analytics_daily stores, so task 3.7 can compare
+    the two dictionaries directly and report any that differ.
+
+    Each bucket reads the same column the matching handler in
+    app/events/handlers.py reads -- booked_at, the CANCELLED history
+    row's created_at, completed_at, checked_in_at. That is deliberate: if
+    the two disagreed about which column defines a day, this check would
+    report drift that was an artefact of the check itself.
     """
     day_start = datetime.combine(target_date, time.min, tzinfo=UTC)
     day_end = day_start + timedelta(days=1)
@@ -60,39 +72,134 @@ def rollup_analytics_for_date(db: Session, target_date: date) -> None:
         )
     ).scalar_one()
 
-    avg_wait_seconds = db.execute(
-        select(func.avg(func.extract("epoch", Visit.checked_in_at - Slot.start_time)))
+    # The sum and the count, not the average: this has to return what
+    # analytics_daily actually stores, and the row stores the two
+    # components precisely because an average cannot be incremented.
+    wait_seconds_total, wait_count = db.execute(
+        select(
+            func.coalesce(
+                func.sum(func.extract("epoch", Visit.checked_in_at - Slot.start_time)),
+                0,
+            ),
+            func.count(),
+        )
         .select_from(Visit)
         .join(Appointment, Visit.appointment_id == Appointment.id)
         .join(Slot, Appointment.slot_id == Slot.id)
         .where(Visit.checked_in_at >= day_start, Visit.checked_in_at < day_end)
-    ).scalar_one()
+    ).one()
 
-    failed_jobs_count = db.execute(
-        select(func.count())
-        .select_from(FailedJob)
-        .where(FailedJob.created_at >= day_start, FailedJob.created_at < day_end)
-    ).scalar_one()
+    return {
+        "appointments_booked": appointments_booked,
+        "completed_visits": completed_visits,
+        "cancellations": cancellations,
+        "wait_seconds_total": float(wait_seconds_total),
+        "wait_count": wait_count,
+    }
 
-    stmt = insert(AnalyticsDaily).values(
-        date=target_date,
-        appointments_booked=appointments_booked,
-        completed_visits=completed_visits,
-        cancellations=cancellations,
-        avg_wait_seconds=avg_wait_seconds,
-        failed_jobs_count=failed_jobs_count,
-    )
 
+def increment_daily(db: Session, target_date: date, **deltas: float) -> None:
+    """Add deltas to one day's row, creating the row if it is not there yet.
+
+    INSERT ... ON CONFLICT DO UPDATE SET col = analytics_daily.col +
+    excluded.col: one statement, so the arithmetic happens inside the
+    database where every writer is visible. A read-then-write would lose
+    an increment whenever two events for the same day overlapped -- the
+    same check-then-act gap as the slot reservation, in a different
+    costume.
+
+    Deliberately does not commit. The caller is the consumer, holding the
+    transaction that also carries the processed_events claim, and the two
+    have to land together or not at all.
+    """
+    stmt = insert(AnalyticsDaily).values(date=target_date, **deltas)
     stmt = stmt.on_conflict_do_update(
         index_elements=[AnalyticsDaily.date],
         set_={
-            "appointments_booked": stmt.excluded.appointments_booked,
-            "completed_visits": stmt.excluded.completed_visits,
-            "cancellations": stmt.excluded.cancellations,
-            "avg_wait_seconds": stmt.excluded.avg_wait_seconds,
-            "failed_jobs_count": stmt.excluded.failed_jobs_count,
-            "updated_at": func.now(),
-        },
+            column: getattr(AnalyticsDaily, column) + getattr(stmt.excluded, column)
+            for column in deltas
+        }
+        # onupdate is ORM-side and this is a Core statement, so the
+        # timestamp has to be set explicitly or it never moves.
+        | {"updated_at": func.now()},
     )
     db.execute(stmt)
-    db.commit()
+
+
+def summarise_range(db: Session, start_date: date, end_date: date) -> dict[str, object]:
+    """The six metrics for a date range.
+
+    Four come from analytics_daily, summed -- the endpoint never touches
+    appointments or visits. The other two are single scalar counts:
+    nothing announces a new patient or a failed job, so no event could
+    maintain an aggregate for them, and a stored copy would be a second
+    source of truth for a number these tables already hold. Total
+    patients is not a per-day figure at all.
+    """
+    booked, completed, cancellations, wait_total, wait_count = db.execute(
+        select(
+            func.coalesce(func.sum(AnalyticsDaily.appointments_booked), 0),
+            func.coalesce(func.sum(AnalyticsDaily.completed_visits), 0),
+            func.coalesce(func.sum(AnalyticsDaily.cancellations), 0),
+            func.coalesce(func.sum(AnalyticsDaily.wait_seconds_total), 0.0),
+            func.coalesce(func.sum(AnalyticsDaily.wait_count), 0),
+        ).where(
+            AnalyticsDaily.date >= start_date,
+            AnalyticsDaily.date <= end_date,
+        )
+    ).one()
+
+    total_patients = db.execute(select(func.count()).select_from(Patient)).scalar_one()
+
+    # failed_jobs stores a timestamp, not a date, so the range has to be
+    # widened into one -- half-open at the top so the last day is whole.
+    range_start = datetime.combine(start_date, time.min, tzinfo=UTC)
+    range_end = datetime.combine(end_date, time.min, tzinfo=UTC) + timedelta(days=1)
+    failed_jobs = db.execute(
+        select(func.count())
+        .select_from(FailedJob)
+        .where(FailedJob.created_at >= range_start, FailedJob.created_at < range_end)
+    ).scalar_one()
+
+    return {
+        "start_date": start_date,
+        "end_date": end_date,
+        "total_patients": total_patients,
+        "appointments_booked": booked,
+        "completed_visits": completed,
+        "cancellations": cancellations,
+        # None, not 0: nothing was booked, so there is no rate to report.
+        "cancellation_rate": (cancellations / booked) if booked else None,
+        "avg_wait_seconds": (wait_total / wait_count) if wait_count else None,
+        "failed_jobs": failed_jobs,
+    }
+
+
+def appointments_series(
+    db: Session, start_date: date, end_date: date
+) -> list[dict[str, object]]:
+    """Appointments booked per day, one entry per day in the range.
+
+    Days with no row are returned as zero rather than omitted.
+    increment_daily only creates a row when something happens, so a quiet
+    day is simply absent -- and a chart with holes in it is a worse
+    answer than one with zeros, since the client would have to know the
+    convention to draw it correctly.
+    """
+    booked_by_day = dict(
+        db.execute(
+            select(AnalyticsDaily.date, AnalyticsDaily.appointments_booked).where(
+                AnalyticsDaily.date >= start_date,
+                AnalyticsDaily.date <= end_date,
+            )
+        ).all()
+    )
+
+    day_count = (end_date - start_date).days + 1
+    return [
+        {
+            "date": day,
+            "appointments_booked": booked_by_day.get(day, 0),
+        }
+        for day in (start_date + timedelta(days=offset) for offset in range(day_count))
+    ]

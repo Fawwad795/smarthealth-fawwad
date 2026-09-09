@@ -24,9 +24,14 @@ class AnalyticsDaily(Base, TimestampMixin):
     already a unique, natural identity on its own. updated_at (from
     TimestampMixin) shows when this row was last recomputed.
 
-    Total patients, the sixth metric in the brief, is deliberately absent:
-    it's a single running count, not a per-day bucket, so it doesn't belong
-    in a table shaped like this one.
+    failed_jobs_count is deliberately absent too, for a different reason.
+    No event announces a failed job -- failed_jobs rows are written by
+    Celery's DeadLetterTask and by the consumer's own dead-letter path,
+    neither of which publishes anything -- so nothing this consumer
+    receives could ever maintain it. And it would be a second copy of a
+    number failed_jobs already holds: that table gets a row only when
+    something breaks, so counting it directly stays cheap, and one source
+    of truth cannot disagree with itself.
     """
 
     __tablename__ = "analytics_daily"
@@ -45,10 +50,17 @@ class AnalyticsDaily(Base, TimestampMixin):
         Integer, nullable=False, server_default="0"
     )
 
-    # Null, not 0, when nobody checked in that day -- 0 seconds average wait
-    # and "no data" are different facts and must stay distinguishable.
-    avg_wait_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
-
-    failed_jobs_count: Mapped[int] = mapped_column(
-        Integer, nullable=False, server_default="0"
+    # An average cannot be incremented -- "8.5 minutes" has forgotten how
+    # many visits produced it, so the next wait cannot be folded in. The
+    # two components each can be, and the endpoint divides. Storing the
+    # parts rather than the answer is what makes this column maintainable
+    # one event at a time.
+    wait_seconds_total: Mapped[float] = mapped_column(
+        Float, nullable=False, server_default="0"
     )
+
+    # Not the same as completed_visits: a visit contributes to the wait
+    # only if it was checked in, and it is bucketed by the day it was
+    # checked in rather than the day it completed. Dividing by the wrong
+    # count is the easiest way to produce a plausible, wrong average.
+    wait_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
