@@ -27,6 +27,8 @@ from app.core.logging import configure_logging, set_correlation_id
 from app.db.session import session_scope
 from app.events.dedupe import claim_event
 from app.events.envelope import EventType, all_topics
+from app.events.errors import PermanentEventError
+from app.events.handlers import HANDLERS
 from app.models import FailedJob
 
 logger = logging.getLogger(__name__)
@@ -42,17 +44,6 @@ RETRY_BACKOFF_SECONDS = 2.0
 # Fields every envelope must carry. Absent means the producer is broken or
 # the message is not ours -- either way, retrying will not help.
 _REQUIRED_FIELDS = ("event_id", "event_type", "data")
-
-
-class PermanentEventError(Exception):
-    """A message that cannot succeed however many times it is retried.
-
-    Separated from every other exception because the two need opposite
-    handling. A transient failure must not advance the offset; a
-    permanent one *must*, or one bad message blocks its partition
-    forever. The offset is a position, not a checklist -- there is no way
-    to accept the next message while leaving this one outstanding.
-    """
 
 
 def consumer_config() -> dict[str, Any]:
@@ -124,14 +115,18 @@ def parse_message(msg: Message) -> dict[str, Any]:
 
 
 def dispatch(db: Session, envelope: dict[str, Any]) -> None:
-    """Route one event to whatever handles it. Handlers arrive in 3.4b.
+    """Route one event to its handler.
 
     An event type with no handler is not an error. Topics are per
     aggregate, so this consumer legitimately receives events it has no
     interest in -- refusing them would dead-letter perfectly good
     messages for the crime of not being about analytics.
     """
-    logger.debug("no handler yet for event_type=%s", envelope["event_type"])
+    handler = HANDLERS.get(EventType(envelope["event_type"]))
+    if handler is None:
+        logger.debug("no handler for event_type=%s", envelope["event_type"])
+        return
+    handler(db, envelope)
 
 
 def _dead_letter(msg: Message, exc: Exception) -> None:

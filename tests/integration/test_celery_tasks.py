@@ -8,8 +8,6 @@ instead of the dev database, by patching the single SessionLocal lookup
 that session_scope() makes at call time.
 """
 
-from datetime import UTC, datetime
-
 import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -18,9 +16,8 @@ from app.core.logging import correlation_id_var, get_correlation_id
 from app.events import relay
 from app.events.envelope import EventType
 from app.events.outbox import record_event
-from app.models import AnalyticsDaily, FailedJob, OutboxEvent
+from app.models import FailedJob, OutboxEvent
 from app.workers.celery_app import celery_app
-from app.workers.tasks.analytics import rollup_today
 from app.workers.tasks.events import publish_outbox_events
 from app.workers.tasks.reminders import send_appointment_reminder
 
@@ -51,15 +48,6 @@ def test_reminder_task_dead_letters_a_permanent_failure(
     assert failed.job_type == "app.workers.tasks.reminders.send_appointment_reminder"
     assert failed.attempts == 1
     assert "999999999" in failed.error
-
-
-def test_rollup_today_task_writes_todays_row(
-    worker_session: None, db_session: Session
-) -> None:
-    rollup_today.delay()
-
-    row = db_session.get(AnalyticsDaily, datetime.now(UTC).date())
-    assert row is not None
 
 
 def _spy_on_reminder(monkeypatch: pytest.MonkeyPatch, seen: list[str | None]) -> None:
@@ -123,22 +111,27 @@ def test_a_task_does_not_inherit_the_previous_tasks_id(
     assert seen[1] != "req-first"
 
 
-def test_rollup_task_mints_its_own_id(
+def test_a_beat_scheduled_task_mints_its_own_correlation_id(
     monkeypatch: pytest.MonkeyPatch, worker_session: None
 ) -> None:
     """Beat has no upstream request, so each scheduled run identifies
-    itself rather than logging under null."""
+    itself rather than logging under null -- or, worse, under whatever id
+    the worker process happened to handle last.
+
+    Asserted against the outbox relay because it is now the only
+    Beat-scheduled task: the analytics rollup was retired on Week 3 Day 3
+    when the Kafka consumer became the sole writer of analytics_daily.
+    """
     seen: list[str | None] = []
 
-    def spy(db: Session, day: object) -> None:
+    def spy(db: Session, limit: int = 100) -> int:
         seen.append(get_correlation_id())
+        return 0
 
-    monkeypatch.setattr(
-        "app.workers.tasks.analytics.analytics_service.rollup_analytics_for_date", spy
-    )
+    monkeypatch.setattr("app.workers.tasks.events.relay.publish_pending_events", spy)
     token = correlation_id_var.set("req-leftover-from-something-else")
     try:
-        rollup_today.delay()
+        publish_outbox_events.delay()
         assert seen[0] is not None
         assert seen[0] != "req-leftover-from-something-else"
     finally:
