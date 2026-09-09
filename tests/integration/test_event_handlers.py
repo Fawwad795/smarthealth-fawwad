@@ -26,6 +26,7 @@ from app.models import (
     Visit,
 )
 from app.models.enums import AppointmentStatus, VisitStatus
+from app.workers.consumer import dispatch
 
 BOOKED_ON = date(2026, 6, 15)
 
@@ -193,3 +194,36 @@ def test_an_event_for_a_row_that_does_not_exist_is_permanent(
         handle_appointment_booked(
             db_session, _envelope("appointment.booked", {"appointment_id": 999_999})
         )
+
+
+def test_dispatch_routes_an_event_to_its_handler(
+    db_session: Session, appointment: Appointment
+) -> None:
+    """The seam between the loop and the handlers.
+
+    Every test in test_consumer_loop.py monkeypatches dispatch to watch
+    what the loop does with it, which leaves the routing itself
+    unexercised -- the registry lookup could be wired to the wrong
+    handler and the whole suite would still pass.
+    """
+    appointment.booked_at = _at(15, 9)
+    db_session.flush()
+
+    dispatch(
+        db_session, _envelope("appointment.booked", {"appointment_id": appointment.id})
+    )
+    db_session.flush()
+
+    assert db_session.get(AnalyticsDaily, BOOKED_ON).appointments_booked == 1
+
+
+def test_dispatch_ignores_an_event_nothing_handles(db_session: Session) -> None:
+    """Not every event is this consumer's business.
+
+    Topics are per aggregate, so appointment.confirmed arrives here
+    whether or not anything acts on it. Treating that as an error would
+    dead-letter perfectly good messages for not being about analytics.
+    """
+    dispatch(db_session, _envelope("appointment.confirmed", {"appointment_id": 1}))
+
+    assert db_session.get(AnalyticsDaily, BOOKED_ON) is None
