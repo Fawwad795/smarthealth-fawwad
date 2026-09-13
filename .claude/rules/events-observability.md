@@ -1,7 +1,8 @@
 ---
 paths:
   - "app/events/**"
-  - "app/workers/**"
+  - "app/kafka/**"
+  - "app/celery/**"
   - "app/core/**"
   - "scripts/reconcile_analytics.py"
 ---

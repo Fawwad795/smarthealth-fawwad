@@ -15,7 +15,7 @@ and loads on demand:
 | `data-model.md` | `app/models/**`, `migrations/**` |
 | `api-and-schemas.md` | `app/api/**`, `app/schemas/**` |
 | `workflows-and-sagas.md` | `app/temporal/**`, `app/services/**` |
-| `events-observability.md` | `app/events/**`, `app/workers/**`, `app/core/**` |
+| `events-observability.md` | `app/events/**`, `app/kafka/**`, `app/celery/**`, `app/core/**` |
 | `ai-layer.md` | `app/ai/**` |
 | `testing.md` | `tests/**` |
 | `docs.md` | `docs/**`, `README.md`, `NOTES.md` |

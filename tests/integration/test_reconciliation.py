@@ -10,7 +10,7 @@ from datetime import UTC, date, datetime, timedelta
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from app.events.handlers import handle_appointment_booked, handle_visit_completed
+from app.kafka.handlers import handle_appointment_booked, handle_visit_completed
 from app.models import AnalyticsDaily, Appointment, Slot, Visit
 from app.models.enums import VisitStatus
 from app.services import analytics as analytics_service

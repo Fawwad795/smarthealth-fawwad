@@ -38,7 +38,7 @@ def compute_analytics_for_date(db: Session, target_date: date) -> dict[str, floa
     the two dictionaries directly and report any that differ.
 
     Each bucket reads the same column the matching handler in
-    app/events/handlers.py reads -- booked_at, the CANCELLED history
+    app/kafka/handlers.py reads -- booked_at, the CANCELLED history
     row's created_at, completed_at, checked_in_at. That is deliberate: if
     the two disagreed about which column defines a day, this check would
     report drift that was an artefact of the check itself.
