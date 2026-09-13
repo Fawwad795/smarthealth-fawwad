@@ -8,11 +8,11 @@ Depends(get_db) available.
 
 from sqlalchemy.exc import OperationalError
 
+from app.celery.base import DeadLetterTask
+from app.celery.celery_app import celery_app
 from app.core.logging import set_correlation_id
 from app.db.session import session_scope
 from app.services import notification as notification_service
-from app.workers.base import DeadLetterTask
-from app.workers.celery_app import celery_app
 
 
 @celery_app.task(

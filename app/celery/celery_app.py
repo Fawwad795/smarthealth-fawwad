@@ -21,8 +21,8 @@ celery_app = Celery(
     # each module has to be explicitly listed here, same as worker.py
     # explicitly lists every Workflow/Activity rather than auto-discovering.
     include=[
-        "app.workers.tasks.reminders",
-        "app.workers.tasks.events",
+        "app.celery.tasks.reminders",
+        "app.celery.tasks.events",
     ],
 )
 
@@ -36,7 +36,7 @@ celery_app.conf.broker_connection_retry_on_startup = True
 # lands in the queue, the same as if a person's request had enqueued it.
 celery_app.conf.beat_schedule = {
     "outbox-relay": {
-        "task": "app.workers.tasks.events.publish_outbox_events",
+        "task": "app.celery.tasks.events.publish_outbox_events",
         # Short, because this is the delay between a booking committing
         # and its event reaching Kafka. The HTTP response never waits on
         # it either way -- this only sets how stale the analytics can be.

@@ -20,8 +20,13 @@ from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.orm import Session
 from fastapi.testclient import TestClient
 
+from app.celery.celery_app import celery_app
 from app.core.config import settings
 from app.core.logging import correlation_id_var
+from app.core.redis import get_redis
+from app.core.security import create_access_token
+from app.db.session import get_db
+from app.main import app
 from app.models import (
     Appointment,
     AppointmentStatusHistory,
@@ -36,11 +41,6 @@ from app.models import (
     User,
 )
 from app.models.enums import AppointmentStatus, UserRole
-from app.core.redis import get_redis
-from app.core.security import create_access_token
-from app.db.session import get_db
-from app.main import app
-from app.workers.celery_app import celery_app
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
