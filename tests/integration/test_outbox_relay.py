@@ -1,6 +1,6 @@
 """Tests for the relay: the half of the outbox pattern that talks to Kafka.
 
-No broker is involved. app.events.relay.publish is replaced with a spy,
+No broker is involved. app.kafka.relay.publish is replaced with a spy,
 which works because relay.py looks the name up in its own module globals at
 call time -- the same seam app/db/session.py relies on.
 
@@ -17,9 +17,9 @@ from confluent_kafka import KafkaException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.events import relay
 from app.events.envelope import EventType
 from app.events.outbox import record_event
+from app.kafka import relay
 from app.models import OutboxEvent
 
 

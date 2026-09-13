@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-from app.workers.consumer import (
+from app.kafka.consumer import (
     PermanentEventError,
     consumer_config,
     parse_message,

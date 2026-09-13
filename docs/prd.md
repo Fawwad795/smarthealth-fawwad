@@ -94,8 +94,8 @@ assistant. API only — no UI. No clinical data anywhere.
 | FR-13 | `appointment_scheduling.py::cancel_appointment`, `waitlist.py::promote_next_waiting` | `test_appointment_cancel.py::test_cancel_promotes_the_oldest_waiting_entry` |
 | FR-14 | `appointment_scheduling.py::reschedule_appointment` | `test_appointment_reschedule.py::test_a_failed_reschedule_leaves_the_original_slot_untouched` |
 | FR-15 | `app/services/visit.py` | `test_visit_routes.py` (16 tests) |
-| FR-16 | `app/workers/tasks/reminders.py`, `app/workers/base.py` (`DeadLetterTask`) | `test_celery_tasks.py::test_a_transient_failure_retries_with_backoff_then_dead_letters`, `::test_reminder_task_dead_letters_a_permanent_failure` |
-| FR-17 | `app/events/` (outbox, envelope, relay, dedupe, handlers), `app/workers/consumer.py` | `test_event_replay.py`, `test_dedupe.py`, `test_consumer_loop.py`, `test_outbox_relay.py` |
+| FR-16 | `app/celery/tasks/reminders.py`, `app/celery/base.py` (`DeadLetterTask`) | `test_celery_tasks.py::test_a_transient_failure_retries_with_backoff_then_dead_letters`, `::test_reminder_task_dead_letters_a_permanent_failure` |
+| FR-17 | `app/events/` (envelope, outbox), `app/kafka/` (relay, producer, consumer, dedupe, handlers) | `test_event_replay.py`, `test_dedupe.py`, `test_consumer_loop.py`, `test_outbox_relay.py` |
 | FR-18 | `app/services/analytics.py`, `app/api/v1/analytics.py`, `scripts/reconcile_analytics.py` | `test_analytics_service.py`, `test_analytics_routes.py`, `test_reconciliation.py` |
 | FR-19–FR-20 | Not built — Weeks 4–5 | — |
 

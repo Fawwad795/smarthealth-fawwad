@@ -31,10 +31,10 @@ from app.core.metrics import (
     start_metrics_server,
 )
 from app.db.session import session_scope
-from app.events.dedupe import claim_event
 from app.events.envelope import EventType, all_topics
-from app.events.errors import PermanentEventError
-from app.events.handlers import HANDLERS
+from app.kafka.dedupe import claim_event
+from app.kafka.errors import PermanentEventError
+from app.kafka.handlers import HANDLERS
 from app.models import FailedJob
 
 logger = logging.getLogger(__name__)
@@ -157,7 +157,7 @@ def _dead_letter(msg: Message, exc: Exception) -> None:
     with session_scope() as db:
         db.add(
             FailedJob(
-                job_type="app.workers.consumer",
+                job_type="app.kafka.consumer",
                 payload={
                     "topic": msg.topic(),
                     "partition": msg.partition(),
@@ -267,7 +267,7 @@ def consume_forever(consumer: Consumer, stop: threading.Event) -> None:
 
 
 def main() -> None:
-    """Entry point for `python -m app.workers.consumer`."""
+    """Entry point for `python -m app.kafka.consumer`."""
     configure_logging()
     start_metrics_server(CONSUMER_METRICS_PORT)
     stop = threading.Event()

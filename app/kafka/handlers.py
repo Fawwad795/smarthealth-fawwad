@@ -19,7 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.events.envelope import EventType
-from app.events.errors import PermanentEventError
+from app.kafka.errors import PermanentEventError
 from app.models import Appointment, AppointmentStatusHistory, Slot, Visit
 from app.models.enums import AppointmentStatus
 from app.services.analytics import increment_daily

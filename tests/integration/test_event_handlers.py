@@ -1,4 +1,4 @@
-"""app/events/handlers.py: what each event does to analytics_daily.
+"""app/kafka/handlers.py: what each event does to analytics_daily.
 
 The handlers are the only writers of that table, so these tests are the
 only thing standing between an event and a wrong dashboard. Each asserts
@@ -12,8 +12,9 @@ from datetime import UTC, date, datetime
 import pytest
 from sqlalchemy.orm import Session
 
-from app.events.errors import PermanentEventError
-from app.events.handlers import (
+from app.kafka.consumer import dispatch
+from app.kafka.errors import PermanentEventError
+from app.kafka.handlers import (
     handle_appointment_booked,
     handle_appointment_cancelled,
     handle_visit_completed,
@@ -26,7 +27,6 @@ from app.models import (
     Visit,
 )
 from app.models.enums import AppointmentStatus, VisitStatus
-from app.workers.consumer import dispatch
 
 BOOKED_ON = date(2026, 6, 15)
 

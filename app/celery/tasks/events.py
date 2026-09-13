@@ -1,6 +1,6 @@
 """The Celery task that drains the outbox on a timer.
 
-A thin wrapper, same as every other task here -- app/events/relay.py has
+A thin wrapper, same as every other task here -- app/kafka/relay.py has
 the logic.
 """
 
@@ -9,11 +9,11 @@ import logging
 from confluent_kafka import KafkaException
 from sqlalchemy.exc import OperationalError
 
+from app.celery.base import DeadLetterTask
+from app.celery.celery_app import celery_app
 from app.core.logging import set_correlation_id
 from app.db.session import session_scope
-from app.events import relay
-from app.workers.base import DeadLetterTask
-from app.workers.celery_app import celery_app
+from app.kafka import relay
 
 logger = logging.getLogger(__name__)
 

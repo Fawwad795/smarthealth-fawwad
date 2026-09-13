@@ -30,7 +30,7 @@ class FailedJob(Base, TimestampMixin):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
 
     # The registered Celery task name (e.g.
-    # "app.workers.tasks.reminders.send_appointment_reminder"), not a free
+    # "app.celery.tasks.reminders.send_appointment_reminder"), not a free
     # description -- lets a later metrics endpoint group failures by task.
     job_type: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
 

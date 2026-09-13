@@ -112,7 +112,7 @@ event — the aggregate silently under-counts until repaired:
 
 ```bash
 docker compose exec postgres psql -U app -d app -c \
-  "SELECT error, payload FROM failed_jobs WHERE job_type='app.workers.consumer'
+  "SELECT error, payload FROM failed_jobs WHERE job_type='app.kafka.consumer'
    ORDER BY id DESC LIMIT 10;"
 ```
 
