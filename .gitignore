@@ -222,3 +222,6 @@ __marimo__/
 # other file. Only genuinely local, per-machine state stays out.
 .claude/settings.local.json
 CLAUDE.local.md
+# mentor-rehearsal is a private study aid, not project documentation -- it
+# should never appear in a PR the mentor reviews.
+.claude/skills/mentor-rehearsal/
