@@ -3,6 +3,9 @@
 Diagnosing the four things most likely to go wrong. Every command here has
 been run against this stack.
 
+To *cause* these conditions deliberately — for a demo, or to re-verify the
+consumer's two error branches — see `docs/kafka-ui-demo.md`.
+
 **Start here.** Is anything actually down?
 
 ```bash
