@@ -94,8 +94,8 @@ assistant. API only — no UI. No clinical data anywhere.
 | FR-13 | `appointment_scheduling.py::cancel_appointment`, `waitlist.py::promote_next_waiting` | `test_appointment_cancel.py::test_cancel_promotes_the_oldest_waiting_entry` |
 | FR-14 | `appointment_scheduling.py::reschedule_appointment` | `test_appointment_reschedule.py::test_a_failed_reschedule_leaves_the_original_slot_untouched` |
 | FR-15 | `app/services/visit.py` | `test_visit_routes.py` (16 tests) |
-| FR-16 | `app/workers/tasks/reminders.py`, `app/workers/base.py` (`DeadLetterTask`) | `test_celery_tasks.py::test_a_transient_failure_retries_with_backoff_then_dead_letters`, `::test_reminder_task_dead_letters_a_permanent_failure` |
-| FR-17 | `app/events/` (outbox, envelope, relay, dedupe, handlers), `app/workers/consumer.py` | `test_event_replay.py`, `test_dedupe.py`, `test_consumer_loop.py`, `test_outbox_relay.py` |
+| FR-16 | `app/celery/tasks/reminders.py`, `app/celery/base.py` (`DeadLetterTask`) | `test_celery_tasks.py::test_a_transient_failure_retries_with_backoff_then_dead_letters`, `::test_reminder_task_dead_letters_a_permanent_failure` |
+| FR-17 | `app/events/` (envelope, outbox), `app/kafka/` (relay, producer, consumer, dedupe, handlers) | `test_event_replay.py`, `test_dedupe.py`, `test_consumer_loop.py`, `test_outbox_relay.py`, `test_event_handlers.py`, `test_event_envelope.py` |
 | FR-18 | `app/services/analytics.py`, `app/api/v1/analytics.py`, `scripts/reconcile_analytics.py` | `test_analytics_service.py`, `test_analytics_routes.py`, `test_reconciliation.py` |
 | FR-19–FR-20 | Not built — Weeks 4–5 | — |
 
@@ -106,10 +106,6 @@ assistant. API only — no UI. No clinical data anywhere.
   increments, so the consumer is now its only writer. Celery keeps the
   reminders and gained the outbox relay. The requirement is met by a
   different mechanism than it names.
-- **A Temporal worker outage loses booking counts** until reconciliation is
-  run with `--repair`: `appointment.booked` arrives before the saga sets
-  `booked_at`, and the handler dead-letters it as permanent. Two-line fix
-  recorded in `docs/design.md`; deferred, not hidden.
 - Cancel/reschedule are proven; **the saga's compensation has no single end-to-end
   test** — it is covered as two halves (orchestration + Activity DB writes) plus a
   live demonstration.
@@ -117,3 +113,9 @@ assistant. API only — no UI. No clinical data anywhere.
   with nothing to retry it.
 - Overlapping *schedule* windows for one provider are not prevented; the invariant
   that matters is enforced on the slots they generate.
+- **Booking accepts a slot in the past.** Nothing in the booking path compares a
+  slot's `start_time` with now. Found during the Week 3 review's live check.
+- **A consumer down for longer than Kafka's 7-day retention skips events
+  silently** -- its offset falls below the log start and `earliest` jumps the
+  gap. Reconciliation reports the drift, the outbox still holds every event, and
+  `--repair` restores the numbers. Diagnosis in `docs/runbook.md` section 4.

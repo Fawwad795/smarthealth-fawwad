@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
+from app.celery.tasks.reminders import send_appointment_reminder
 from app.core.logging import get_correlation_id, set_correlation_id
 from app.core.metrics import appointments_booked, double_booking_prevented
 from app.db.session import SessionLocal
@@ -44,7 +45,6 @@ from app.models.enums import (
 )
 from app.services.billing import BillingChecker
 from app.services.slot import reserve_slot_uncommitted
-from app.workers.tasks.reminders import send_appointment_reminder
 
 # Every saga step logs one line, so `grep <correlation-id>` tells a booking's
 # whole story across the API, this worker and the Celery worker. Ids only --

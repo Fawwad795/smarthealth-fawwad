@@ -264,6 +264,7 @@ leak `password_hash` and patient data).
 | `docs/design.md` | Data model / ERD, module breakdown, publish workflow and scheduling saga, the slot concurrency approach, decisions and tradeoffs |
 | `docs/events.md` | Every event: envelope, catalogue, topics, the outbox, and how a replay changes nothing |
 | `docs/runbook.md` | Diagnosing a stuck booking, missing reminders, wrong analytics numbers and a silent consumer |
+| `docs/kafka-ui-demo.md` | Driving the event path from Kafka UI: a good event, a replay, three faulty events, and a transient outage |
 | `docs/prd.md` | Requirements, milestones, and the requirement → implementation → test traceability table |
 | `NOTES.md` | Working log and weekly tracking tables |
 
@@ -279,7 +280,7 @@ reviewable like any other file.
 | `CLAUDE.md` | every session | Project summary, layering, the non-negotiables, working rules |
 | `rules/data-model.md` | editing `app/models/**`, `migrations/**` | Table list, enum/timestamp/migration conventions |
 | `rules/workflows-and-sagas.md` | editing `app/temporal/**`, `app/services/**` | Slot atomicity, idempotency, publish workflow, scheduling saga |
-| `rules/events-observability.md` | editing `app/events/**`, `app/workers/**`, `app/core/**` | Event envelope, Celery retries, analytics, logging/metrics |
+| `rules/events-observability.md` | editing `app/events/**`, `app/kafka/**`, `app/celery/**`, `app/core/**` | Event envelope, Celery retries, analytics, logging/metrics |
 | `rules/ai-layer.md` | editing `app/ai/**` | Chunking, retrieval filters, refusal rules, streaming |
 | `rules/testing.md` | editing `tests/**` | Coverage targets, fixture design, what must be tested |
 | `reference/*.md` | never automatically — grepped on demand | The three assignment briefs, converted from `.docx` by `scripts/convert_briefs.py` |

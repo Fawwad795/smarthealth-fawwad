@@ -30,12 +30,17 @@ Every event has the same shape:
 
 | Event | Published by | `data` | Consumer does |
 |---|---|---|---|
-| `appointment.booked` | `services/appointment_scheduling.py` | `appointment_id`, `patient_id`, `provider_id`, `service_id`, `slot_id` | `appointments_booked` +1 |
-| `appointment.confirmed` | `temporal/activities.py` (scheduling saga) | `appointment_id`, `slot_id` | ignored |
+| `appointment.booked` | `services/appointment_scheduling.py` | `appointment_id`, `patient_id`, `provider_id`, `service_id`, `slot_id` | ignored -- see below |
+| `appointment.confirmed` | `temporal/activities.py` (scheduling saga) | `appointment_id`, `slot_id` | `appointments_booked` +1, on `booked_at`'s day |
 | `appointment.cancelled` | `services/appointment_scheduling.py`, and `temporal/activities.py` when the saga compensates | `appointment_id`, `slot_id` | `cancellations` +1 |
 | `visit.completed` | `services/visit.py` | `visit_id`, `appointment_id` | `completed_visits` +1, plus the wait time |
 | `service.published` | `temporal/activities.py` (publish workflow) | `service_id` | ignored |
 | `billing.updated` | `services/billing.py` | `billing_id`, `appointment_id` | ignored |
+
+`appointment.booked` drives nothing, on purpose. It is queued while the
+appointment is still `REQUESTED`, before the saga writes `booked_at`, so it can
+arrive with no day to count on. `appointment.confirmed` is recorded in the same
+transaction that sets `booked_at`, so the count comes from there.
 
 "Ignored" is not a gap. Topics are per aggregate, so the consumer receives more
 than it acts on — three of the six move a number, the other three are there for
@@ -46,10 +51,27 @@ anyone who subscribes later.
 One topic per aggregate, not per event type: `app.appointments`, `app.visits`,
 `app.services`, `app.billings`.
 
-The message key is the aggregate id, so all of one appointment's events land on
-the same partition and arrive in order — `booked` is always seen before
-`confirmed`. Separate topics per event type would give no ordering guarantee
-between them at all.
+The message key names the aggregate and its id — `appointment-51`, `visit-12`,
+`service-3`, `billing-7` — built by `key_for()` beside `topic_for()`, so the
+topic and the key come from one place and cannot disagree. It reads in Kafka UI
+without opening the message, the same convention as the Temporal workflow ids
+(`schedule-appointment-51`).
+
+It names the **aggregate, never the event**. The key decides the partition and
+Kafka orders only within one, so every event about appointment 51 shares a key
+and arrives in order — `booked` is always seen before `confirmed`. A key like
+`booked-51` would hash `booked` and `confirmed` apart, invisibly while each
+topic has a single partition. Separate topics per event type would give no
+ordering guarantee between them at all.
+
+`aggregate_id` is always the id of the topic's own aggregate. `billing.updated`
+therefore carries the billing's id, not its appointment's, so `billing-7` means
+billing 7; the appointment id travels in `data`.
+
+Messages published before keys were named carry a bare `"51"`. Nothing
+migrates them: the consumer never reads the key, and the broker's 7-day
+retention (`log.retention.hours=168`) deletes them. Kafka is the transport
+here, not the record — `outbox_events` keeps every event.
 
 ## How an event gets out (the outbox)
 

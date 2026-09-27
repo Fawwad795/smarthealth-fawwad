@@ -3,7 +3,7 @@
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.events.dedupe import claim_event
+from app.kafka.dedupe import claim_event
 
 
 def test_the_first_claim_succeeds_and_the_second_does_not(

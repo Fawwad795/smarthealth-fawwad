@@ -1,7 +1,8 @@
 ---
 paths:
   - "app/events/**"
-  - "app/workers/**"
+  - "app/kafka/**"
+  - "app/celery/**"
   - "app/core/**"
   - "scripts/reconcile_analytics.py"
 ---
@@ -89,3 +90,49 @@ an `AppError` — it belongs to the catch-all.
 
 **Never hardcode a status code**: `from fastapi import status` →
 `status.HTTP_409_CONFLICT`.
+
+## The event pipeline (established Week 3 — keep it)
+
+**Layout.** `app/events/` names an event and writes it to `outbox_events`, and
+imports no broker client. `app/kafka/` is everything that talks to a broker.
+`app/celery/` is the task queue. Keep that boundary.
+
+**Producing**
+- Emit with `record_event()` inside the transaction that caused the change; it
+  never commits. Nothing outside `app/kafka/` imports the producer.
+- The relay claims rows `FOR UPDATE SKIP LOCKED` and stamps `published_at` only
+  after the broker acks. At-least-once is the accepted trade.
+- `publish()` waits on the delivery callback — `produce()` alone proves nothing.
+  `message.timeout.ms` stays inside the flush window: the outbox is the only
+  retry layer.
+- One topic per aggregate (`app.appointments`), never per event type.
+- **Message key = `<aggregate>-<id>`** (`appointment-51`), built by `key_for()`.
+  Name the aggregate, never the event: `booked-51` would split one
+  appointment's events across partitions. `aggregate_id` is always the id of
+  the topic's own aggregate.
+
+**Consuming**
+- `enable.auto.commit: False`, `auto.offset.reset: earliest`.
+- `claim_event()` (`ON CONFLICT DO NOTHING ... RETURNING`) shares the handler's
+  transaction; one commit covers the claim and the aggregate update.
+- `PermanentEventError` → dead-letter to `failed_jobs`, then commit the offset.
+  Anything else → `seek()` back and retry, never commit.
+- A handler only runs on an event whose row is guaranteed complete:
+  `appointments_booked` comes from `appointment.confirmed`, because
+  `appointment.booked` is queued before `booked_at` exists.
+- Handlers bucket by the raw column the reconciliation reads (`booked_at`, the
+  CANCELLED history row, `completed_at`), never the envelope's `occurred_at`.
+- Keep "row missing" and "column empty" apart (`one_or_none()`, not
+  `scalar_one_or_none()`), so a dead-letter says which anomaly it was.
+- Dead-letters record coordinates (topic/partition/offset), never the body.
+
+**Analytics and observability**
+- The consumer is the sole writer of `analytics_daily`. Averages are stored as
+  a sum and a count.
+- Reconciliation is read-only and exits 1 on drift; `--repair` is separate and
+  manual.
+- Metrics are per process — query with `sum by (job)`. HTTP labels use the
+  route template, never the raw URL.
+- `/health/ready` checks every dependency with a deadline; 503, not 500.
+- Identifiers people read are self-describing: `schedule-appointment-51`,
+  `publish-service-3`, `appointment-51`, `req-...`.

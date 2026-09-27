@@ -12,7 +12,7 @@ from typing import Any, Callable
 import pytest
 from confluent_kafka import KafkaException
 
-from app.events import producer
+from app.kafka import producer
 
 
 class _FakeProducer:
