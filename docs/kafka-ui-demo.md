@@ -38,7 +38,9 @@ looks empty. Set it to **Oldest**.
 
 `visits` is empty in dev data, so `visit.completed` has nothing real behind it
 (which is also why `completed_visits` and `wait_count` are 0 on every row).
-Use `appointment.booked` -- 39 appointments carry a `booked_at`.
+Use `appointment.confirmed`, which is what drives `appointments_booked`.
+Producing `appointment.booked` by hand does nothing: the consumer receives it
+and deliberately ignores it (see `docs/design.md`, the Week 3 review fix).
 
 | Field | Value |
 |---|---|
@@ -71,17 +73,17 @@ pipeline 2 reuses it.
 ```json
 {
   "event_id": "PASTE-FRESH-UUID",
-  "event_type": "appointment.booked",
+  "event_type": "appointment.confirmed",
   "version": 1,
   "occurred_at": "2026-09-14T10:00:00+00:00",
   "correlation_id": "req-mentor-demo-1",
-  "data": {"appointment_id": 51, "patient_id": 19, "provider_id": 6, "slot_id": 153}
+  "data": {"appointment_id": 51, "slot_id": 153}
 }
 ```
 
 1. **Messages tab** (Seek Type: Oldest) -- the record, with the offset the
    broker assigned to it.
-2. **Terminal A** -- `event processed event_id=... type=appointment.booked`,
+2. **Terminal A** -- `event processed event_id=... type=appointment.confirmed`,
    carrying `correlation_id=req-mentor-demo-1`.
 3. The claim row was written:
 
@@ -130,7 +132,7 @@ Three variants, each rejected at a different point, all to `app.appointments`.
 **3a. Missing a required field.** Rejected by `parse_message`, before any DB work:
 
 ```json
-{"event_id": "FRESH-UUID-A", "event_type": "appointment.booked", "version": 1}
+{"event_id": "FRESH-UUID-A", "event_type": "appointment.confirmed", "version": 1}
 ```
 
 Gives `envelope is missing fields: ['data']`.
@@ -146,7 +148,7 @@ Gives `unknown event type: appointment.exploded`.
 **3c. Well-formed, absent row.** Reaches the handler:
 
 ```json
-{"event_id": "FRESH-UUID-C", "event_type": "appointment.booked", "version": 1, "data": {"appointment_id": 999999}}
+{"event_id": "FRESH-UUID-C", "event_type": "appointment.confirmed", "version": 1, "data": {"appointment_id": 999999}}
 ```
 
 Gives `appointment 999999 does not exist`.
@@ -170,10 +172,13 @@ only blocks the partition behind it.
    payload, fresh `event_id`) and watch it process. **32 to 33.** Three bad
    messages killed nothing, stalled nothing, and were all recorded.
 
-**On 3c:** that error string is verbatim the one the Day 5 crash demo produced
-28 times -- except there it said "appointment 51 does not exist" about an
-appointment that existed, because `appointment.booked` is queued before the
-saga writes `booked_at`. Deferred bug, recorded in `docs/design.md`.
+**On 3c:** the Day 5 crash demo dead-lettered 28 events with this same message --
+"appointment 51 does not exist" -- about an appointment that *did* exist:
+`appointment.booked` used to drive the count, and it is queued before the saga
+writes `booked_at`. Fixed in the Week 3 review: the count now comes from
+`appointment.confirmed`, and an existing appointment with no `booked_at`
+dead-letters as `is confirmed but has no booked_at` instead, so the message
+always says which anomaly it was.
 
 ---
 

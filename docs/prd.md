@@ -106,10 +106,6 @@ assistant. API only — no UI. No clinical data anywhere.
   increments, so the consumer is now its only writer. Celery keeps the
   reminders and gained the outbox relay. The requirement is met by a
   different mechanism than it names.
-- **A Temporal worker outage loses booking counts** until reconciliation is
-  run with `--repair`: `appointment.booked` arrives before the saga sets
-  `booked_at`, and the handler dead-letters it as permanent. Two-line fix
-  recorded in `docs/design.md`; deferred, not hidden.
 - Cancel/reschedule are proven; **the saga's compensation has no single end-to-end
   test** — it is covered as two halves (orchestration + Activity DB writes) plus a
   live demonstration.

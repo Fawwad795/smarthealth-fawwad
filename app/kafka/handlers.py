@@ -25,22 +25,37 @@ from app.models.enums import AppointmentStatus
 from app.services.analytics import increment_daily
 
 
-def handle_appointment_booked(db: Session, envelope: dict[str, Any]) -> None:
-    """appointments_booked +1, on the day the appointment was booked."""
+def handle_appointment_confirmed(db: Session, envelope: dict[str, Any]) -> None:
+    """appointments_booked +1, on the day the appointment was booked.
+
+    Driven by appointment.confirmed, not appointment.booked. booked is
+    queued while the appointment is still REQUESTED, and booked_at is only
+    written later, by the saga's confirm Activity -- so a booked event can
+    arrive before there is a day to count it on. Day 5's crash demo froze
+    the sagas and every booking event was dead-lettered that way.
+    confirmed is recorded in the same transaction that sets booked_at, so
+    when it arrives the column is guaranteed to be filled.
+    """
     appointment_id = envelope["data"]["appointment_id"]
-    booked_at = db.execute(
+    row = db.execute(
         select(Appointment.booked_at).where(Appointment.id == appointment_id)
-    ).scalar_one_or_none()
+    ).one_or_none()
 
-    if booked_at is None:
-        # Permanent, not transient: the event is only published after the
-        # transaction that created the appointment committed, and every
-        # FK is ON DELETE RESTRICT, so the row cannot arrive late and
-        # cannot have been removed. Its absence is an anomaly no retry
-        # will resolve.
+    # Both branches are permanent, and kept apart so the dead-letter says
+    # which anomaly it was. A missing row cannot arrive late: the event is
+    # published only after its transaction committed, and every FK is
+    # ON DELETE RESTRICT. An empty booked_at cannot fill in later either:
+    # confirm writes it in the same transaction as this event, and nothing
+    # ever clears it. Collapsing the two into one None is how Day 5's
+    # dead-letters came to say "does not exist" about a row that existed.
+    if row is None:
         raise PermanentEventError(f"appointment {appointment_id} does not exist")
+    if row.booked_at is None:
+        raise PermanentEventError(
+            f"appointment {appointment_id} is confirmed but has no booked_at"
+        )
 
-    increment_daily(db, booked_at.date(), appointments_booked=1)
+    increment_daily(db, row.booked_at.date(), appointments_booked=1)
 
 
 def handle_appointment_cancelled(db: Session, envelope: dict[str, Any]) -> None:
@@ -106,11 +121,13 @@ def handle_visit_completed(db: Session, envelope: dict[str, Any]) -> None:
     )
 
 
-# The three events that move a number. The other three -- confirmed,
+# The three events that move a number. The other three -- booked,
 # published, billing.updated -- are legitimately received and ignored;
 # topics are per aggregate, so this consumer sees more than it acts on.
+# booked is ignored on purpose: handle_appointment_confirmed says why
+# confirmed drives the count instead.
 HANDLERS: dict[EventType, Callable[[Session, dict[str, Any]], None]] = {
-    EventType.APPOINTMENT_BOOKED: handle_appointment_booked,
+    EventType.APPOINTMENT_CONFIRMED: handle_appointment_confirmed,
     EventType.APPOINTMENT_CANCELLED: handle_appointment_cancelled,
     EventType.VISIT_COMPLETED: handle_visit_completed,
 }
