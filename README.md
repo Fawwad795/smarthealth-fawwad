@@ -264,6 +264,7 @@ leak `password_hash` and patient data).
 | `docs/design.md` | Data model / ERD, module breakdown, publish workflow and scheduling saga, the slot concurrency approach, decisions and tradeoffs |
 | `docs/events.md` | Every event: envelope, catalogue, topics, the outbox, and how a replay changes nothing |
 | `docs/runbook.md` | Diagnosing a stuck booking, missing reminders, wrong analytics numbers and a silent consumer |
+| `docs/kafka-ui-demo.md` | Driving the event path from Kafka UI: a good event, a replay, three faulty events, and a transient outage |
 | `docs/prd.md` | Requirements, milestones, and the requirement → implementation → test traceability table |
 | `NOTES.md` | Working log and weekly tracking tables |
 
