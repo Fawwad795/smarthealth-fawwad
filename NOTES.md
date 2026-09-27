@@ -13,7 +13,7 @@ Kept as I go, not written up at the end of the week.
 |---|---|---|---|
 | 1 | Foundation & core domain | Auth + roles + patient-data protection, providers/services/slots CRUD, migrations, seed, 80% coverage | ☑ 142 tests, 98% - PR #1 approved, deliberately left unmerged |
 | 2 | Temporal, scheduling & slots | No double-booking, no duplicate booking, publish workflow + scheduling saga with compensation, chunks produced, 80% coverage | ☑ 264 tests, 98% - 2.1-2.13 complete |
-| 3 | Async, events, observability | Celery reminders/rollup with DLQ, events consumed idempotently, accurate analytics, correlation IDs (no PHI), `/metrics`, 80% coverage | ☐ |
+| 3 | Async, events, observability | Celery reminders/rollup with DLQ, events consumed idempotently, accurate analytics, correlation IDs (no PHI), `/metrics`, 80% coverage | ☑ 397 tests, 97.66% - 3.1-3.13 complete, review fixes in PR #16 |
 
 ### Part B (Weeks 4-5)
 
@@ -1278,6 +1278,52 @@ architecture diagram), 3.13 (crash-recovery demo).
 
 ---
 
+### Day 6 - 2026-09-13
+
+**Goal:** Make the outbox/Kafka boundary visible in the tree, and prepare a
+Kafka UI demo for the mentor.
+
+**Done**
+
+- `app/events/` keeps envelope + outbox; new `app/kafka/` holds producer,
+  relay, consumer, dedupe, handlers, errors; `app/workers/` -> `app/celery/`.
+- Imports, the consumer's `job_type`, compose commands and rule-file globs
+  moved with it. 393 tests, unchanged.
+- `docs/kafka-ui-demo.md`: good event, replay, faulty events, transient outage.
+- `mentor-rehearsal` reworked (topic mode, MCQs, tiered hints), renamed `revision`.
+
+**Decisions**
+
+| Decision | Why |
+|---|---|
+| `envelope.py` stays in `app/events/` | `topic_for()` derives from `EventType`; moving it means re-exporting |
+| `app/celery`, not `app/workers` | Three other kinds of worker process exist |
+| Stale `celerybeat-schedule` deleted | Beat's shelve held the old task name |
+| Demo on `appointment.booked`, not `visit.completed` | `visits` is empty in dev data |
+
+**Cost time**
+
+- Docker down mid-refactor; verified offline first (535 imports, 26 string
+  paths) before the suite could run.
+- Demo cleanup `LIKE '%999999%'` matched nothing -- only variant 3c emits it.
+
+**Explain out loud**
+
+- A partition is the unit of ordering and of consumer ownership; the key picks
+  it as `murmur2(key) % partitions`.
+- `commit()` moves the group's bookmark in `__consumer_offsets`; the record
+  itself never moves.
+
+**Carrying into the review**
+
+- Week 3 stack (#10-#16) open for the mentor.
+
+**Open questions**
+
+- Pipeline 4's relay dead-lettered at `attempts=1` despite `max_retries=5`.
+
+---
+
 ## Weekly self-check
 
 ### Week 3 - 2026-09-10
@@ -1297,3 +1343,65 @@ architecture diagram), 3.13 (crash-recovery demo).
    After that the demo was decisive rather than suggestive.
 4. **Carrying into Week 4:** the handler fix above, and re-exporting the
    architecture diagram. Nothing from the 3.x task list.
+
+---
+
+## Week 3 review fixes - 2026-09-27
+
+Post-review work on PR #16: 1 mentor point, plus the deferred Day 5 bug.
+
+**Done**
+
+- Kafka keys named for their aggregate (`appointment-51`, not `51`) via
+  `key_for()` beside `topic_for()`.
+- `billing.updated` carries the billing's own id, so `billing-7` means billing 7.
+- `appointments_booked` driven by `appointment.confirmed`; `appointment.booked`
+  drives nothing.
+- The handler tells a missing row from an empty `booked_at` in its dead-letter.
+- Day 5's scenario re-run live: `booked` ignored while the saga was frozen,
+  `confirmed` counted it, reconcile clean with no `--repair`.
+- Week 3 conventions written back to `events-observability.md` and `testing.md`.
+- 393 -> 397 tests, 97.66% coverage.
+
+**Decisions**
+
+| Decision | Why |
+|---|---|
+| `appointment-51`, not the mentor's `booked-51` | Keyed by event, one appointment's events split across partitions |
+| `key_for()` in `envelope.py`, not the relay | Topic and key derive from one `aggregate_of()` |
+| Billing's own id at the emit site | "aggregate_id is the topic's aggregate" with no special case |
+| Both anomalies stay permanent | Neither resolves on retry; transient would stall on REJECTED |
+| Verification appointment 52 left in place | Deleting it would create the drift it proved absent |
+
+**Cost time**
+
+- The billing test passed with the fix reverted: fresh test DB, both ids 1.
+  Found only by the mutation check; fixed with `setval`.
+- 7-day retention had already deleted every demo record -- `app.appointments`
+  now starts at offset 87.
+- Consumer and Celery worker don't hot-reload; restart before a live check.
+- A Claude trailer reached a pushed commit; amended and force-pushed.
+
+**Explain out loud**
+
+- A key must be stable across an aggregate's events or ordering is lost --
+  invisibly, while each topic has one partition.
+- A test is evidence only once it has been seen failing; order-dependent ids
+  can make it pass by coincidence.
+- Kafka is the transport here, not the record: the outbox keeps every event,
+  the broker keeps a week.
+
+**Carrying into Week 4**
+
+- Merge the Week 3 stack (#10-#16) before Week 4 Day 1 branches off it.
+- Known gaps recorded in `docs/prd.md` 7: booking accepts a past slot; a
+  consumer down >7 days skips events.
+- UTC bucket limitation, unchanged.
+- `docs/diagrams/architecture.svg` still needs re-exporting from the mermaid.
+
+**Open questions**
+
+- Why does the relay dead-letter at `attempts=1` when its decorator allows
+  5 retries, while the reminder task correctly reaches 6?
+- 3 uncovered permanent-error branches (cancelled, visit handlers) -- worth
+  tests before Week 4?
