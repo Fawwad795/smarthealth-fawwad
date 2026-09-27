@@ -119,12 +119,14 @@ docker compose exec postgres psql -U app -d app -c \
    ORDER BY id DESC LIMIT 10;"
 ```
 
-> **Known issue.** A Temporal worker outage makes `appointment.booked` events
-> arrive before the saga has set `booked_at`, and the handler treats that as
-> permanent and dead-letters them. Booking counts are then lost until you run
-> `--repair`. Fix is to drive the aggregate from `appointment.confirmed`
-> instead — see `NOTES.md`. **When demoing, show the analytics before any
-> crash-recovery scenario.**
+Reading a booking dead-letter. `appointment N does not exist` means the row
+is missing; `appointment N is confirmed but has no booked_at` means it exists
+but was never stamped. Neither can resolve on a retry, which is why both are
+permanent -- and neither should occur, since `confirm` writes `booked_at` in
+the same transaction as the event.
+
+A Temporal worker outage no longer loses booking counts: `appointment.booked`
+drives nothing, and `appointment.confirmed` only exists once `booked_at` does.
 
 ---
 

@@ -10,13 +10,14 @@ failure a naive `datetime.now()` would produce when replaying a backlog.
 from datetime import UTC, date, datetime
 
 import pytest
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.kafka.consumer import dispatch
 from app.kafka.errors import PermanentEventError
 from app.kafka.handlers import (
-    handle_appointment_booked,
     handle_appointment_cancelled,
+    handle_appointment_confirmed,
     handle_visit_completed,
 )
 from app.models import (
@@ -39,7 +40,7 @@ def _envelope(event_type: str, data: dict[str, int]) -> dict[str, object]:
     return {"event_id": "evt-h", "event_type": event_type, "data": data}
 
 
-def test_a_booking_counts_on_the_day_it_was_booked(
+def test_a_confirmed_booking_counts_on_the_day_it_was_booked(
     db_session: Session, appointment: Appointment
 ) -> None:
     """Bucketed by appointments.booked_at -- the same column the
@@ -48,8 +49,9 @@ def test_a_booking_counts_on_the_day_it_was_booked(
     appointment.booked_at = _at(15, 9)
     db_session.flush()
 
-    handle_appointment_booked(
-        db_session, _envelope("appointment.booked", {"appointment_id": appointment.id})
+    handle_appointment_confirmed(
+        db_session,
+        _envelope("appointment.confirmed", {"appointment_id": appointment.id}),
     )
     db_session.flush()
 
@@ -185,14 +187,32 @@ def test_an_event_for_a_row_that_does_not_exist_is_permanent(
 ) -> None:
     """Not transient, and the distinction decides whether the offset moves.
 
-    The event is published only after the transaction that created the
-    appointment committed, and every FK is ON DELETE RESTRICT, so the row
-    cannot arrive late and cannot have been deleted. Retrying forever
-    would block the partition on an anomaly no retry can fix.
+    The event is published only after the transaction that wrote the row
+    committed, and every FK is ON DELETE RESTRICT, so the row cannot
+    arrive late and cannot have been deleted. Retrying forever would block
+    the partition on an anomaly no retry can fix.
     """
     with pytest.raises(PermanentEventError, match="does not exist"):
-        handle_appointment_booked(
-            db_session, _envelope("appointment.booked", {"appointment_id": 999_999})
+        handle_appointment_confirmed(
+            db_session,
+            _envelope("appointment.confirmed", {"appointment_id": 999_999}),
+        )
+
+
+def test_a_confirmation_without_booked_at_is_permanent_and_says_so(
+    db_session: Session, appointment: Appointment
+) -> None:
+    """The row exists, so the dead-letter must not claim it does not.
+
+    Day 5's crash demo dead-lettered 28 events reading "appointment 51 does
+    not exist" about an appointment that existed -- the handler could not
+    tell a missing row from an empty column. The fixture stops at
+    REQUESTED, so booked_at is still empty here.
+    """
+    with pytest.raises(PermanentEventError, match="has no booked_at"):
+        handle_appointment_confirmed(
+            db_session,
+            _envelope("appointment.confirmed", {"appointment_id": appointment.id}),
         )
 
 
@@ -210,7 +230,8 @@ def test_dispatch_routes_an_event_to_its_handler(
     db_session.flush()
 
     dispatch(
-        db_session, _envelope("appointment.booked", {"appointment_id": appointment.id})
+        db_session,
+        _envelope("appointment.confirmed", {"appointment_id": appointment.id}),
     )
     db_session.flush()
 
@@ -220,10 +241,31 @@ def test_dispatch_routes_an_event_to_its_handler(
 def test_dispatch_ignores_an_event_nothing_handles(db_session: Session) -> None:
     """Not every event is this consumer's business.
 
-    Topics are per aggregate, so appointment.confirmed arrives here
-    whether or not anything acts on it. Treating that as an error would
+    Topics are per aggregate, so service.published arrives here whether
+    or not anything acts on it. Treating that as an error would
     dead-letter perfectly good messages for not being about analytics.
     """
-    dispatch(db_session, _envelope("appointment.confirmed", {"appointment_id": 1}))
+    dispatch(db_session, _envelope("service.published", {"service_id": 1}))
 
     assert db_session.get(AnalyticsDaily, BOOKED_ON) is None
+
+
+def test_a_booked_event_for_an_unconfirmed_appointment_is_ignored(
+    db_session: Session, appointment: Appointment
+) -> None:
+    """Day 5's bug, pinned.
+
+    appointment.booked is queued while the appointment is still REQUESTED,
+    before the saga has written booked_at. It used to drive the count, so a
+    booking event that outran its saga was dead-lettered as "does not
+    exist" and the aggregate under-counted until --repair. It now drives
+    nothing: this must neither raise nor count.
+    """
+    dispatch(
+        db_session,
+        _envelope("appointment.booked", {"appointment_id": appointment.id}),
+    )
+    db_session.flush()
+
+    counted = db_session.scalar(select(func.count()).select_from(AnalyticsDaily))
+    assert counted == 0

@@ -30,12 +30,17 @@ Every event has the same shape:
 
 | Event | Published by | `data` | Consumer does |
 |---|---|---|---|
-| `appointment.booked` | `services/appointment_scheduling.py` | `appointment_id`, `patient_id`, `provider_id`, `service_id`, `slot_id` | `appointments_booked` +1 |
-| `appointment.confirmed` | `temporal/activities.py` (scheduling saga) | `appointment_id`, `slot_id` | ignored |
+| `appointment.booked` | `services/appointment_scheduling.py` | `appointment_id`, `patient_id`, `provider_id`, `service_id`, `slot_id` | ignored -- see below |
+| `appointment.confirmed` | `temporal/activities.py` (scheduling saga) | `appointment_id`, `slot_id` | `appointments_booked` +1, on `booked_at`'s day |
 | `appointment.cancelled` | `services/appointment_scheduling.py`, and `temporal/activities.py` when the saga compensates | `appointment_id`, `slot_id` | `cancellations` +1 |
 | `visit.completed` | `services/visit.py` | `visit_id`, `appointment_id` | `completed_visits` +1, plus the wait time |
 | `service.published` | `temporal/activities.py` (publish workflow) | `service_id` | ignored |
 | `billing.updated` | `services/billing.py` | `billing_id`, `appointment_id` | ignored |
+
+`appointment.booked` drives nothing, on purpose. It is queued while the
+appointment is still `REQUESTED`, before the saga writes `booked_at`, so it can
+arrive with no day to count on. `appointment.confirmed` is recorded in the same
+transaction that sets `booked_at`, so the count comes from there.
 
 "Ignored" is not a gap. Topics are per aggregate, so the consumer receives more
 than it acts on — three of the six move a number, the other three are there for
