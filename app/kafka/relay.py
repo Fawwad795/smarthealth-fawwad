@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.events.envelope import build_envelope, topic_for
+from app.events.envelope import build_envelope, key_for, topic_for
 from app.kafka.producer import publish
 from app.models import OutboxEvent
 
@@ -54,7 +54,11 @@ def publish_pending_events(db: Session, limit: int = BATCH_SIZE) -> int:
     )
 
     for row in rows:
-        publish(topic_for(row.event_type), str(row.aggregate_id), build_envelope(row))
+        publish(
+            topic_for(row.event_type),
+            key_for(row.event_type, row.aggregate_id),
+            build_envelope(row),
+        )
         row.published_at = datetime.now(UTC)
 
     db.commit()

@@ -188,7 +188,7 @@ def test_the_message_is_keyed_by_its_aggregate(
 
     topic, key, _ = sent[0]
     assert topic == "app.appointments"
-    assert key == "42"
+    assert key == "appointment-42"
 
 
 def test_the_envelope_carries_every_required_field(
