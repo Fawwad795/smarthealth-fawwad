@@ -153,9 +153,27 @@ Look for `duplicate event skipped` (normal — that is idempotency working) vers
 Kafka UI: **http://localhost:8080** — consumer group `app-analytics`. A growing
 lag with a live consumer means it is stuck on one message.
 
-**A consumer that just started sees nothing for up to 5 minutes** if its topics
-did not exist when it subscribed; librdkafka refreshes topic metadata on that
-interval. It looks exactly like a dead consumer.
+**A consumer that just started sees nothing for up to 10 seconds** if its topics
+did not exist when it subscribed. librdkafka only notices new topics when it
+refreshes metadata -- every 5 minutes by default, lowered to 10s by
+`topic.metadata.refresh.interval.ms` in `consumer_config()`. It looks exactly
+like a dead consumer.
+
+**A consumer down for longer than 7 days loses events silently.** Retention
+(`log.retention.hours=168`) deletes older records. If the group's committed
+offset falls below the log start, `auto.offset.reset=earliest` jumps to the
+oldest surviving record and nothing errors. Compare the two:
+
+```bash
+# CURRENT-OFFSET per topic for the consumer group
+docker compose exec kafka /opt/kafka/bin/kafka-consumer-groups.sh   --bootstrap-server localhost:9092 --describe --group app-analytics
+# earliest surviving offset per topic
+docker compose exec kafka /opt/kafka/bin/kafka-get-offsets.sh   --bootstrap-server localhost:9092 --time -2
+```
+
+`CURRENT-OFFSET` below the earliest offset means records were skipped. The
+events are still in `outbox_events`, so the numbers are recoverable: reconcile
+the affected days, then `--repair` (section 3).
 
 ---
 
