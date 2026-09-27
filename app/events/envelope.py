@@ -56,12 +56,28 @@ def topic_for(event_type: str) -> str:
     """The Kafka topic an event is published to.
 
     One topic per aggregate, not per event type. All of an appointment's
-    events therefore share a topic and -- because the message key is the
-    appointment id -- a partition, so a consumer always sees `booked`
+    events therefore share a topic and -- because key_for() gives them all
+    the same key -- a partition, so a consumer always sees `booked`
     before `confirmed`. Splitting them across topics would give no
     ordering guarantee between the two at all.
     """
     return f"{settings.kafka_topic_prefix}.{_TOPIC_SUFFIX[aggregate_of(event_type)]}"
+
+
+def key_for(event_type: str, aggregate_id: int) -> str:
+    """The Kafka message key: "appointment-51", never a bare "51".
+
+    Self-describing so a message is legible in Kafka UI without opening
+    it -- the same convention the Temporal workflow ids already follow
+    ("schedule-appointment-51").
+
+    Named for the aggregate, never the event. The key decides the
+    partition and Kafka only orders within one, so every event about
+    appointment 51 must share a key. "booked-51" and "confirmed-51" would
+    hash apart and lose the ordering the consumer relies on -- invisibly,
+    while every topic has a single partition.
+    """
+    return f"{aggregate_of(event_type)}-{aggregate_id}"
 
 
 def build_envelope(event: "OutboxEvent") -> dict[str, object]:

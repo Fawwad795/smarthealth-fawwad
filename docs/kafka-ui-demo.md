@@ -44,7 +44,7 @@ Use `appointment.booked` -- 39 appointments carry a `booked_at`.
 |---|---|
 | Appointment | `51` -- patient 19, provider 6, slot 153, CONFIRMED |
 | `booked_at` date | **2026-09-09**, the bucket that moves |
-| Topic / key | `app.appointments` / `51` |
+| Topic / key | `app.appointments` / `appointment-51` |
 
 Baseline. Re-run after every pipeline:
 
@@ -65,7 +65,7 @@ python -c "import uuid; print(uuid.uuid4())"
 
 ## 1. Happy path -- published, brokered, consumed
 
-Produce to `app.appointments`, partition `0`, key `51`. Keep the `event_id`;
+Produce to `app.appointments`, partition `0`, key `appointment-51`. Keep the `event_id`;
 pipeline 2 reuses it.
 
 ```json
