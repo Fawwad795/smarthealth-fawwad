@@ -869,3 +869,431 @@ table and join endpoint, cancel, and reschedule. Ran long enough that
    typing it.
 4. **Carrying into Week 3:** nothing from Week 2's task list. Celery,
    then Kafka, then observability.
+
+---
+
+## Week 3 - Async, Events & Observability
+
+### Day 1 - 2026-09-07
+
+**Goal:** 3.1 (Celery + Redis broker, trivial task) and 3.2 (reminder
+task + `failed_jobs`, periodic analytics rollup + Celery Beat).
+
+**Done**
+
+- **3.1** `app/workers/celery_app.py`, `celery-worker` compose service.
+  Trivial `add` task proved the broker + result backend round-trip live,
+  then deleted once real tasks existed.
+- **3.2a** `schedule_reminders` (Week 2's deliberate no-op) now queues a
+  real Celery task. `notifications` + `failed_jobs` tables, models,
+  migration. `DeadLetterTask` base class writes to `failed_jobs` on a
+  task's last failure.
+- **3.2b** `analytics_daily` table + `app/services/analytics.py`'s
+  rollup (five per-day metrics from raw tables, `INSERT ... ON CONFLICT
+  DO UPDATE`, not an increment). `celery-beat` compose service, 5-minute
+  schedule.
+- 265 -> 273 tests, 98.15% coverage, every file touched today at 100%.
+
+**Decisions**
+
+| Decision | Why |
+|---|---|
+| `celery-worker`/`celery-beat`, not `worker` | Avoids the exact naming collision the compose file's own comment already flagged |
+| Rollup recomputes-and-overwrites, not increments | Idempotent by construction - safe to run redundantly |
+| `total_patients` absent from `analytics_daily` | A running count, not a per-day bucket |
+| `DeadLetterTask` a shared Task base class | Any future Celery task gets dead-lettering for free |
+| Idempotency lives in one check-before-insert, not a DB constraint | Two retry layers (Temporal, Celery) funnel through one guard |
+
+**Cost time**
+
+- Two more `=`/`:` typos (`Notification.user_id`,
+  `AnalyticsDaily.appointments_booked`) - caught by Alembic's import
+  crashing, not review.
+- A copy-pasted `.where()` left `failed_jobs_count` filtering on
+  `Visit.checked_in_at` - a silent cartesian product masked by `visits`
+  being empty in dev data; caught by SQLAlchemy's own warning, not the
+  number being obviously wrong.
+- `temporal-worker` and the `test` image were both still on pre-Celery
+  builds from before 3.1 - `ModuleNotFoundError` until rebuilt.
+- Skipped the `verify` skill's lint/mypy/black pass after 3.2a - black
+  later reformatted 4 already-committed 3.2a files, needing a separate
+  style commit.
+- `task_eager_propagates` (on so every eager-mode test can just
+  `pytest.raises`) skips Celery's `on_failure` hook entirely and
+  re-raises directly - silently defeated the first version of the
+  dead-letter test.
+- `SessionLocal` has no test-time injection point, unlike Activities'
+  `session_factory` - worked around per-test via monkeypatching each
+  module's own `SessionLocal` name.
+
+**Explain out loud**
+
+- Scheduler vs. worker: Beat only enqueues on a clock, the same
+  mechanism as `.delay()` - it never executes task code itself.
+- Recompute-and-overwrite is a stronger guarantee than "safe to retry":
+  no run depends on a previous run's output, so redundant or concurrent
+  runs converge on the same answer.
+- One idempotency guard can safely sit under two unrelated retry layers
+  (Temporal retrying the Activity, Celery retrying the task) because it
+  lives at the point the effect actually happens.
+
+**Carrying into Day 2**
+
+- 3.3 (Kafka producer) next - the brief explicitly warns not to start
+  Kafka first.
+- `SessionLocal` needs a real injectable session factory before more
+  tasks repeat today's monkeypatch workaround.
+- Run `verify`'s static checks every subtask, not just before a day's
+  PR - today's black drift on already-committed files is exactly what
+  skipping it once caused.
+
+**Open questions**
+
+- None.
+
+### Day 2 - 2026-09-08
+
+**Goal:** 3.8 (structured JSON logging + correlation IDs across API, Temporal
+and Celery) and 3.3 (Kafka producer, via the outbox).
+
+**Done**
+
+- Carry-over: `session_scope()` in `app/db/session.py` -- one seam for
+  non-request code, replacing four per-module `SessionLocal` monkeypatches.
+- **3.8a** `app/core/logging.py`: ContextVar, `CorrelationIdFilter`,
+  `JsonFormatter`, `configure_logging()`. Middleware reads or mints
+  `X-Request-ID` and returns it. uvicorn's own handlers cleared so its
+  access log is the same JSON.
+- **3.8b** The id crosses both process boundaries: Celery task kwarg, and
+  Temporal input dataclasses (`AppointmentInput`, `ServiceInput`; nine
+  Activities changed). Each saga step logs one line, ids only.
+- **3.3a** `app/events/`: envelope, six event types, `outbox_events` table +
+  migration, `record_event()` at seven emit points inside the transaction
+  that already existed.
+- **3.3b** `confluent-kafka`, producer with delivery confirmation, relay
+  claiming rows `FOR UPDATE SKIP LOCKED`, Celery Beat every 5s.
+  Kafka/kafka-ui/Prometheus off the `week3` profile.
+- 273 -> 324 tests, 98.25% coverage.
+
+**Decisions**
+
+| Decision | Why |
+|---|---|
+| Correlation ID via workflow/activity args, not Temporal headers + interceptors | What the brief specifies; far less machinery for one string |
+| `correlation_id` defaults to None on every input dataclass | Replay-safe for history recorded before the field existed |
+| Topics per aggregate, not per event type | One appointment's events share a partition, so `booked` precedes `confirmed` |
+| Aggregate derived from the event name, not stored | Two columns cannot disagree if there is only one |
+| Outbox relay is a Celery Beat task, not a new container | Fire-and-forget work is Celery's half of the division of labour |
+| `message.timeout.ms` inside the flush window | The outbox owns retries; librdkafka must not be a second retry layer |
+
+**Cost time**
+
+- Five transcription slips in the event names and emit points -- names and
+  values crossed over. **ruff, black and mypy passed on all of them**; only
+  the suite caught them, as an `AttributeError` from inside `enum.py`.
+- The workflow tests *hung* rather than failed: an `AttributeError` in an
+  Activity is not an `ApplicationError`, so Temporal retried it forever.
+  Had to exclude both files to get a usable failure list.
+- Wrote a test that could not fail -- comparing two lists built from the
+  same run passes vacuously when both are empty.
+- Third stale-image incident in two days: `api` had been crash-looping
+  since yesterday's Celery change while `docker compose ps` still said
+  `Up`, and `test` predated `confluent-kafka`.
+- ContextVar leaked between tests -- eager Celery tasks set it in the
+  test's own context. Needed an autouse reset fixture.
+- Ran black over `migrations/`, reformatting 14 unrelated files; `make fmt`
+  deliberately scopes to `app tests scripts`.
+
+**Explain out loud**
+
+- `from X import Y` binds at import time, `X.Y` at call time -- you can only
+  replace what is resolved late.
+- Ambient context (ContextVar) for cross-cutting values nothing acts on;
+  explicit injection for dependencies code actually uses.
+- The dual-write problem: no ordering of commit/produce is safe, so make the
+  announcement a database write and accept duplicates instead.
+- `produce()` only queues; only a delivery callback separates *sent* from
+  *abandoned*.
+
+**Carrying into Day 3**
+
+- 3.4 (consumer container) and 3.5 (`processed_events`) -- the duplicates the
+  relay can emit are absorbed there.
+- Prometheus `app-api` target is DOWN (404) until 3.9 adds `/metrics`.
+- Consider `pytest-timeout` so a hanging Temporal test fails instead of
+  stalling the suite.
+- `docs/events.md` still to write (3.12).
+
+**Open questions**
+
+- None.
+
+### Day 3 - 2026-09-09
+
+**Goal:** 3.4 (consumer container), 3.5 (consumer idempotency), 3.6 (analytics
+endpoints). Two unplanned preambles first.
+
+**Done**
+
+- **Preamble** `pytest-timeout`, 120s. Day 2's hang would now fail with a
+  traceback instead of stalling the run.
+- **Preamble** Temporal test-server binary baked into the image
+  (`scripts/fetch_test_server.py`). The suite no longer downloads 83MB per
+  run and passes with `--network none` -- a Weeks 4-5 requirement that was
+  already broken and invisible.
+- **3.5a** `processed_events`, PK `(consumer, event_id)` + migration.
+- **3.4a** `app/workers/consumer.py` and its container: manual offsets,
+  poison message -> `failed_jobs` then commit, transient -> `seek` and retry.
+- **3.5b** `claim_event()` -- `ON CONFLICT DO NOTHING ... RETURNING`, sharing
+  the handler's transaction.
+- **3.4b** Handlers for booked/cancelled/completed. `analytics_daily`
+  reshaped; Beat rollup retired and `rollup_analytics_for_date` became the
+  read-only `compute_analytics_for_date` for 3.7.
+- **3.6** `GET /analytics/summary` and `GET /analytics/appointments`,
+  FRONT_DESK/ADMIN only.
+- 324 -> 370 tests, 97.53% coverage.
+
+**Decisions**
+
+| Decision | Why |
+|---|---|
+| Consumer is the sole writer of `analytics_daily`; the rollup becomes 3.7's check | A 5-minute recompute would overwrite increments, and a check that writes can never find drift |
+| PK `(consumer, event_id)`, not `event_id` alone | Idempotency is per-consumer; a second consumer would skip everything the first had seen |
+| `ON CONFLICT DO NOTHING ... RETURNING`, not a caught `IntegrityError` | A violated constraint aborts the transaction the handler still needs |
+| Permanent failure dead-letters then commits; transient rewinds | An offset is a position, so refusing to move blocks the partition forever |
+| `topic.metadata.refresh.interval.ms` 10s | A topic created after subscribe was invisible for five minutes |
+| `avg_wait_seconds` -> `wait_seconds_total` + `wait_count` | An average cannot be incremented; its components can |
+| `failed_jobs_count` dropped, counted directly | No event maintains it, and it duplicated a number `failed_jobs` already holds |
+| Handlers bucket by the same raw column the reconciliation reads | Otherwise a midnight-straddling event shows as drift that was never real |
+
+**Cost time**
+
+- Two more transcription slips, both in typed code: `envelope[event_id]`
+  missing its quotes (a `NameError` on the first real event), and a
+  `FailedJob` import I had removed an hour earlier. ruff caught both; review
+  would not have.
+- `pytest-timeout` failed a Temporal test at 60s on its first run. Cause was
+  an 83MB test-server download *inside* the test, measured at 7s and 65s on
+  two runs of the same suite -- the test was reporting network speed.
+- The first live event never arrived: the consumer had subscribed before
+  `app.visits` existed, and librdkafka refreshes topic metadata every five
+  minutes. Looked exactly like a dead consumer.
+- `worker_session`'s `nullcontext` does not roll back, so the "claim must not
+  outlive its work" test failed while production was already correct. Made
+  the rollback explicit rather than leave it to the session closing.
+- Coverage passed at 97% with `dispatch()` at 0% -- every loop test
+  monkeypatches it, so the routing seam was never executed.
+- Seeded patient `ayesha@example.com` no longer authenticates with
+  `SEED_PASSWORD`; used a throwaway registration for the live 403 check.
+
+**Explain out loud**
+
+- A Kafka offset is a position, not a checklist: you cannot accept the next
+  message while leaving this one outstanding.
+- Not committing is not enough to retry -- `poll()` advances the client's own
+  position anyway, so `seek()` is what makes a retry real inside a process.
+- A violated constraint aborts the whole transaction, which is why the
+  duplicate guard is an upsert rather than a `try/except`.
+- An aggregate is incrementally maintainable only if the new answer needs
+  just the old answer and the new item. Averages fail that and decompose into
+  a sum and a count, which do not.
+
+**Carrying into Day 4**
+
+- 3.7 reconciliation -- `compute_analytics_for_date` is ready and writes
+  nothing.
+- Stale `analytics_daily` rows written by the retired rollup will show as
+  real drift in 3.7. Decide whether to clear them or demo them.
+- 3.9 `/metrics` -- the Prometheus `app-api` target is still DOWN.
+- 3.10 `/health/ready`, 3.12 docs, 3.13 crash-recovery demo.
+- Buckets are UTC calendar days, not clinic-local. Known limitation, written
+  down, not fixed.
+- Dev seed has drifted -- some seeded users no longer match `SEED_PASSWORD`.
+
+**Open questions**
+
+- The DoD says all six metrics are "served from aggregates", but total
+  patients and failed jobs have no event that could maintain one, so both are
+  counted directly. Is that acceptable, or should a seventh event type exist?
+
+### Day 4 - 2026-09-10
+
+**Goal:** 3.9 (`/metrics`), 3.10 (`/health/ready`), 3.7 (reconciliation).
+One unplanned preamble first.
+
+**Done**
+
+- **Preamble** Seed now repairs a drifted login instead of skipping it, and
+  `main()` prints the accounts it owns. The account that "stopped
+  authenticating" was never seeded.
+- **3.9** `app/core/metrics.py`; HTTP counter + latency histogram from
+  middleware; four domain counters; worker and consumer each publish on
+  8001/8002. All four Prometheus targets UP -- `app-api` had been DOWN
+  since Day 2.
+- **3.10** `/health/ready` checks Postgres, Redis, Kafka, Temporal
+  concurrently, each with a deadline. `/health/db` retired as its Week 1
+  docstring promised.
+- **3.7** `reconcile_date`/`reconcile_range`/`repair_date`,
+  `scripts/reconcile_analytics.py`, `GET /analytics/reconciliation`
+  (ADMIN only).
+- Stale rollup rows cleared via `--repair`; drift then injected by hand to
+  watch the check fail.
+- Mentor answered Day 3's open question: counting total patients and failed
+  jobs directly is acceptable. No seventh event type.
+- 378 -> 387 tests, 97.66% coverage.
+
+**Decisions**
+
+| Decision | Why |
+|---|---|
+| Metrics from three processes, not one | A process can only count what it saw; `reserve_slot` runs in the worker, not the API |
+| Accept that every process registers all four domain counters | Importing the module registers them; the API imports activities anyway. Names stay honest, `sum` by job is the query |
+| Label HTTP metrics by route template, never the URL | One metric per appointment id is how you exhaust your own Prometheus |
+| Unmatched paths share one label | Otherwise anyone mints unlimited labels by requesting nonsense |
+| `appointments_booked` counted at CONFIRMED, not at reservation | A reserved slot can still be compensated back |
+| `/health/ready` returns the per-dependency breakdown, not the error envelope | Reader is a monitor, not an API client; "which one" is the whole payload |
+| 503, not 500 | Not broken, just not ready -- a load balancer treats them differently |
+| Socket timeouts on the shared Redis client, not just the check | A hung Redis should not block a booking either |
+| Reconciliation writes nothing; `--repair` is separate and manual | A check that fixes what it finds can never report anything |
+| A missing aggregate row counts as zeros, not "skip" | A consumer that died before writing a day would otherwise look healthy |
+| Reconciliation endpoint is ADMIN only | The other analytics routes answer clinic questions; this one answers whether our pipeline works |
+| Script exits 1 on unrepaired drift | A check that always exits 0 cannot be alerted on |
+
+**Cost time**
+
+- The seed printed "Seed complete" while repairing nothing. `_get_or_create_patient`
+  returns early when the profile exists, before its own commit, so the new hash
+  was flushed and discarded. Staff accounts had been riding on a later helper's
+  commit by luck.
+- The suite cannot catch that: `db_session` rolls back and the assertion re-reads
+  the same session, so a flush is indistinguishable from a commit. Five green
+  tests against a script that did nothing.
+- `verify_password` raises on a hash too corrupt to parse, so the first repair
+  crashed on exactly the row it existed to fix.
+- Two transcription slips again -- `app.middlewayre`, `from redis import redis`.
+- My own test bug: assumed the `appointment` fixture had a `booked_at`. It stops
+  at REQUESTED, which is correct -- `booked_at` is the saga's to write.
+- Redis and Postgres readiness checks take ~3.9s, not the 2s designed for: both
+  drivers retry a refused connection once, so the timeout is per attempt, not
+  per check. Comment corrected to say so.
+
+**Explain out loud**
+
+- A metric is a tally in one process's memory. Three programs, three tills.
+- Labelling by URL instead of route template is unbounded cardinality -- the
+  standard way people take down their own monitoring.
+- A dependency that is *down* refuses instantly; one that is *hung* accepts and
+  says nothing. The timeout is the whole game.
+- Detection and repair must be separate actions, or the evidence is gone before
+  anyone reads the report.
+
+**Carrying into Day 5**
+
+- 3.11 tests, 3.12 `docs/events.md` + `docs/runbook.md` + architecture diagram,
+  3.13 crash-recovery demo.
+- Runbook must document `sum by (job)` for the domain counters, and
+  `--repair` as the drift response.
+- Buckets are UTC calendar days, not clinic-local. Deliberately deferred:
+  ~2.5-4h (4 handler sites, 3 boundary computations, 8 test files, and a
+  full backfill since every stored row is bucketed the old way), it is in
+  neither 7.1 nor the DoD, and Day 5 already holds 12h of estimates. Write
+  it up as a known limitation in `docs/design.md` during 3.12 instead --
+  what the boundary is, why UTC, what it costs a clinic far from UTC.
+
+**Open questions**
+
+- None.
+
+### Day 5 - 2026-09-10
+
+**Goal:** 3.11 (tests), 3.12 (`docs/events.md`, `docs/runbook.md`,
+architecture diagram), 3.13 (crash-recovery demo).
+
+**Done**
+
+- **3.11** Retry covered both ways: a transient `OperationalError` retries
+  five times and dead-letters at `attempts=6`; a blip that clears on the
+  third attempt writes nothing.
+- **3.11** `test_event_replay.py` -- one `visit.completed` through the real
+  loop twice, count stays 1. Mutation-checked by forcing `claim_event` to
+  return True.
+- **3.11** The forward reconciliation test found a real bug: the wait-time
+  recompute counted every visit checked in that day, the handler only
+  completed ones. Fixed.
+- **3.12** `docs/events.md` and `docs/runbook.md` written. README diagram
+  redrawn (outbox, Prometheus, consumer -> Postgres); two stale lines fixed.
+- **3.13** 30 bookings and 20 publishes fired as a trickle, worker SIGKILLed
+  mid-flight both times: 11 sagas frozen at SLOT_RESERVED, 4 services at
+  PUBLISHING, 29 workflows Running with no worker. All resumed on restart,
+  0 left running, exactly 1 chunk per service.
+- Live replay against real Kafka: same `event_id` twice -> "event processed"
+  then "duplicate event skipped", count +1.
+- 387 -> 393 tests, 97.66% coverage.
+
+**Decisions**
+
+| Decision | Why |
+|---|---|
+| Backoff asserted as the ceiling, not the delay | `retry_jitter` picks randomly inside `min(max, factor * 2**retries)` |
+| The crash demo fires a trickle, not a burst | A burst makes "mid-flight" a race; a trickle guarantees done, part-done and not-started at once |
+| Wait-time recompute filters on COMPLETED | It has to read what the handler writes, or it reports drift that was never real |
+| The `appointment.booked` fix is deferred | It changes which event drives a graded metric -- not a Friday-afternoon change |
+| Demo order: analytics before crash recovery | Zero-cost mitigation for that bug, and the reconciliation catching real drift is the better story anyway |
+
+**Cost time**
+
+- `docker compose cp`/`exec` needed `MSYS_NO_PATHCONV=1` *and* a Windows-form
+  source path -- `//tmp` for exec arguments, `/tmp` for cp destinations.
+- Ruff never flagged a duplicated `_book_on` in `test_reconciliation.py`:
+  F811 ignores names starting with an underscore, which is every test helper
+  in this repo.
+- The crash demo's drift looked like a demo artefact and was a real bug --
+  28 consumer dead-letters reading "appointment 51 does not exist" about an
+  appointment that exists.
+- `jq` is not installed here; caught before it reached the runbook.
+
+**Explain out loud**
+
+- Celery's eager mode runs retries inline, so the retry count is observable
+  in a test even though the nesting is not production's shape.
+- A test that has only ever been seen passing proves nothing -- breaking the
+  dedupe guard on purpose is what turns the replay test into evidence.
+- 29 workflows Running with no worker alive *is* the durability guarantee,
+  made visible.
+- "Row missing" and "not ready yet" collapsing into the same `None` is how a
+  permanent-error branch quietly swallows a transient one.
+
+**Carrying into Week 4**
+
+- The `appointment.booked` -> `appointment.confirmed` handler fix. ~1h15m
+  including a crash-demo re-run, which is the only thing that proves it.
+- 28 dead-lettered events are unrecoverable; the numbers themselves were
+  repaired.
+- UTC bucket limitation, unchanged.
+- `docs/diagrams/architecture.svg` needs re-exporting from the new mermaid.
+
+**Open questions**
+
+- None.
+
+---
+
+## Weekly self-check
+
+### Week 3 - 2026-09-10
+
+1. **Finished / broken:** 3.1-3.13 all complete. 393 tests, 97.66%
+   coverage. One real bug found by the crash demo and deliberately
+   deferred rather than rushed: a Temporal worker outage dead-letters
+   `appointment.booked` events, so booking counts need `--repair` until
+   the handler moves to `appointment.confirmed`. Recorded in
+   `docs/design.md`, `docs/prd.md` 7 and the runbook.
+2. **Not fully understood yet:** how the consumer behaves with more than
+   one instance -- `processed_events` is keyed per consumer group and the
+   rebalance path has never been exercised, only reasoned about.
+3. **Most time spent:** making "mid-flight" deterministic for the crash
+   demo. Both workflows finish in ~200ms, so killing the worker at the
+   right moment was a coin toss until the load was spread into a trickle.
+   After that the demo was decisive rather than suggestive.
+4. **Carrying into Week 4:** the handler fix above, and re-exporting the
+   architecture diagram. Nothing from the 3.x task list.

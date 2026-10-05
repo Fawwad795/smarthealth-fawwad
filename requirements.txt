@@ -16,6 +16,15 @@ temporalio==1.9.0
 # --- Redis (Week 2+) ----------------------------------------------------
 redis==5.2.1
 
+# --- Celery (Week 3+) ----------------------------------------------------
+celery==5.4.0
+
+# --- Kafka (Week 3+) ----------------------------------------------------
+confluent-kafka==2.6.1        # librdkafka-backed; the maintained client
+
+# --- Metrics (Week 3+) ---------------------------------------------------
+prometheus-client==0.21.1     # the official Python client
+
 # --- Config / validation -----------------------------------------------
 pydantic==2.10.4
 pydantic-settings==2.7.0      # reads settings from env vars / .env
@@ -33,3 +42,5 @@ httpx==0.28.1                 # FastAPI's TestClient needs this
 ruff==0.8.4
 black==24.10.0
 pytest-asyncio==0.24.0        # runs `async def test_...`; Temporal's client is async
+pytest-timeout==2.3.1         # a hung test fails at the limit instead of stalling the run
+mypy==2.3.1                   # scoped to app/models -- see pyproject.toml [tool.mypy]

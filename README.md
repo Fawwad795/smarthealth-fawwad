@@ -34,22 +34,34 @@ is the interface.
 flowchart TD
     Client["curl / Postman"] --> API["FastAPI API"]
 
-    API --> PG[("PostgreSQL + pgvector")]
+    API --> PG[("PostgreSQL<br/>domain + outbox + analytics")]
     API --> Redis[("Redis<br/>cache / broker / idempotency keys")]
-    API --> TemporalServer["Temporal server (Week 2)"]
+    API --> TemporalServer["Temporal server"]
 
-    Redis --> Celery["Celery worker (Week 3)"]
-    TemporalServer --> TemporalWorker["Temporal worker<br/>(workflows + activities)"]
+    TemporalServer --> TemporalWorker["Temporal worker<br/>workflows + activities"]
+    TemporalWorker --> PG
 
-    Celery --> Kafka["Kafka (Week 3)"]
-    Kafka --> Consumer["Consumer (idempotent)"]
-    Consumer --> Analytics[("analytics tables")]
+    Beat["Celery Beat<br/>every 5s"] --> Redis
+    Redis --> Celery["Celery worker<br/>reminders + outbox relay"]
+    Celery --> PG
+    Celery -- "drains the outbox" --> Kafka[("Kafka")]
+
+    Kafka --> Consumer["Consumer<br/>claims event_id, then aggregates"]
+    Consumer --> PG
+
+    Prometheus["Prometheus"] -. "scrapes /metrics" .-> API
+    Prometheus -.-> TemporalWorker
+    Prometheus -.-> Consumer
 ```
+
+Nothing but the Celery relay talks to Kafka. Events are written to an outbox
+table in the same transaction as the change that caused them, and the relay
+publishes from there — see `docs/events.md`.
 
 **Division of labour.** Temporal owns the multi-step durable workflows (service
 publishing, the appointment scheduling saga). Celery owns fire-and-forget work
-(reminders, the analytics rollup). The visit lifecycle is neither — it is a plain
-validated status flow driven by human actions.
+(reminders) and the periodic outbox relay. The visit lifecycle is neither — it is
+a plain validated status flow driven by human actions.
 
 The ERD lives in `docs/design.md`; exported copies of every diagram are in
 `docs/diagrams/`.
@@ -250,11 +262,12 @@ leak `password_hash` and patient data).
 | Document | Contents |
 |---|---|
 | `docs/design.md` | Data model / ERD, module breakdown, publish workflow and scheduling saga, the slot concurrency approach, decisions and tradeoffs |
+| `docs/events.md` | Every event: envelope, catalogue, topics, the outbox, and how a replay changes nothing |
+| `docs/runbook.md` | Diagnosing a stuck booking, missing reminders, wrong analytics numbers and a silent consumer |
 | `docs/prd.md` | Requirements, milestones, and the requirement → implementation → test traceability table |
 | `NOTES.md` | Working log and weekly tracking tables |
 
-Planned, not yet written: `docs/events.md` and `docs/runbook.md` (Week 3), and
-`docs/ai-layer.md` (Weeks 4–5).
+Planned, not yet written: `docs/ai-layer.md` (Weeks 4–5).
 
 ### `.claude/` — working context
 

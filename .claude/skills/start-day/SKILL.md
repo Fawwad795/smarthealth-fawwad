@@ -32,11 +32,20 @@ the handoff is broken and the user should know before planning on top of it.
 
 ## 2. This week's actual task list
 
-Do not plan from memory or from the CLAUDE.md summary. Get the real table:
+Do not plan from memory or from the CLAUDE.md summary. Get the real table. **The
+brief's chapter number is not the week number** — it runs four ahead:
+
+| Week | Chapter | Tasks | Definition of Done |
+|---|---|---|---|
+| 1 | 5 | `### 5.1 Tasks` | `### 5.3 Definition of Done` |
+| 2 | 6 | `### 6.1 Tasks` | `### 6.3 Definition of Done` |
+| 3 | 7 | `### 7.1 Tasks` | `### 7.3 Definition of Done` |
+| 4 | 8 | `### 8.1 Tasks` | `### 8.3 Definition of Done` |
+| 5 | 9 | `### 9.1 Tasks` | `### 9.3 Definition of Done` |
 
 ```
-Grep "### <n>.1 Tasks" .claude/reference/execution-guidelines.md -A 25
-Grep "### <n>.3 Definition of Done" .claude/reference/execution-guidelines.md -A 15
+Grep "### 7.1 Tasks" .claude/reference/execution-guidelines.md -A 25          # e.g. Week 3
+Grep "### 7.3 Definition of Done" .claude/reference/execution-guidelines.md -A 15
 ```
 
 Task rows carry hour estimates and `(Done)` markers, which is how to tell what is
@@ -79,17 +88,11 @@ protocol in `.claude/CLAUDE.md` §11 for each subtask unless the user waives it.
 
 ## Ending the day
 
-The next `start-day` is only as good as this. Append a `### Day N — <date>` entry
-to `NOTES.md` under the current week, matching the existing structure exactly:
-
-- **Goal** — one or two sentences
-- **Done** — what actually landed, with file references
-- **Decisions and why** — a table: Decision | Why | Tradeoff
-- **What confused me / cost time** — real dead ends, including bugs found in
-  tests rather than in the code
-- **Things I want to be able to explain out loud** — the mentor asks these
-- **Carrying into Day N+1** — the handoff step 1 depends on
-- **Open questions for my mentor**
+The next `start-day` is only as good as this. Append a `### Day N — <date>`
+entry to `NOTES.md` under the current week — read `.claude/rules/docs.md`'s
+"NOTES.md structure" section first for the exact headings and format rather
+than reconstructing it here; two copies of the same structure is how it drifted
+out of sync with real entries the first time.
 
 Write it from what actually happened, not a summary of the plan. Then draft the
 `docs:` commit for the user.

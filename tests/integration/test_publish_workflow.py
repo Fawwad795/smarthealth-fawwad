@@ -9,11 +9,11 @@ docstring promised would replace it.
 
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
-from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
-from app.temporal.activities import ChunkContentInput
+from app.temporal.activities import ChunkContentInput, ServiceInput
 from app.temporal.workflows import PublishServiceWorkflow
+from tests.temporal_env import start_test_env
 
 _TASK_QUEUE = "test_publish-workflow"
 
@@ -29,7 +29,7 @@ class _RecordingActivities:
         self._fail_validation = fail_validation
 
     @activity.defn
-    async def validate_service(self, service_id: int) -> None:
+    async def validate_service(self, input: ServiceInput) -> None:
         self.calls.append("validate_service")
         if self._fail_validation:
             raise ApplicationError(
@@ -39,7 +39,7 @@ class _RecordingActivities:
             )
 
     @activity.defn
-    async def structure_content(self, service_id: int) -> str:
+    async def structure_content(self, input: ServiceInput) -> str:
         self.calls.append("structure_content")
         return "structured text"
 
@@ -49,17 +49,17 @@ class _RecordingActivities:
         return 1
 
     @activity.defn
-    async def mark_published(self, service_id: int) -> None:
+    async def mark_published(self, input: ServiceInput) -> None:
         self.calls.append("mark_published")
 
     @activity.defn
-    async def mark_publish_failed(self, service_id: int) -> None:
+    async def mark_publish_failed(self, input: ServiceInput) -> None:
         self.calls.append("mark_publish_failed")
 
 
 async def test_publish_workflow_runs_every_step_in_order() -> None:
     fakes = _RecordingActivities()
-    async with await WorkflowEnvironment.start_time_skipping() as env:
+    async with await start_test_env() as env:
         async with Worker(
             env.client,
             task_queue=_TASK_QUEUE,
@@ -74,7 +74,7 @@ async def test_publish_workflow_runs_every_step_in_order() -> None:
         ):
             await env.client.execute_workflow(
                 PublishServiceWorkflow.run,
-                1,
+                ServiceInput(1),
                 id="test-publish-happy-path",
                 task_queue=_TASK_QUEUE,
             )
@@ -89,7 +89,7 @@ async def test_publish_workflow_runs_every_step_in_order() -> None:
 
 async def test_publish_workflow_stops_cleanly_on_validation_failure() -> None:
     fakes = _RecordingActivities(fail_validation=True)
-    async with await WorkflowEnvironment.start_time_skipping() as env:
+    async with await start_test_env() as env:
         async with Worker(
             env.client,
             task_queue=_TASK_QUEUE,
@@ -104,7 +104,7 @@ async def test_publish_workflow_stops_cleanly_on_validation_failure() -> None:
         ):
             await env.client.execute_workflow(
                 PublishServiceWorkflow.run,
-                1,
+                ServiceInput(1),
                 id="test-publish-validation-failure",
                 task_queue=_TASK_QUEUE,
             )

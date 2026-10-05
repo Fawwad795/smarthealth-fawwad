@@ -170,6 +170,31 @@ class VisitStatus(StrEnum):
     COMPLETED = "COMPLETED"  # done; the appointment completes with it
 
 
+class NotificationType(StrEnum):
+    """What a notification is about.
+
+    One member for now -- the reminder task is the only writer to
+    this table. The Day 6 waitlist-offer notification named as still-
+    pending gets a second member when it's actually wired, not before --
+    same reasoning as WaitlistStatus above.
+    """
+
+    APPOINTMENT_REMINDER = "APPOINTMENT_REMINDER"
+
+
+class NotificationStatus(StrEnum):
+    """Whether a notification actually went out.
+
+    One member, same reasoning as ContentSourceType: CLAUDE.md #4 rules out
+    real SMS/email, so the only path that exists is a row plus a log line,
+    which always succeeds once it runs at all. A permanently failing
+    attempt goes to failed_jobs instead of landing here with some other
+    status.
+    """
+
+    SENT = "SENT"
+
+
 def enum_column(enum_cls: type[StrEnum], name: str) -> SAEnum:
     """Build the column type for an enum: VARCHAR + CHECK, never a native type.
 

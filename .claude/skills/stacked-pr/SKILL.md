@@ -82,7 +82,41 @@ so keep it as short as those keep their own entries>
 
 PowerShell here-strings: the closing `'@` must be at column 0 on its own line.
 
-## Cascading after a merge — the part that goes wrong
+## Merging a stacked PR — GitHub does the cascade for you
+
+**`gh pr merge` does not work on these.** GitHub detects the chain as a stack and
+refuses both the GraphQL path (`gh pr merge`) and the plain REST `/merge` endpoint
+(403). Use the async endpoint:
+
+```powershell
+gh api --method PUT repos/<owner>/<repo>/pulls/<n>/merge-async -f merge_method=merge -f sha=<head-sha>
+gh api repos/<owner>/<repo>/pulls/<n>/merge-async/<uuid>   # poll until status=merged
+```
+
+`sha` is a safety interlock — it refuses if the head moved. Use `merge_method=merge`,
+never `squash` or `rebase`: those put *different* commits on `main` than the branches
+above are built on, so every stacked PR's diff replays the merged work.
+
+**What GitHub then does automatically**, server-side, in that one call:
+
+- rebases *every* branch above the merged one onto the new `main`
+- retargets the next PR's base (e.g. day-1 from `week-1-foundation` to `main`)
+
+So the manual cascade below is usually unnecessary. Confirmed on the Week 1 merge:
+all seven Week 2 branches were rewritten and PR #2 retargeted, with no content lost.
+
+**Local branches go stale afterwards.** Every remote got a new hash, so reset each
+one or a later push will force the old history back:
+
+```powershell
+git fetch origin
+git checkout <branch>; git reset --hard origin/<branch>   # per branch
+```
+
+Verify the trees match first (`git diff --stat <branch> origin/<branch>` → empty),
+and tell the mentor the churn is rebase noise, not new work.
+
+## Cascading after a merge — the manual fallback
 
 When a PR in the stack merges, every PR **below** it is still based on a branch
 that may no longer exist. GitHub often retargets an open PR automatically when its

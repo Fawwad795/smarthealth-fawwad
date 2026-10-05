@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     # every run. Same reasoning as test_database_url: tests must never
     # share state with the app's real one.
     test_redis_url: str = "redis://redis:6379/15"
+    # How long any single Redis command may take. Without a limit, a Redis
+    # that accepts the connection and then goes quiet blocks the caller
+    # forever -- a booking, not just a health check.
+    redis_timeout_seconds: float = 2.0
 
     # --- Auth ---
     jwt_secret: str
@@ -51,6 +55,21 @@ class Settings(BaseSettings):
     temporal_host: str = "temporal:7233"
     temporal_namespace: str = "default"
     temporal_task_queue: str = "app-workflow"
+
+    # --- Celery (Week 3+) ---
+    # Broker and result backend both live in Redis, on separate DB indices
+    # from redis_url (DB 0) so Celery's queue and the idempotency cache
+    # never collide.
+    celery_broker_url: str
+    celery_result_backend: str
+
+    # --- Kafka (Week 3+) ---
+    # `kafka:9092` is the in-container address. From the laptop it is
+    # localhost:29092 -- see the two listeners in docker-compose.yml.
+    kafka_bootstrap_servers: str = "kafka:9092"
+    kafka_consumer_group: str = "app-analytics"
+    # Topics are <prefix>.<aggregate>: app.appointments, app.visits, ...
+    kafka_topic_prefix: str = "app"
 
     # --- Domain rules ---
     # How long an Idempotency-Key is remembered before a retried request

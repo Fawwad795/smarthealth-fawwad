@@ -20,11 +20,13 @@ from temporalio.exceptions import ActivityError, ApplicationError
 
 with workflow.unsafe.imports_passed_through():
     from app.temporal.activities import (
+        AppointmentInput,
         ChunkContentInput,
         PublishActivities,
         RejectInput,
         ReleaseSlotInput,
         SchedulingActivities,
+        ServiceInput,
     )
 
 _ACTIVITY_TIMEOUT = timedelta(seconds=30)
@@ -43,12 +45,12 @@ class PublishServiceWorkflow:
     """
 
     @workflow.run
-    async def run(self, service_id: int) -> None:
+    async def run(self, input: ServiceInput) -> None:
         """Run the publish pipeline for this service."""
         try:
             await workflow.execute_activity_method(
                 PublishActivities.validate_service,
-                service_id,
+                input,
                 start_to_close_timeout=_ACTIVITY_TIMEOUT,
             )
         except ActivityError as err:
@@ -58,7 +60,7 @@ class PublishServiceWorkflow:
             ):
                 await workflow.execute_activity_method(
                     PublishActivities.mark_publish_failed,
-                    service_id,
+                    input,
                     start_to_close_timeout=_ACTIVITY_TIMEOUT,
                 )
                 return
@@ -66,19 +68,19 @@ class PublishServiceWorkflow:
 
         structured_text = await workflow.execute_activity_method(
             PublishActivities.structure_content,
-            service_id,
+            input,
             start_to_close_timeout=_ACTIVITY_TIMEOUT,
         )
 
         await workflow.execute_activity_method(
             PublishActivities.chunk_content,
-            ChunkContentInput(service_id, structured_text),
+            ChunkContentInput(input.service_id, structured_text, input.correlation_id),
             start_to_close_timeout=_ACTIVITY_TIMEOUT,
         )
 
         await workflow.execute_activity_method(
             PublishActivities.mark_published,
-            service_id,
+            input,
             start_to_close_timeout=_ACTIVITY_TIMEOUT,
         )
 
@@ -95,15 +97,19 @@ class AppointmentSchedulingWorkflow:
     *after* the slot was reserved runs release_slot to give it back. Any
     other Activity failure is left to Temporal's default retry policy,
     same reasoning as PublishServiceWorkflow.
+
+    The correlation id travels through as part of each Workflow's input and is
+    passed on to every Activity. Nothing here reads or sets it -- a Workflow
+    must stay deterministic, and re-establishing context is the Activity's job.
     """
 
     @workflow.run
-    async def run(self, appointment_id: int) -> None:
+    async def run(self, input: AppointmentInput) -> None:
         """Run the scheduling saga for this appointment."""
         try:
             await workflow.execute_activity_method(
                 SchedulingActivities.validate_eligibility,
-                appointment_id,
+                input,
                 start_to_close_timeout=_ACTIVITY_TIMEOUT,
             )
         except ActivityError as err:
@@ -113,7 +119,9 @@ class AppointmentSchedulingWorkflow:
             ):
                 await workflow.execute_activity_method(
                     SchedulingActivities.reject,
-                    RejectInput(appointment_id, err.cause.message),
+                    RejectInput(
+                        input.appointment_id, err.cause.message, input.correlation_id
+                    ),
                     start_to_close_timeout=_ACTIVITY_TIMEOUT,
                 )
                 return
@@ -122,7 +130,7 @@ class AppointmentSchedulingWorkflow:
         try:
             await workflow.execute_activity_method(
                 SchedulingActivities.reserve_slot,
-                appointment_id,
+                input,
                 start_to_close_timeout=_ACTIVITY_TIMEOUT,
             )
         except ActivityError as err:
@@ -132,7 +140,9 @@ class AppointmentSchedulingWorkflow:
             ):
                 await workflow.execute_activity_method(
                     SchedulingActivities.reject,
-                    RejectInput(appointment_id, err.cause.message),
+                    RejectInput(
+                        input.appointment_id, err.cause.message, input.correlation_id
+                    ),
                     start_to_close_timeout=_ACTIVITY_TIMEOUT,
                 )
                 return
@@ -141,7 +151,7 @@ class AppointmentSchedulingWorkflow:
         try:
             await workflow.execute_activity_method(
                 SchedulingActivities.billing_precheck,
-                appointment_id,
+                input,
                 start_to_close_timeout=_ACTIVITY_TIMEOUT,
             )
         except ActivityError as err:
@@ -151,7 +161,9 @@ class AppointmentSchedulingWorkflow:
             ):
                 await workflow.execute_activity_method(
                     SchedulingActivities.release_slot,
-                    ReleaseSlotInput(appointment_id, err.cause.message),
+                    ReleaseSlotInput(
+                        input.appointment_id, err.cause.message, input.correlation_id
+                    ),
                     start_to_close_timeout=_ACTIVITY_TIMEOUT,
                 )
                 return
@@ -159,12 +171,12 @@ class AppointmentSchedulingWorkflow:
 
         await workflow.execute_activity_method(
             SchedulingActivities.schedule_reminders,
-            appointment_id,
+            input,
             start_to_close_timeout=_ACTIVITY_TIMEOUT,
         )
 
         await workflow.execute_activity_method(
             SchedulingActivities.confirm,
-            appointment_id,
+            input,
             start_to_close_timeout=_ACTIVITY_TIMEOUT,
         )

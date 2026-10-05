@@ -19,10 +19,12 @@ from fastapi import status
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.logging import ensure_correlation_id
 from app.core.exceptions import AppError
 from app.models import Service
 from app.models.enums import ServiceStatus
 from app.services.service import get_service
+from app.temporal.activities import ServiceInput
 from app.temporal.client import get_temporal_client
 from app.temporal.workflows import PublishServiceWorkflow
 
@@ -90,7 +92,7 @@ async def start_publish(db: Session, service_id: int) -> tuple[Service, str]:
         client = await get_temporal_client()
         await client.start_workflow(
             PublishServiceWorkflow.run,
-            service.id,
+            ServiceInput(service.id, ensure_correlation_id()),
             id=workflow_id,
             task_queue=settings.temporal_task_queue,
         )

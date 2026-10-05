@@ -13,7 +13,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.logging import ensure_correlation_id
 from app.core.exceptions import AppError
+from app.events.envelope import EventType
+from app.events.outbox import record_event
 from redis import Redis
 from app.models import (
     Appointment,
@@ -28,6 +31,7 @@ from app.schemas.appointment import AppointmentCreate
 from app.services.idempotency import get_cached_result, store_result
 from app.services.slot import reserve_slot_uncommitted
 from app.services.waitlist import promote_next_waiting
+from app.temporal.activities import AppointmentInput
 from app.temporal.client import get_temporal_client
 from app.temporal.workflows import AppointmentSchedulingWorkflow
 
@@ -134,13 +138,27 @@ async def request_appointment(
             actor=actor,
         )
     )
+
+    record_event(
+        db,
+        EventType.APPOINTMENT_BOOKED,
+        appointment.id,
+        {
+            "appointment_id": appointment.id,
+            "patient_id": appointment.patient_id,
+            "provider_id": appointment.provider_id,
+            "service_id": appointment.service_id,
+            "slot_id": appointment.slot_id,
+        },
+    )
+
     db.commit()
 
     workflow_id = scheduling_workflow_id(appointment.id)
     client = await get_temporal_client()
     await client.start_workflow(
         AppointmentSchedulingWorkflow.run,
-        appointment.id,
+        AppointmentInput(appointment.id, ensure_correlation_id()),
         id=workflow_id,
         task_queue=settings.temporal_task_queue,
     )
@@ -214,6 +232,14 @@ def cancel_appointment(db: Session, appointment_id: int, actor: str) -> Appointm
         )
     )
     appointment.status = AppointmentStatus.CANCELLED
+
+    record_event(
+        db,
+        EventType.APPOINTMENT_CANCELLED,
+        appointment.id,
+        {"appointment_id": appointment.id, "slot_id": appointment.slot_id},
+    )
+
     db.commit()
     db.refresh(appointment)
     return appointment
