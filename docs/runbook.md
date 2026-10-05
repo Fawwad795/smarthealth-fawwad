@@ -3,6 +3,9 @@
 Diagnosing the four things most likely to go wrong. Every command here has
 been run against this stack.
 
+To *cause* these conditions deliberately — for a demo, or to re-verify the
+consumer's two error branches — see `docs/kafka-ui-demo.md`.
+
 **Start here.** Is anything actually down?
 
 ```bash
@@ -112,16 +115,18 @@ event — the aggregate silently under-counts until repaired:
 
 ```bash
 docker compose exec postgres psql -U app -d app -c \
-  "SELECT error, payload FROM failed_jobs WHERE job_type='app.workers.consumer'
+  "SELECT error, payload FROM failed_jobs WHERE job_type='app.kafka.consumer'
    ORDER BY id DESC LIMIT 10;"
 ```
 
-> **Known issue.** A Temporal worker outage makes `appointment.booked` events
-> arrive before the saga has set `booked_at`, and the handler treats that as
-> permanent and dead-letters them. Booking counts are then lost until you run
-> `--repair`. Fix is to drive the aggregate from `appointment.confirmed`
-> instead — see `NOTES.md`. **When demoing, show the analytics before any
-> crash-recovery scenario.**
+Reading a booking dead-letter. `appointment N does not exist` means the row
+is missing; `appointment N is confirmed but has no booked_at` means it exists
+but was never stamped. Neither can resolve on a retry, which is why both are
+permanent -- and neither should occur, since `confirm` writes `booked_at` in
+the same transaction as the event.
+
+A Temporal worker outage no longer loses booking counts: `appointment.booked`
+drives nothing, and `appointment.confirmed` only exists once `booked_at` does.
 
 ---
 
@@ -148,9 +153,27 @@ Look for `duplicate event skipped` (normal — that is idempotency working) vers
 Kafka UI: **http://localhost:8080** — consumer group `app-analytics`. A growing
 lag with a live consumer means it is stuck on one message.
 
-**A consumer that just started sees nothing for up to 5 minutes** if its topics
-did not exist when it subscribed; librdkafka refreshes topic metadata on that
-interval. It looks exactly like a dead consumer.
+**A consumer that just started sees nothing for up to 10 seconds** if its topics
+did not exist when it subscribed. librdkafka only notices new topics when it
+refreshes metadata -- every 5 minutes by default, lowered to 10s by
+`topic.metadata.refresh.interval.ms` in `consumer_config()`. It looks exactly
+like a dead consumer.
+
+**A consumer down for longer than 7 days loses events silently.** Retention
+(`log.retention.hours=168`) deletes older records. If the group's committed
+offset falls below the log start, `auto.offset.reset=earliest` jumps to the
+oldest surviving record and nothing errors. Compare the two:
+
+```bash
+# CURRENT-OFFSET per topic for the consumer group
+docker compose exec kafka /opt/kafka/bin/kafka-consumer-groups.sh   --bootstrap-server localhost:9092 --describe --group app-analytics
+# earliest surviving offset per topic
+docker compose exec kafka /opt/kafka/bin/kafka-get-offsets.sh   --bootstrap-server localhost:9092 --time -2
+```
+
+`CURRENT-OFFSET` below the earliest offset means records were skipped. The
+events are still in `outbox_events`, so the numbers are recoverable: reconcile
+the affected days, then `--repair` (section 3).
 
 ---
 

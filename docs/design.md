@@ -533,12 +533,12 @@ is in neither the Week 3 task list nor the Definition of Done. Slots already
 store UTC and clinics already own a timezone, so the conversion point exists —
 this is a change of which timezone the aggregates use, not new machinery.
 
-**Known bug (Week 3): a worker outage loses booking counts.**
+**Resolved in the Week 3 review: a worker outage lost booking counts.**
 `appointment.booked` is queued when the appointment is still `REQUESTED`, but
 `booked_at` is written later, by the saga's `confirm` Activity.
-`handle_appointment_booked` reads `booked_at` with `scalar_one_or_none()`, so a
-missing row and an unconfirmed one are indistinguishable — both look like "does
-not exist", which the handler treats as permanent and dead-letters.
+The old `handle_appointment_booked` read `booked_at` with `scalar_one_or_none()`,
+so a missing row and an unconfirmed one were indistinguishable — both looked like
+"does not exist", which the handler treated as permanent and dead-lettered.
 
 Normally invisible: the relay runs every 5s and a saga finishes in ~200ms, so
 `booked_at` is always set by the time the event ships. Day 5's crash-recovery
@@ -546,12 +546,21 @@ demo held the sagas frozen for ~40s while the relay kept publishing, and all 27
 booking events were dead-lettered — the aggregate silently under-counted until
 `--repair` was run.
 
-The fix is two lines: maintain `appointments_booked` from `appointment.confirmed`
-instead, which guarantees `booked_at` exists and matches what the reconciliation
-already counts. Deferred rather than rushed at the end of the week, because it
-changes which event drives a graded metric. Making the unconfirmed case
-*transient* instead is the wrong fix: a REJECTED appointment never gets a
-`booked_at`, so the consumer would retry forever and stall the partition.
+The fix: `appointments_booked` is maintained from `appointment.confirmed`,
+which is recorded in the same transaction that sets `booked_at`, so the column
+is guaranteed to exist and matches what the reconciliation already counts.
+`appointment.booked` is still published and now drives nothing. The handler
+also reads the row with `one_or_none()` rather than `scalar_one_or_none()`, so a
+missing row and an empty `booked_at` dead-letter with different messages.
+
+Making the unconfirmed case *transient* was the tempting wrong fix: a REJECTED
+appointment never gets a `booked_at`, so the consumer would retry forever and
+stall the partition.
+
+Verified live against Day 5's own scenario: with the Temporal worker stopped,
+the `booked` event arrived while `booked_at` was NULL and was ignored, not
+dead-lettered; on restart the `confirmed` event counted it, and the
+reconciliation was clean with no `--repair`.
 
 ---
 

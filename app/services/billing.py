@@ -60,7 +60,10 @@ class BillingChecker:
         record_event(
             db,
             EventType.BILLING_UPDATED,
-            billing.appointment_id,
+            # The billing's own id, not its appointment's. aggregate_id is
+            # the id of the topic's aggregate and becomes the message key,
+            # so "billing-7" has to mean billing 7.
+            billing.id,
             {"billing_id": billing.id, "appointment_id": appointment.id},
         )
 

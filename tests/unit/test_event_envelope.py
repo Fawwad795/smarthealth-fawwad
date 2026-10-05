@@ -16,6 +16,7 @@ from app.events.envelope import (
     _TOPIC_SUFFIX,
     EventType,
     aggregate_of,
+    key_for,
     topic_for,
 )
 
@@ -82,3 +83,24 @@ def test_topic_for_rejects_anything_not_in_the_catalogue(bad: str) -> None:
     invented topic would accept messages nothing is subscribed to."""
     with pytest.raises(KeyError):
         topic_for(bad)
+
+
+def test_the_key_names_the_aggregate_and_its_id() -> None:
+    """Legible in Kafka UI without opening the message."""
+    assert key_for(EventType.VISIT_COMPLETED.value, 12) == "visit-12"
+
+
+def test_every_event_about_one_appointment_shares_a_key() -> None:
+    """The key decides the partition, and Kafka orders only within one.
+
+    Keyed by event -- "booked-51", "confirmed-51" -- these would hash to
+    different partitions and a consumer could see confirmed before booked.
+    Invisible while topics have one partition, which is exactly why it is
+    pinned here instead of left to be noticed.
+    """
+    keys = {
+        key_for(EventType.APPOINTMENT_BOOKED.value, 51),
+        key_for(EventType.APPOINTMENT_CONFIRMED.value, 51),
+        key_for(EventType.APPOINTMENT_CANCELLED.value, 51),
+    }
+    assert keys == {"appointment-51"}

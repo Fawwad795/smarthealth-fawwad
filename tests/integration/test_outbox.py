@@ -6,7 +6,7 @@ announcing it. Its correctness is therefore almost entirely about
 contents of any one row.
 """
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.core.logging import set_correlation_id
@@ -148,12 +148,29 @@ def test_cancelling_queues_a_cancelled_event(
 def test_a_billing_precheck_queues_one_event(
     db_session: Session, appointment: Appointment
 ) -> None:
-    BillingChecker().precheck(db_session, appointment, appointment.idempotency_key)
+    """aggregate_id is the billing's own id, never its appointment's.
+
+    The test database starts fresh each run, so on its own this test sees
+    appointment 1 and billing 1 -- and an assertion comparing two equal
+    numbers passes whichever id was used. Pushing the billing sequence
+    well past the appointment id makes the check real regardless of what
+    ran before it. setval is not rolled back with the test's transaction,
+    which is harmless: ids skip ahead, and nothing depends on them being
+    dense.
+    """
+    db_session.execute(
+        text("SELECT setval(pg_get_serial_sequence('billing', 'id'), :floor)"),
+        {"floor": appointment.id + 100},
+    )
+    billing = BillingChecker().precheck(
+        db_session, appointment, appointment.idempotency_key
+    )
 
     updated = [
         e for e in _events(db_session) if e.event_type == EventType.BILLING_UPDATED
     ]
     assert len(updated) == 1
+    assert updated[0].aggregate_id == billing.id
 
 
 def test_every_queued_event_carries_ids_only(

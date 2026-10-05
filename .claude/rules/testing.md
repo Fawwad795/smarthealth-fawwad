@@ -55,6 +55,19 @@ behaviour, not "at the end".
   different constraint than intended, the other assumed slots were service-scoped when
   the model deliberately makes them provider-scoped.
 
+## Established in Week 3 — follow it
+
+- **A new guard is only evidence once it has been seen failing.** Break the code
+  on purpose (revert the fix, re-wire the old path) and confirm the test fails,
+  then restore. Week 3 found two tests that passed with their fix reverted.
+- **The test database starts fresh each run, so every id sequence starts at 1.**
+  An assertion comparing two ids (`aggregate_id == billing.id`) passes by
+  coincidence when run alone. Force them apart with `setval` in the test.
+- `pytest-timeout` is 120s: an Activity raising a non-`ApplicationError` retries
+  forever and would otherwise hang the suite instead of failing it.
+- Workers do not hot-reload. Restart `consumer` / `celery-worker` before any live
+  check, or it proves the old code.
+
 ## Never
 
 - Real network calls. Fakes behind the provider interfaces.
