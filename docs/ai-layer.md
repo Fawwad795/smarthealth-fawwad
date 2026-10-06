@@ -6,12 +6,12 @@ they are built this way. Sections are added as Weeks 4 and 5 land.
 ## 1. Embeddings and vector similarity
 
 An embedding model turns a piece of text into a vector: a fixed-length list of
-numbers (for example 384 or 1,536, fixed by the model). The model is trained on
-large amounts of text so that passages with similar meaning get similar vectors,
-even when they share no words. "Do I need to take my rings off?" lands close to
-the Knee X-Ray preparation text, "remove any metal jewellery near the knee".
-Week 1's search matches the query against service names with `ILIKE` and finds
-nothing for that question.
+numbers, 384 of them for `all-MiniLM-L6-v2`, the model used here. The model is
+trained on large amounts of text so that passages with similar meaning get
+similar vectors. With it, "I need a scan of my knee" scores 0.614 against the
+Knee X-Ray chunk and no more than 0.221 against any other seeded service. Week
+1's search matches the query against service names with `ILIKE` and finds
+nothing, because no service name contains that phrase.
 
 Closeness is measured with cosine similarity, the cosine of the angle between
 two vectors. Vectors pointing the same way score 1; unrelated ones score near 0.
@@ -93,3 +93,68 @@ The text is built when the service is published. A provider linked afterwards
 changes the service's specialties, but its chunk is only rebuilt when the service
 is published again (task 4.7). `token_count` is still estimated as characters
 divided by four; a real count waits for the embedding model's tokenizer.
+
+## 3. Embedding provider
+
+Everything that needs a vector calls `EmbeddingProvider.embed(texts)` in
+`app/ai/embeddings.py` and gets back one vector per text, in order. Each
+provider also reports its model name and vector size, to be stored beside every
+vector so a model change can find what is stale. The contract is an abstract
+base class, so a provider missing `embed()` fails when it is constructed. A
+`typing.Protocol` would only be checked by mypy, which this repo runs on
+`app/models` alone.
+
+`EMBEDDING_PROVIDER` picks one of two implementations:
+
+| Provider | Used by | How it works |
+|---|---|---|
+| `HuggingFaceEmbeddings` | the running app | Sends up to `EMBEDDING_BATCH_SIZE` (64) texts per request to Hugging Face's hosted `all-MiniLM-L6-v2` and gets back 384 numbers per text, already scaled to length 1 |
+| `FakeEmbeddings` | the test suite | Hashes each word to one of 384 positions, counts it there and scales the result to length 1, so texts that share words point partly the same way. It uses `hashlib`, because the built-in `hash()` is salted per process and would give different vectors on every run |
+
+Each request pays a network round trip and counts against the rate limit, so
+texts go in batches. Ten texts in one request took 0.9 s with the model warm;
+the first request after an idle period took 8 s while Hugging Face loaded the
+model. `EMBEDDING_TIMEOUT_SECONDS` is 20 s: above that cold start, and below the
+publish Activities' 30 s timeout, so a slow call fails inside the provider,
+which reports it as transient, before Temporal abandons the attempt.
+
+Every failure is raised as one of two types, so task 4.5 can retry only what a
+retry can fix:
+
+| Type | Raised for |
+|---|---|
+| `TransientEmbeddingError` | timeouts, refused connections, failed TLS handshakes (one happened on the first day of testing), HTTP 429, and HTTP 5xx, including the 503 sent while a model loads |
+| `PermanentEmbeddingError` | an empty key (at startup), HTTP 400, 401, 403 or 404, and any response other than one 384-number vector per text |
+
+Error messages carry the status code and the batch size, and leave out the
+texts and the response body. A search query is the patient's own words, and an
+error body can echo the request.
+
+The unit tests answer HTTP requests in-process with `httpx.MockTransport`, so
+the suite needs no network or key. One test calls Hugging Face for real. It is
+marked `live` and skips itself unless run with `RUN_LIVE_TESTS=1`:
+
+```
+docker compose run --rm -e RUN_LIVE_TESTS=1 test pytest -m live
+```
+
+### Measured similarities
+
+Queries against the three seeded services' chunks, on Week 4 Day 1:
+
+| Query | Highest score | Next highest |
+|---|---|---|
+| "I need a scan of my knee" | Knee X-Ray, 0.614 | Echocardiogram, 0.221 |
+| "heart ultrasound" | Echocardiogram, 0.643 | Full Skin Check, 0.185 |
+| "someone to look at a mole on my skin" | Full Skin Check, 0.341 | Knee X-Ray, 0.143 |
+| "should I take off my jewellery before the scan" | Full Skin Check, 0.386 | Knee X-Ray, 0.245 |
+| "Do I need to take my rings off?" | Knee X-Ray, 0.098 | Full Skin Check, 0.094 |
+| "parking at the clinic" (no service covers it) | Full Skin Check, 0.268 | Knee X-Ray, 0.110 |
+
+The model ranks well when the query shares words with a chunk and poorly on
+paraphrase. Both jewellery questions belong to the Knee X-Ray preparation text,
+which says "remove any metal jewellery"; one ranks the skin check first, and the
+other barely separates the two. A question no service covers scores 0.268,
+close to the 0.341 of a genuine skin question, which leaves a single threshold
+a narrow gap. The placeholder `RETRIEVAL_MIN_SIMILARITY` of 0.65 would reject
+even the two clear matches; task 4.10's eval set will choose the value.
