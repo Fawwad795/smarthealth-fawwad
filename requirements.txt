@@ -9,6 +9,7 @@ uvicorn[standard]==0.34.0
 sqlalchemy==2.0.36
 alembic==1.14.0
 psycopg[binary]==3.2.3        # the modern (v3) Postgres driver
+pgvector==0.5.0               # SQLAlchemy Vector type + distance operators (Week 4+)
 
 # --- Temporal (Week 2+) -------------------------------------------------
 temporalio==1.9.0
