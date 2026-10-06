@@ -97,7 +97,8 @@ assistant. API only — no UI. No clinical data anywhere.
 | FR-16 | `app/celery/tasks/reminders.py`, `app/celery/base.py` (`DeadLetterTask`) | `test_celery_tasks.py::test_a_transient_failure_retries_with_backoff_then_dead_letters`, `::test_reminder_task_dead_letters_a_permanent_failure` |
 | FR-17 | `app/events/` (envelope, outbox), `app/kafka/` (relay, producer, consumer, dedupe, handlers) | `test_event_replay.py`, `test_dedupe.py`, `test_consumer_loop.py`, `test_outbox_relay.py`, `test_event_handlers.py`, `test_event_envelope.py` |
 | FR-18 | `app/services/analytics.py`, `app/api/v1/analytics.py`, `scripts/reconcile_analytics.py` | `test_analytics_service.py`, `test_analytics_routes.py`, `test_reconciliation.py` |
-| FR-19–FR-20 | Not built — Weeks 4–5 | — |
+| FR-19 | Chunking so far: `app/ai/chunking.py`, `activities.py::PublishActivities.structure_content` | `test_chunking.py`, `test_publish_activities.py::test_structure_content_lists_each_linked_providers_specialty_once`, `::test_structure_content_without_linked_providers_has_no_specialty` |
+| FR-20 | Not built yet (Week 5) | None yet |
 
 ## 7. Known gaps
 
