@@ -9,6 +9,7 @@ uvicorn[standard]==0.34.0
 sqlalchemy==2.0.36
 alembic==1.14.0
 psycopg[binary]==3.2.3        # the modern (v3) Postgres driver
+pgvector==0.5.0               # SQLAlchemy Vector type + distance operators (Week 4+)
 
 # --- Temporal (Week 2+) -------------------------------------------------
 temporalio==1.9.0
@@ -25,6 +26,9 @@ confluent-kafka==2.6.1        # librdkafka-backed; the maintained client
 # --- Metrics (Week 3+) ---------------------------------------------------
 prometheus-client==0.21.1     # the official Python client
 
+# --- AI layer (Week 4+) -------------------------------------------------
+httpx==0.28.1                 # embedding provider calls; also FastAPI's TestClient
+
 # --- Config / validation -----------------------------------------------
 pydantic==2.10.4
 pydantic-settings==2.7.0      # reads settings from env vars / .env
@@ -38,7 +42,6 @@ email-validator==2.2.0
 # --- Tests / tooling ---------------------------------------------------
 pytest==8.3.4
 pytest-cov==6.0.0
-httpx==0.28.1                 # FastAPI's TestClient needs this
 ruff==0.8.4
 black==24.10.0
 pytest-asyncio==0.24.0        # runs `async def test_...`; Temporal's client is async

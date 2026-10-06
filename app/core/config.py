@@ -5,6 +5,9 @@ the single `settings` object below, so there is exactly one place that
 knows how the app is configured.
 """
 
+from typing import Literal
+
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -13,7 +16,7 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_file=".env",
-        # .env holds keys for Weeks 2-5 (Temporal, Kafka, the LLM) that this
+        # .env holds keys for Weeks 4-5 (the LLM, retrieval tuning) that this
         # class does not declare yet. Ignore them instead of crashing.
         extra="ignore",
     )
@@ -79,6 +82,25 @@ class Settings(BaseSettings):
     # compensation path (task 2.9) on demand. Never true outside a demo
     # or a test that deliberately flips it.
     billing_force_fail: bool = False
+
+    # --- Embeddings (Week 4+) ---
+    # Which EmbeddingProvider app/ai/embeddings.py builds. "fake" is the
+    # network-free hashing stand-in, for running the stack without a key.
+    embedding_provider: Literal["huggingface", "fake"] = "huggingface"
+    # SecretStr so the key prints as '**********' in any repr or log line;
+    # reading it takes an explicit .get_secret_value().
+    embedding_api_key: SecretStr = SecretStr("")
+    embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    # Fixed by the model, and by the vector column built for it: changing
+    # the model means a migration and re-embedding every service.
+    embedding_dimensions: int = 384
+    # Texts per HTTP request. The brief asks for 32-100: per-request
+    # overhead and the rate limit are paid once per batch, not per text.
+    embedding_batch_size: int = 64
+    # Above the ~8s measured for a cold Hugging Face model, and below the
+    # publish Activities' 30s timeout, so the HTTP call fails and is
+    # classified before Temporal abandons the attempt.
+    embedding_timeout_seconds: float = 20.0
 
 
 # Imported everywhere as: from app.core.config import settings

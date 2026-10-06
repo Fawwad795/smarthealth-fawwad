@@ -1405,3 +1405,70 @@ Post-review work on PR #16: 1 mentor point, plus the deferred Day 5 bug.
   5 retries, while the reminder task correctly reaches 6?
 - 3 uncovered permanent-error branches (cancelled, visit handlers) -- worth
   tests before Week 4?
+
+---
+
+## Week 4 - Chunking, Embeddings & Retrieval
+
+### Day 1 - 2026-10-06
+
+**Goal:** Lay the retrieval groundwork: explain embeddings, get pgvector into
+Python, enrich the chunk text, and build the embedding provider.
+
+**Done**
+
+- `docs/ai-layer.md` started: embeddings and similarity, chunk format,
+  embedding provider with measured similarities.
+- `pgvector==0.5.0`; live check: five distances match hand-worked values,
+  mismatched sizes rejected.
+- `app/ai/chunking.py`: specialties via `provider_services`, sorted, listed
+  once, department repeats dropped.
+- `app/ai/embeddings.py`: `EmbeddingProvider` ABC, `HuggingFaceEmbeddings`
+  (64 per request, transient/permanent errors), `FakeEmbeddings`.
+- One live HF test, marked `live`, skipped unless `RUN_LIVE_TESTS=1`.
+- 397 -> 427 tests, 97.75% coverage; 11 mutations, all caught.
+
+**Decisions**
+
+| Decision | Why |
+|---|---|
+| pgvector over Qdrant/Chroma | Filters stay `WHERE` clauses; re-index is one transaction |
+| HF `all-MiniLM-L6-v2`, 384 dims | `.env.example` asks for free keys; real failures exercise retries |
+| `ABC`, not `Protocol` | mypy only checks `app/models`; ABC fails at construction |
+| `hashlib` in the fake, not `hash()` | `hash()` is salted per process |
+| Errors carry status and count only | An error body can echo a patient's query |
+| Specialty repeating the department dropped | "Cardiology · Cardiology" adds nothing |
+
+**Cost time**
+
+- Local Day 6 branch went stale after the Week 3 merges; `git pull` opened a
+  merge editor. Aborted and reset to origin.
+- Docker engine dropped mid-build and restarted itself.
+- Section 1's "rings" example scored 0.098 on the real model; replaced with a
+  measured one.
+- Mutation script missed its anchor: `activities.py` is CRLF in the working
+  tree, which Git Bash's `grep` hid.
+
+**Explain out loud**
+
+- Cosine similarity compares direction and ignores length; `<=>` is
+  `1 - similarity`.
+- A text hash only skips re-embedding if a service always yields the same
+  text, hence sorted specialties.
+- Retry what can change (timeouts, 429, 5xx); a bad key never will.
+
+**Carrying into Day 2**
+
+- Seeded services were set PUBLISHED directly and have no chunks; fix before
+  4.5 embeds anything.
+- `RETRIEVAL_MIN_SIMILARITY=0.65` is a placeholder; clear matches scored 0.614
+  and 0.643.
+- 4.6 vector storage (`vector(384)` migration), then 4.5 embedding Activity.
+- Push the branch; PR targets `week-3-events-day-6`.
+
+**Open questions**
+
+- Is the free HF tier reliable enough for the demo, or will the mentor's
+  budget cover OpenAI?
+- Re-publish for 4.7: PUBLISHED -> PUBLISHING directly, or back through DRAFT?
+- Week 3's two (relay `attempts=1`, uncovered handler branches) still open.
