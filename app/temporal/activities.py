@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
+from app.ai.chunking import build_service_chunk_text
 from app.celery.tasks.reminders import send_appointment_reminder
 from app.core.logging import get_correlation_id, set_correlation_id
 from app.core.metrics import appointments_booked, double_booking_prevented
@@ -30,10 +31,12 @@ from app.models import (
     Appointment,
     AppointmentStatusHistory,
     ContentChunk,
+    Provider,
     ProviderService,
     Service,
     Slot,
     SlotReservation,
+    Specialty,
 )
 from app.models.enums import (
     AppointmentStatus,
@@ -137,21 +140,32 @@ class PublishActivities:
 
     @activity.defn
     def structure_content(self, input: ServiceInput) -> str:
-        """Combine this service's fields into one enriched text block --
-        the input the chunk activity splits into content_chunks rows.
+        """Build the one enriched text block that represents this service in
+        semantic search, for chunk_content to store.
 
-        Department name is included so a patient's query ("cardiology
-        check-up") can match on more than the bare service name. Provider
-        specialty is a documented Week 4 improvement (task 4.3), not added
-        here -- a service isn't tied to one single provider.
+        Specialty lives on providers, not services, so it is read through
+        provider_services: the specialty of every provider qualified to
+        deliver this service -- the same "who offers it" link Week 1's
+        search uses. A service nobody is linked to yet has none. The text
+        format itself belongs to app.ai.chunking.
         """
         set_correlation_id(input.correlation_id)
-        service_id = input.service_id
         with self._session_factory() as db:
-            service = db.get(Service, service_id)
-            return (
-                f"{service.department.name}: {service.name}. "
-                f"{service.description} Preparation: {service.prep_instructions}"
+            service = db.get(Service, input.service_id)
+            specialties = db.scalars(
+                select(Specialty.name)
+                .join(Provider, Provider.specialty_id == Specialty.id)
+                .join(ProviderService, ProviderService.provider_id == Provider.id)
+                .where(ProviderService.service_id == service.id)
+            ).all()
+            # validate_service runs first in the workflow and fails the
+            # publish if either text field is missing, so neither is None here.
+            return build_service_chunk_text(
+                department=service.department.name,
+                specialties=list(specialties),
+                name=service.name,
+                description=service.description,
+                prep_instructions=service.prep_instructions,
             )
 
     @activity.defn
