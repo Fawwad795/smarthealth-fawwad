@@ -21,6 +21,7 @@ from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
 from app.ai.chunking import build_service_chunk_text
+from app.ai.vector_store import get_vector_store
 from app.celery.tasks.reminders import send_appointment_reminder
 from app.core.logging import get_correlation_id, set_correlation_id
 from app.core.metrics import appointments_booked, double_booking_prevented
@@ -203,13 +204,17 @@ class PublishActivities:
 
     @activity.defn
     def mark_published(self, input: ServiceInput) -> None:
-        """Transition the service to PUBLISHED -- the workflow's last step."""
+        """Transition the service to PUBLISHED -- the workflow's last step --
+        and make its vectors searchable in the same transaction, so search
+        can never see a vector whose service is not yet published.
+        """
         set_correlation_id(input.correlation_id)
         service_id = input.service_id
         with self._session_factory() as db:
             service = db.get(Service, service_id)
             service.status = ServiceStatus.PUBLISHED
             service.published_at = datetime.now(UTC)
+            get_vector_store(db).set_published(service_id, True)
 
             record_event(
                 db,
