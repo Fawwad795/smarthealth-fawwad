@@ -16,8 +16,8 @@ How SmartHealth is put together, and why. Updated as work lands.
 
 ### 1.1 ERD — core domain through Week 2
 
-Seventeen entities. The ten Week 1 shapes plus everything the scheduling saga and
-visit lifecycle attach to them.
+Eighteen entities. The ten Week 1 shapes, everything the scheduling saga and
+visit lifecycle attach to them, and Week 4's chunk vectors.
 
 ```mermaid
 erDiagram
@@ -43,6 +43,8 @@ erDiagram
     APPOINTMENT ||--o| VISIT : "becomes"
     PROVIDER ||--o{ WAITLIST : "queued for"
     PATIENT ||--o{ WAITLIST : "waits on"
+    CONTENT_CHUNK ||--o| CHUNK_EMBEDDING : "embedded as"
+    SERVICE ||--o{ CHUNK_EMBEDDING : "described by"
 
     CLINIC {
         bigint id PK
@@ -213,6 +215,19 @@ erDiagram
         timestamptz created_at
         timestamptz updated_at
     }
+
+    CHUNK_EMBEDDING {
+        bigint id PK
+        bigint chunk_id FK "UNIQUE, ON DELETE CASCADE"
+        vector embedding "vector(384)"
+        text model
+        bigint service_id FK "NOT NULL, indexed"
+        text department "copied for search"
+        text_array specialties "copied for search"
+        boolean published "copied for search"
+        timestamptz created_at
+        timestamptz updated_at
+    }
 ```
 
 Exported copies of this and every other diagram here live in `docs/diagrams/`.
@@ -222,7 +237,8 @@ Exported copies of this and every other diagram here live in `docs/diagrams/`.
 datetime. Every foreign key is `ON DELETE RESTRICT`: in healthcare operations you
 deactivate, you never delete, and a cascade that quietly removed a department's
 services would take their history with it. Status is always an enum, never a
-boolean flag. Indexes on anything filtered or joined: `slots.provider_id`,
+boolean flag. `chunk_embeddings` breaks both rules once each, for derived data
+rather than records (see the Week 4 decisions). Indexes on anything filtered or joined: `slots.provider_id`,
 `slots.status`, `services.status`, `services.department_id`,
 `providers.department_id`.
 
@@ -470,8 +486,11 @@ migrating rows that had already been created without it.
 
 | Decision | Why | Tradeoff |
 |---|---|---|
-| Vectors live in the existing Postgres through pgvector, rather than in a separate vector database such as Qdrant or Chroma | Retrieval has to keep only published services and scope any patient data to the caller, so both filters must be part of the search query itself. With pgvector they are plain `WHERE` clauses in the same statement that orders by distance. A service's chunks and vectors can also be replaced in one transaction, so a re-publish cannot leave stale vectors behind (task 4.7). The `pgvector/pgvector` image and the `CREATE EXTENSION` migration have been in place since Week 1, so there is no new container to run or back up | With no vector index, each search compares the query against every stored vector. A single clinic has few enough services for that scan to stay small; a much larger catalogue would need an approximate index (HNSW) that skips most of those comparisons. Search is also tied to Postgres, so moving to a dedicated store later goes through the small interface planned for task 4.6 |
+| Vectors live in the existing Postgres through pgvector, rather than in a separate vector database such as Qdrant or Chroma | Retrieval has to keep only published services and scope any patient data to the caller, so both filters must be part of the search query itself. With pgvector they are plain `WHERE` clauses in the same statement that orders by distance. A service's chunks and vectors can also be replaced in one transaction, so a re-publish cannot leave stale vectors behind (task 4.7). The `pgvector/pgvector` image and the `CREATE EXTENSION` migration have been in place since Week 1, so there is no new container to run or back up | With no vector index, each search compares the query against every stored vector. A single clinic has few enough services for that scan to stay small; a much larger catalogue would need an approximate index (HNSW) that skips most of those comparisons. Such an index applies `WHERE` filters after its scan, so with the published filter it can return fewer than k results, which is a second reason not to add one at this size. Search is also tied to Postgres, so moving to a dedicated store later goes through `VectorStore` in `app/ai/vector_store.py` (task 4.6) |
 | Embeddings come from Hugging Face's hosted `all-MiniLM-L6-v2` (384 numbers per text), rather than OpenAI's `text-embedding-3-small` or a model run inside the container with `fastembed` | `.env.example` asks for free keys the developer provisions, which rules out paid OpenAI. A hosted call fails for real (a TLS handshake timed out on the first day of testing), so task 4.5's retries are exercised by genuine failures; a local model would need a forced-failure switch to show them, and would make the image larger | The first request after an idle period took 8 s against 0.9 s warm, and the free tier is rate-limited, both risks on demo day. The model is small and ranks paraphrases poorly (`docs/ai-layer.md` section 3). Switching is one class and one setting behind `EmbeddingProvider`, plus re-embedding every service, because vectors from different models cannot be compared |
+| Each vector is a row in its own `chunk_embeddings` table, one per chunk, and deleting a chunk deletes its vector (`ON DELETE CASCADE`), the schema's only cascade | A vector is computed from its chunk's text and means nothing without it, and `chunk_content` deletes a service's chunks on every publish. With `RESTRICT`, the second publish of any embedded service would fail on that delete. With the cascade, Postgres removes the old vector in the same statement, so no orphan can survive a re-publish | Until task 4.9 keeps unchanged chunks in place, every publish deletes the vector and re-embeds, even when the text has not changed |
+| Each vector carries copies of its service's department, specialties and a `published` flag, as Part B §3.1 requires, not only `service_id` | The store sits behind `VectorStore` so it can be swapped, and a store such as Qdrant cannot join to `services` at search time, so the metadata has to travel with the vector. Specialties are a list because a service can be delivered by providers of several specialties | A copy can disagree with its source. The flag only changes in the same transaction as the service's status, and department and specialties are rewritten on every publish, so they describe what was embedded. A department renamed without a re-publish keeps its old name on the vector until the next one |
+| Every vector is stored with `published = false`; only `mark_published` sets it true, in the same transaction as the service's status | Embedding runs while the service is still `PUBLISHING`. Writing the flag true at that point would make the service searchable before its publish finished, and a publish that then failed would leave it searchable | A re-publish hides the service from search from the moment its vectors are replaced until the workflow finishes. Whether that is acceptable is part of the open re-publish question (task 4.7) |
 
 **Enum member names and values are kept identical** (`AVAILABLE = "AVAILABLE"`).
 SQLAlchemy persists a Python enum's `.name`, while a `str`-based enum serialises
