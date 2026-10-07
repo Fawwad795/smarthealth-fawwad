@@ -13,7 +13,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from temporalio.exceptions import ApplicationError
 
+from app.ai.vector_store import PgVectorStore, VectorRecord
 from app.models import (
+    ChunkEmbedding,
     ContentChunk,
     Department,
     Provider,
@@ -22,6 +24,7 @@ from app.models import (
     Specialty,
     User,
 )
+from app.models.chunk_embedding import EMBEDDING_DIMENSIONS
 from app.models.enums import ContentSourceType, ServiceStatus, UserRole
 from app.temporal.activities import (
     ChunkContentInput,
@@ -193,6 +196,38 @@ def test_mark_published_sets_status_and_timestamp(
     db_session.refresh(service)
     assert service.status == ServiceStatus.PUBLISHED
     assert service.published_at is not None
+
+
+def test_mark_published_makes_the_services_vectors_searchable(
+    activities: PublishActivities, db_session: Session, department: Department
+) -> None:
+    """Vectors are stored unpublished; only mark_published flips them, in
+    the same transaction as the service's own status."""
+    service = _service(db_session, department)
+    activities.chunk_content(ChunkContentInput(service.id, "some text"))
+    chunk = db_session.scalars(
+        select(ContentChunk).where(ContentChunk.source_id == service.id)
+    ).one()
+    PgVectorStore(db_session).replace_service_vectors(
+        service.id,
+        [
+            VectorRecord(
+                chunk_id=chunk.id,
+                embedding=[1.0] * EMBEDDING_DIMENSIONS,
+                model="test-model",
+                department=department.name,
+                specialties=[],
+            )
+        ],
+    )
+
+    activities.mark_published(ServiceInput(service.id))
+
+    db_session.expire_all()
+    embedding = db_session.scalars(
+        select(ChunkEmbedding).where(ChunkEmbedding.service_id == service.id)
+    ).one()
+    assert embedding.published is True
 
 
 def test_mark_publish_failed_sets_the_failed_status(

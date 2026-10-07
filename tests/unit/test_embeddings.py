@@ -23,6 +23,8 @@ from app.ai.embeddings import (
     TransientEmbeddingError,
     get_embedding_provider,
 )
+from app.core.config import Settings
+from app.models.chunk_embedding import EMBEDDING_DIMENSIONS
 
 PATIENT_TEXT = "a question in the patient's own words"
 
@@ -219,3 +221,13 @@ def test_factory_builds_hugging_face_from_settings(
 
     assert isinstance(provider, HuggingFaceEmbeddings)
     assert (provider.model, provider.dimensions) == ("test/model", 384)
+
+
+def test_default_dimensions_match_the_vector_column() -> None:
+    """The chunk_embeddings column is created as vector(384), and Postgres
+    rejects any other size. If the setting's default drifted from it, a
+    fresh checkout would fail every publish at its first insert.
+    """
+    default = Settings.model_fields["embedding_dimensions"].default
+
+    assert default == EMBEDDING_DIMENSIONS

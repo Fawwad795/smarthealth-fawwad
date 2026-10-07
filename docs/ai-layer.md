@@ -158,3 +158,53 @@ other barely separates the two. A question no service covers scores 0.268,
 close to the 0.341 of a genuine skin question, which leaves a single threshold
 a narrow gap. The placeholder `RETRIEVAL_MIN_SIMILARITY` of 0.65 would reject
 even the two clear matches; task 4.10's eval set will choose the value.
+
+## 4. Vector storage
+
+Each chunk's vector is one row in `chunk_embeddings`, in the same Postgres as
+everything else. Code never touches the table directly. It goes through
+`VectorStore` in `app/ai/vector_store.py`, which has two methods:
+
+| Method | What it does |
+|---|---|
+| `replace_service_vectors(service_id, records)` | Deletes every vector the service has, then stores the new ones. Running it twice leaves the same rows as running it once, so a retried Activity cannot duplicate a vector and a re-publish cannot leave a stale one |
+| `set_published(service_id, published)` | Sets the published flag on all of the service's vectors |
+
+`get_vector_store()` is the only place that names the implementation,
+`PgVectorStore`, so moving to another store means writing one class. Neither
+method commits: the caller's transaction covers the vectors and the service's
+own status together.
+
+Every row carries the metadata Part B requires:
+
+| Column | Holds |
+|---|---|
+| `service_id` | The service the chunk describes; a real foreign key |
+| `department` | The department's name when the vector was written |
+| `specialties` | Every linked provider's specialty, as a list |
+| `published` | Whether search may return the vector |
+| `model` | Which model produced the vector, since vectors from two models cannot be compared |
+
+`department`, `specialties` and `published` are copies of what the service
+already says. They are stored on the vector because a store reached through
+the interface, Qdrant for example, could not join to `services` at search time.
+The flag is the copy that matters for safety, so it has one rule: every vector
+is stored with `published = false`, and only `mark_published` sets it true, in
+the same transaction that sets the service's status to `PUBLISHED`. A vector
+cannot become searchable before its service's publish has finished.
+
+The table enforces three things itself:
+
+- `vector(384)`: Postgres rejects a vector of any other length, so a provider
+  configured for a different model fails at its first insert instead of storing
+  vectors that compare as nonsense.
+- `chunk_id` is unique: one vector per chunk.
+- Deleting a chunk deletes its vector (`ON DELETE CASCADE`). `chunk_content`
+  replaces a service's chunks on every publish, so without this the second
+  publish of a service would either fail or leave the old vector behind.
+
+There is no vector index. Every search compares the query with every stored
+vector, which is exact and, for one clinic's catalogue, small. An approximate
+index (HNSW) would skip most comparisons, but it applies `WHERE` filters after
+its scan, so with the published filter it can return fewer results than asked
+for.
