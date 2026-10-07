@@ -86,7 +86,8 @@ docker compose up -d --build
 docker compose exec api alembic upgrade head
 
 # 4. load a synthetic demo dataset (clinic, departments, providers + schedules,
-#    published services, patients) -- idempotent, safe to re-run
+#    services, patients) -- idempotent, safe to re-run. The services are
+#    published through the real publish workflow, so temporal-worker must be up
 docker compose exec api python -m scripts.seed
 
 # 5. check

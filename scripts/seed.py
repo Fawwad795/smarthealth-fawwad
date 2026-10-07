@@ -5,23 +5,29 @@ Run with: docker compose exec api python -m scripts.seed
 Builds, in dependency order: a clinic, departments, specialties, staff
 accounts (provider/front_desk/admin -- the only way those roles get
 created, since POST /auth/register is patient-only by design), provider
-profiles, provider schedules, generated slots, published services,
-provider-service links, and a handful of synthetic patients.
+profiles, provider schedules, generated slots, DRAFT services,
+provider-service links, and a handful of synthetic patients. Then it
+publishes the services through the real publish workflow, so the
+temporal and temporal-worker containers must be running.
 
 Idempotent: every step checks for an existing row by its natural key
-(email, name, weekday) before inserting, so running this twice against a
-database that already has seed data is a no-op, not a crash.
+(email, name, weekday) before inserting, and an already-published service
+is not published again, so running this twice against a database that
+already has seed data is a no-op, not a crash.
 
 Appointments are deliberately NOT seeded here -- the Appointment model
 does not exist yet (it is Week 2's scheduling saga). Seeding rows against
 a table that will be built next week would just be thrown away.
 """
 
-from datetime import date, datetime, timedelta, timezone
+import asyncio
+from datetime import date, timedelta
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
+from temporalio.client import Client
 
+from app.core.exceptions import AppError
 from app.core.security import hash_password, verify_password
 from app.db.session import SessionLocal
 from app.models import (
@@ -35,7 +41,7 @@ from app.models import (
     Specialty,
     User,
 )
-from app.models.enums import ServiceStatus, UserRole
+from app.models.enums import UserRole
 from app.schemas.department import DepartmentCreate
 from app.schemas.provider import ProviderCreate
 from app.schemas.provider_schedule import ProviderScheduleCreate
@@ -44,9 +50,16 @@ from app.services import department as department_service
 from app.services import provider as provider_service
 from app.services import provider_schedule as provider_schedule_service
 from app.services import service as service_service
+from app.services import service_publish
+from app.temporal.client import get_temporal_client
 
 # Synthetic-only, never used outside local/dev seeding -- see rule 9.
 SEED_PASSWORD = "ChangeMe123!"
+
+# How long main() waits for one service's publish workflow. A publish takes
+# a few seconds; the limit only exists so a stopped worker fails the seed
+# with a message instead of hanging it.
+PUBLISH_TIMEOUT_SECONDS = 120
 
 # Every account this script owns, for the summary main() prints. Day 3 lost
 # time trying SEED_PASSWORD against a hand-registered leftover that looked
@@ -193,17 +206,16 @@ def _get_or_create_weekday_schedule(
     )
 
 
-def _get_or_create_published_service(
+def _get_or_create_service(
     db: Session, department: Department, name: str, description: str, prep: str
 ) -> Service:
-    """A service, created through the service layer and then promoted to
-    PUBLISHED directly.
+    """A service, created through the service layer and left as DRAFT.
 
-    That promotion is the one place this script goes below the API's own
-    rules, and it is deliberate: PATCH /services/{id} refuses to set
-    status because Week 2's publish workflow must own that transition --
-    but that workflow doesn't exist yet, and the demo needs something a
-    patient can actually find in the catalogue.
+    seed() never publishes anything itself: the publish workflow is the
+    only path to PUBLISHED, because it is also what writes the service's
+    chunk. Week 1 set PUBLISHED here directly, before that workflow
+    existed, and left the seeded services with nothing for Week 4's
+    search to find. main() publishes them through the workflow instead.
     """
     service = (
         db.query(Service)
@@ -212,7 +224,7 @@ def _get_or_create_published_service(
     )
     if service is not None:
         return service
-    service = service_service.create_service(
+    return service_service.create_service(
         db,
         ServiceCreate(
             department_id=department.id,
@@ -221,14 +233,6 @@ def _get_or_create_published_service(
             prep_instructions=prep,
         ),
     )
-    # No publish workflow exists yet (Week 2) -- this is exactly the
-    # "hand-inserted row" escape hatch the CRUD endpoint's own docstring
-    # anticipates for getting a demoable PUBLISHED row today.
-    service.status = ServiceStatus.PUBLISHED
-    service.published_at = datetime.now(timezone.utc)
-    db.commit()
-    db.refresh(service)
-    return service
 
 
 def _get_or_create_provider_service(
@@ -281,13 +285,15 @@ def _get_or_create_patient(db: Session, email: str, dob: date) -> Patient:
     return patient
 
 
-def seed(db: Session) -> None:
-    """Build the whole demo dataset, in dependency order.
+def seed(db: Session) -> list[Service]:
+    """Build the whole demo dataset, in dependency order, and return the
+    seeded services for main() to publish.
 
     Split from main() so the test suite can call it against the test
     database with its own Session, rather than shelling out to a
     subprocess and losing the transaction rollback that keeps tests
-    isolated.
+    isolated. It needs no Temporal server for the same reason: publishing
+    happens afterwards, in publish_services().
     """
     clinic = _get_or_create_clinic(db)
 
@@ -333,21 +339,21 @@ def seed(db: Session) -> None:
             db, provider.id, today, today + timedelta(days=14)
         )
 
-    knee_xray = _get_or_create_published_service(
+    knee_xray = _get_or_create_service(
         db,
         ortho_dept,
         "Knee X-Ray",
         "Standard imaging of the knee joint.",
         "Wear loose clothing; remove any metal jewellery near the knee.",
     )
-    echo = _get_or_create_published_service(
+    echo = _get_or_create_service(
         db,
         cardiology_dept,
         "Echocardiogram",
         "Ultrasound imaging of the heart.",
         "No special preparation required. Arrive 10 minutes early.",
     )
-    skin_check = _get_or_create_published_service(
+    skin_check = _get_or_create_service(
         db,
         derm_dept,
         "Full Skin Check",
@@ -355,6 +361,9 @@ def seed(db: Session) -> None:
         "Avoid wearing makeup or nail polish to the appointment.",
     )
 
+    # These links must exist before the services are published: the
+    # workflow reads each service's specialties through them when it
+    # builds the chunk text, and a service with no link gets none.
     _get_or_create_provider_service(db, ahmed, knee_xray)
     _get_or_create_provider_service(db, khan, echo)
     _get_or_create_provider_service(db, raza, skin_check)
@@ -362,6 +371,50 @@ def seed(db: Session) -> None:
     _get_or_create_patient(db, "patient.one@example.com", date(1990, 5, 14))
     _get_or_create_patient(db, "patient.two@example.com", date(1985, 11, 2))
     _get_or_create_patient(db, "patient.three@example.com", date(2000, 1, 30))
+
+    return [knee_xray, echo, skin_check]
+
+
+async def publish_services(
+    db: Session, services: list[Service], client: Client | None = None
+) -> None:
+    """Publish each service through the real publish workflow, one at a
+    time, waiting for each to finish, and print where it ended up.
+
+    start_publish() is the same function POST /services/{id}/publish
+    calls, so the seed follows the API's rules rather than its own. Its
+    status check decides what may be published: on a re-run the services
+    are already PUBLISHED, it raises a 409 AppError, and the service is
+    left as it is.
+
+    `client` is for tests, which pass their own Temporal test server.
+    """
+    if client is None:
+        client = await get_temporal_client()
+    for service in services:
+        try:
+            _, workflow_id = await service_publish.start_publish(db, service.id)
+        except AppError:
+            print(f"  {service.name}: already {service.status}, left as it is")
+            continue
+
+        # Without a timeout, a stopped temporal-worker would make the seed
+        # hang with no output: the workflow is accepted but never runs.
+        try:
+            await asyncio.wait_for(
+                client.get_workflow_handle(workflow_id).result(),
+                timeout=PUBLISH_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            raise SystemExit(
+                f"{service.name} was still publishing after "
+                f"{PUBLISH_TIMEOUT_SECONDS}s. Is temporal-worker running? "
+                f"The workflow is still queued; see {workflow_id} in the "
+                "Temporal UI."
+            ) from None
+
+        db.refresh(service)
+        print(f"  {service.name}: {service.status}")
 
 
 def main() -> None:
@@ -374,14 +427,18 @@ def main() -> None:
     """
     db = SessionLocal()
     try:
-        seed(db)
+        services = seed(db)
         # seed()'s helpers commit only when they insert something, and
         # several return early when the row already exists -- so a re-run
         # that only *repairs* a row flushes without ever committing, and
         # closing the session throws the repair away. main() owns the
         # session, so it owns the final commit.
         db.commit()
-        print("Seed complete. These accounts all share one password:")
+        print("Publishing the seeded services through the publish workflow:")
+        asyncio.run(publish_services(db, services))
+        print(f"Seed complete. These accounts all share the password {SEED_PASSWORD}:")
+        for email in SEED_ACCOUNTS:
+            print(f"  {email}")
     finally:
         db.close()
 
