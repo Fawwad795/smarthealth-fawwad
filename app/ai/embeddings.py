@@ -82,8 +82,14 @@ class HuggingFaceEmbeddings(EmbeddingProvider):
         timeout_seconds: float,
         client: httpx.Client | None = None,
     ) -> None:
-        """Fail at construction if the key is missing, so a misconfigured
-        worker stops at startup rather than on its first publish.
+        """Fail at construction if the key is missing or unusable. The
+        publish Activity builds the provider on each attempt, so a bad key
+        fails that publish once, with this message, instead of every request
+        failing and being retried.
+
+        An HTTP header can only carry ASCII. A key holding anything else
+        (seen when a container kept an old .env line whose comment had an
+        em dash) would otherwise fail inside httpx on every attempt.
 
         `client` exists for the tests, which pass one backed by
         httpx.MockTransport so no request leaves the process.
@@ -91,6 +97,11 @@ class HuggingFaceEmbeddings(EmbeddingProvider):
         super().__init__(model, dimensions)
         if not api_key:
             raise PermanentEmbeddingError("EMBEDDING_API_KEY is empty; set it in .env")
+        if not api_key.isascii():
+            raise PermanentEmbeddingError(
+                "EMBEDDING_API_KEY contains a non-ASCII character, which an "
+                "HTTP header cannot carry; check its value in .env"
+            )
         self._url = f"{self.BASE_URL}/{model}/pipeline/feature-extraction"
         self._headers = {"Authorization": f"Bearer {api_key}"}
         self._batch_size = batch_size

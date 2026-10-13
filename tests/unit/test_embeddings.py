@@ -193,6 +193,21 @@ def test_hf_refuses_to_start_without_a_key() -> None:
         )
 
 
+def test_hf_refuses_a_key_an_http_header_cannot_carry() -> None:
+    """Found live: a container kept an old .env line, so the "key" was a
+    comment containing an em dash. httpx failed to encode the header on all
+    five attempts; this fails once, and the message never repeats the key.
+    """
+    key = "hf_abc — a pasted comment"
+
+    with pytest.raises(PermanentEmbeddingError, match="non-ASCII") as excinfo:
+        HuggingFaceEmbeddings(
+            api_key=key, model="m", dimensions=3, batch_size=1, timeout_seconds=1
+        )
+
+    assert key not in str(excinfo.value)
+
+
 # --- get_embedding_provider -----------------------------------------------
 
 
