@@ -1,6 +1,6 @@
 # Runbook
 
-Diagnosing the four things most likely to go wrong. Every command here has
+Diagnosing the five things most likely to go wrong. Every command here has
 been run against this stack.
 
 To *cause* these conditions deliberately — for a demo, or to re-verify the
@@ -193,3 +193,39 @@ sum by (endpoint, status) (rate(http_requests_total[5m]))
 
 `prometheus_client` appends `_total` to counter names, so the metric is
 `appointments_booked_total` even though the code says `appointments_booked`.
+
+---
+
+## 5. A publish failed, or sits in PUBLISHING
+
+**Symptom:** a service never reaches `PUBLISHED`.
+
+```bash
+# why did it fail, and is anything retrying right now? (any staff token)
+curl -s localhost:8000/api/v1/services/<id>/publish-status \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+`PUBLISH_FAILED` comes with `publish_error`. `PUBLISHING` comes with `progress`:
+the step, the attempt, and the last attempt's error. The same history is in the
+Temporal UI, **http://localhost:8233**, under workflow id `publish-service-<id>`.
+
+| `publish_error` or `last_error` | Cause | Fix |
+|---|---|---|
+| `description is required` (or `prep_instructions`) | Validation | Fill the field, publish again |
+| `EMBEDDING_API_KEY is empty` or `... non-ASCII character ...` | The key the worker loaded | Check `.env`, then recreate the worker (below) |
+| `Hugging Face returned HTTP 402 for 1 texts` | The account is out of inference credits | Add credits or switch providers; retrying will not help |
+| `Hugging Face unreachable (...)`, `HTTP 429`, `HTTP 5xx` | Provider down or rate-limited | Retried 5 times automatically; publish again once it recovers |
+
+**`docker compose restart` does not re-read `.env`.** A container keeps the
+environment it was created with, so after editing `.env`:
+
+```bash
+docker compose up -d --force-recreate temporal-worker api
+```
+
+Found on Week 4 Day 2: both containers still held a comment from an old `.env`
+line as the API key, six hours after the key was added.
+
+`progress` is `null` while `PUBLISHING` when nothing is pending: between two
+steps, or when no worker is running. Check `docker compose ps temporal-worker`.

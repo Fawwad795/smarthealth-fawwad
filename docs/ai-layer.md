@@ -208,3 +208,81 @@ vector, which is exact and, for one clinic's catalogue, small. An approximate
 index (HNSW) would skip most comparisons, but it applies `WHERE` filters after
 its scan, so with the published filter it can return fewer results than asked
 for.
+
+## 5. Embedding in the publish workflow
+
+Publishing a service runs five Activities in order: `validate_service`,
+`structure_content`, `chunk_content`, `embed_chunks` and `mark_published`.
+`embed_chunks` sends the service's chunk texts to the embedding provider in one
+`embed()` call, stores the vectors with `replace_service_vectors`, and sets each
+chunk's `embedded_at`, all in one transaction. The vectors are stored
+unpublished, and `mark_published` makes them searchable (section 4).
+
+### Batching
+
+`HuggingFaceEmbeddings` sends up to `EMBEDDING_BATCH_SIZE` (64) texts per
+request. Every request costs a network round trip and counts against the
+provider's rate limit, so texts sent together save both. A service is one chunk,
+so one publish is one request carrying one text. Batching matters where many
+texts are embedded at once, such as the task 4.10 eval script, and those calls
+go through the same `embed()` with a list, never one request per text.
+
+### Retries
+
+| Failure | Examples | What happens |
+|---|---|---|
+| Transient | a timeout, a refused connection, HTTP 429, HTTP 5xx | Raised retryable (`EMBEDDING_UNAVAILABLE`) and retried: five attempts in all, 2, 4, 8 and 16 s apart |
+| Permanent | an empty or non-ASCII key, any other non-200 status (including 402, out of credits), a vector of the wrong size | Raised non-retryable (`EMBEDDING_FAILED`): one attempt |
+
+Once `embed_chunks` stops, the workflow ends the publish in `PUBLISH_FAILED` and
+saves the error in `services.publish_error`. Temporal's default policy would
+retry forever and leave the service in `PUBLISHING` while the provider stayed
+down. A `PUBLISH_FAILED` service can be published again.
+
+The vector size is checked before any request: the column holds 384 numbers, and
+a provider configured for another size fails once with a clear message rather
+than as a database error on every attempt.
+
+### Progress
+
+`GET /services/{id}/publish-status` reads `status`, `published_at` and
+`publish_error` from the service row. While the service is `PUBLISHING` it also
+asks Temporal which Activity is pending, its attempt number, and why the
+previous attempt failed. Captured live, with a 0.001 s timeout forcing every
+attempt to fail:
+
+```json
+{
+  "status": "PUBLISHING",
+  "progress": {
+    "step": "embed_chunks",
+    "attempt": 4,
+    "last_error": "Hugging Face unreachable (ConnectTimeout)"
+  },
+  "publish_error": null
+}
+```
+
+`attempt` is the attempt running or waiting to run. In that run the attempts
+were 2, 4 and 8 s apart, and 16 s after the last one began waiting, the service
+moved to `PUBLISH_FAILED` with `publish_error` set to
+`Hugging Face unreachable (ConnectTimeout)`.
+
+The first live run showed `"last_error": "Failure exceeds size limit."` instead.
+Temporal sends an exception's whole cause chain, each link with its stack trace,
+and keeps a retrying Activity's last failure only up to a size limit; the httpx
+chain under a timeout measured 3.7 KB. `embed_chunks` now re-raises provider
+errors `from None`, which brought the same failure down to 110 bytes. The
+message still names the underlying exception.
+
+### Known limitations
+
+- The Hugging Face account used here has run out of free inference credits.
+  Every real embedding call now returns HTTP 402 ("You have no remaining
+  credits"), so the seeded services end in `PUBLISH_FAILED` until the account
+  has credits or the provider changes. The suite is unaffected: it uses
+  `FakeEmbeddings`.
+- Every publish re-embeds, even unchanged text (task 4.9).
+- Adding `embed_chunks` changed the publish workflow's steps. A publish that was
+  already running when the new worker started would fail to replay, so deploy
+  this with no publish in flight.
