@@ -15,18 +15,24 @@ PUBLISHING is never a legal source for either action -- a workflow is
 already running against the row, and starting a second one would race it.
 """
 
+import logging
+
 from fastapi import status
 from sqlalchemy.orm import Session
+from temporalio.service import RPCError
 
 from app.core.config import settings
 from app.core.logging import ensure_correlation_id
 from app.core.exceptions import AppError
 from app.models import Service
 from app.models.enums import ServiceStatus
+from app.schemas.service import PublishProgress
 from app.services.service import get_service
 from app.temporal.activities import ServiceInput
 from app.temporal.client import get_temporal_client
 from app.temporal.workflows import PublishServiceWorkflow
+
+logger = logging.getLogger(__name__)
 
 _PUBLISHABLE_FROM = {ServiceStatus.DRAFT, ServiceStatus.PUBLISH_FAILED}
 _UNPUBLISHABLE_FROM = {ServiceStatus.PUBLISHED}
@@ -82,8 +88,10 @@ async def start_publish(db: Session, service_id: int) -> tuple[Service, str]:
     service = get_service(db, service_id)
     ensure_can_publish(service)
 
-    previous_status = service.status
+    previous_status, previous_error = service.status, service.publish_error
     service.status = ServiceStatus.PUBLISHING
+    # The last attempt's error no longer describes this one.
+    service.publish_error = None
     db.commit()
     db.refresh(service)
 
@@ -98,7 +106,48 @@ async def start_publish(db: Session, service_id: int) -> tuple[Service, str]:
         )
     except Exception:
         service.status = previous_status
+        service.publish_error = previous_error
         db.commit()
         raise
 
     return service, workflow_id
+
+
+async def get_publish_progress(service: Service) -> PublishProgress | None:
+    """What a running publish is doing now: the Activity it is on, which
+    attempt, and why the previous attempt failed. None unless the service
+    is PUBLISHING with an Activity scheduled or running.
+
+    Read from Temporal, which tracks each pending Activity's attempt count
+    and last failure; the service row only says PUBLISHING. A status read
+    must still answer when Temporal is down, so a failure to ask is logged
+    and reported as no progress rather than raised.
+    """
+    if service.status != ServiceStatus.PUBLISHING:
+        return None
+    try:
+        client = await get_temporal_client()
+        handle = client.get_workflow_handle(publish_workflow_id(service.id))
+        description = await handle.describe()
+    except (RPCError, RuntimeError) as err:
+        # RuntimeError is what Client.connect raises when the server is
+        # unreachable; RPCError covers a workflow Temporal no longer has.
+        logger.warning(
+            "could not read publish progress service_id=%s: %s",
+            service.id,
+            type(err).__name__,
+        )
+        return None
+
+    pending = description.raw_description.pending_activities
+    if not pending:
+        return None
+    # The publish workflow runs one Activity at a time, so there is at most
+    # one pending.
+    current = pending[0]
+    return PublishProgress(
+        step=current.activity_type.name,
+        attempt=current.attempt,
+        # An unset protobuf message reads as empty, not None.
+        last_error=current.last_failure.message or None,
+    )

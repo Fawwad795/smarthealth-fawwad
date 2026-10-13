@@ -1,7 +1,7 @@
 """The service-publishing and appointment-scheduling Workflows: orchestration only.
 
 PublishServiceWorkflow calls validate_service -> structure_content ->
-chunk_content -> mark_published in order. 
+chunk_content -> embed_chunks -> mark_published in order.
 
 AppointmentSchedulingWorkflow calls validate_eligibility -> reserve_slot -> billing_precheck ->
 schedule_reminders -> confirm, compensating (release_slot) if billing
@@ -16,13 +16,15 @@ decisions every time.
 from datetime import timedelta
 
 from temporalio import workflow
-from temporalio.exceptions import ActivityError, ApplicationError
+from temporalio.common import RetryPolicy
+from temporalio.exceptions import ActivityError, ApplicationError, FailureError
 
 with workflow.unsafe.imports_passed_through():
     from app.temporal.activities import (
         AppointmentInput,
         ChunkContentInput,
         PublishActivities,
+        PublishFailedInput,
         RejectInput,
         ReleaseSlotInput,
         SchedulingActivities,
@@ -31,17 +33,31 @@ with workflow.unsafe.imports_passed_through():
 
 _ACTIVITY_TIMEOUT = timedelta(seconds=30)
 
+# Embedding calls an outside service, so it gets a bounded policy instead
+# of Temporal's default, which retries forever. Five attempts, 2, 4, 8 and
+# 16 s apart, ride out a model loading or a brief rate limit; past that the
+# provider is down, and the publish ends in PUBLISH_FAILED with the error
+# rather than sitting in PUBLISHING indefinitely.
+_EMBED_RETRY_POLICY = RetryPolicy(
+    initial_interval=timedelta(seconds=2),
+    backoff_coefficient=2.0,
+    maximum_interval=timedelta(seconds=30),
+    maximum_attempts=5,
+)
+
 
 @workflow.defn
 class PublishServiceWorkflow:
-    """Publishes one service: validate -> structure -> chunk -> mark PUBLISHED.
+    """Publishes one service: validate -> structure -> chunk -> embed ->
+    mark PUBLISHED.
 
-    A validation failure ends the workflow cleanly in PUBLISH_FAILED --
-    it is an expected, deliberate outcome, not a bug. Any other Activity
-    failure (a dropped DB connection, say) is left to Temporal's default
-    retry policy and, if that's exhausted, fails the workflow execution
-    itself -- the correct signal for something that needs a human, not a
-    resubmission.
+    Two failures end the workflow cleanly in PUBLISH_FAILED, with the reason
+    saved on the service: a validation failure, and an embedding failure
+    once _EMBED_RETRY_POLICY is used up. Both are expected outcomes that a
+    re-publish can fix. Any other Activity failure (a dropped DB connection,
+    say) is left to Temporal's default retry policy and, if that's
+    exhausted, fails the workflow execution itself -- the correct signal for
+    something that needs a human, not a resubmission.
     """
 
     @workflow.run
@@ -58,11 +74,7 @@ class PublishServiceWorkflow:
                 isinstance(err.cause, ApplicationError)
                 and err.cause.type == "SERVICE_INCOMPLETE"
             ):
-                await workflow.execute_activity_method(
-                    PublishActivities.mark_publish_failed,
-                    input,
-                    start_to_close_timeout=_ACTIVITY_TIMEOUT,
-                )
+                await self._mark_failed(input, err)
                 return
             raise
 
@@ -78,9 +90,36 @@ class PublishServiceWorkflow:
             start_to_close_timeout=_ACTIVITY_TIMEOUT,
         )
 
+        try:
+            await workflow.execute_activity_method(
+                PublishActivities.embed_chunks,
+                input,
+                start_to_close_timeout=_ACTIVITY_TIMEOUT,
+                retry_policy=_EMBED_RETRY_POLICY,
+            )
+        except ActivityError as err:
+            await self._mark_failed(input, err)
+            return
+
         await workflow.execute_activity_method(
             PublishActivities.mark_published,
             input,
+            start_to_close_timeout=_ACTIVITY_TIMEOUT,
+        )
+
+    async def _mark_failed(self, input: ServiceInput, err: ActivityError) -> None:
+        """End the publish in PUBLISH_FAILED, saving the failed Activity's
+        own message as the reason.
+
+        err.cause is the Activity's last failure: the ApplicationError it
+        raised, or Temporal's TimeoutError if it ran out of time. Both carry
+        a message; anything else falls back to the ActivityError's own text.
+        """
+        cause = err.cause
+        reason = cause.message if isinstance(cause, FailureError) else str(err)
+        await workflow.execute_activity_method(
+            PublishActivities.mark_publish_failed,
+            PublishFailedInput(input.service_id, reason, input.correlation_id),
             start_to_close_timeout=_ACTIVITY_TIMEOUT,
         )
 

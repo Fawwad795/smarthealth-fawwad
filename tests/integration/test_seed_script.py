@@ -19,9 +19,11 @@ from sqlalchemy.orm import Session
 from temporalio.client import Client
 from temporalio.worker import Worker
 
+from app.ai.embeddings import FakeEmbeddings
 from app.core.config import settings
 from app.core.security import hash_password, verify_password
 from app.models import (
+    ChunkEmbedding,
     Clinic,
     ContentChunk,
     Department,
@@ -138,14 +140,18 @@ async def publishing_client(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> AsyncIterator[Client]:
     """A Temporal test server with a worker running the real publish
-    Activities against the test database.
+    Activities against the test database, embedding with FakeEmbeddings so
+    nothing reaches the network.
 
     The worker listens on the real task queue because start_publish()
     reads it from settings. The Activities are plain functions, so the
     worker needs a thread pool to run them; one thread keeps them in
     sequence, which db_session (not thread-safe) relies on.
     """
-    activities = PublishActivities(session_factory=lambda: nullcontext(db_session))
+    activities = PublishActivities(
+        session_factory=lambda: nullcontext(db_session),
+        embeddings_factory=FakeEmbeddings,
+    )
     async with await start_test_env() as env:
         _use_test_client(monkeypatch, env.client)
         with ThreadPoolExecutor(max_workers=1) as executor:
@@ -157,6 +163,7 @@ async def publishing_client(
                     activities.validate_service,
                     activities.structure_content,
                     activities.chunk_content,
+                    activities.embed_chunks,
                     activities.mark_published,
                     activities.mark_publish_failed,
                 ],
@@ -203,6 +210,10 @@ async def test_publish_services_publishes_each_service_with_its_chunk(
         assert service.status == ServiceStatus.PUBLISHED
         assert service.published_at is not None
         assert len(_chunks_for(db_session, service)) == 1
+        [vector] = db_session.scalars(
+            select(ChunkEmbedding).where(ChunkEmbedding.service_id == service.id)
+        ).all()
+        assert vector.published is True
 
     # The provider links existed before publishing, so the chunk carries the
     # linked provider's specialty. Knee X-Ray is the seeded service whose

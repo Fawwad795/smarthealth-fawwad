@@ -21,7 +21,13 @@ from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
 from app.ai.chunking import build_service_chunk_text
-from app.ai.vector_store import get_vector_store
+from app.ai.embeddings import (
+    EmbeddingProvider,
+    PermanentEmbeddingError,
+    TransientEmbeddingError,
+    get_embedding_provider,
+)
+from app.ai.vector_store import VectorRecord, get_vector_store
 from app.celery.tasks.reminders import send_appointment_reminder
 from app.core.logging import get_correlation_id, set_correlation_id
 from app.core.metrics import appointments_booked, double_booking_prevented
@@ -39,6 +45,7 @@ from app.models import (
     SlotReservation,
     Specialty,
 )
+from app.models.chunk_embedding import EMBEDDING_DIMENSIONS
 from app.models.enums import (
     AppointmentStatus,
     BillingStatus,
@@ -89,6 +96,23 @@ class ServiceInput:
 
 
 @dataclass
+class PublishFailedInput:
+    """The service id, why its publish failed, and the correlation id, for
+    mark_publish_failed.
+
+    `reason` is what GET publish-status shows. It comes from validation (the
+    missing fields) or from the embedding provider (a status code and a
+    count), so it never holds chunk text or a patient's words. Defaults to
+    None so history recorded when this Activity took a ServiceInput still
+    replays.
+    """
+
+    service_id: int
+    reason: str | None = None
+    correlation_id: str | None = None
+
+
+@dataclass
 class AppointmentInput:
     """The appointment id plus the correlation id, shared by the five
     scheduling Activities that need nothing else. See ServiceInput."""
@@ -97,21 +121,46 @@ class AppointmentInput:
     correlation_id: str | None = None
 
 
+def _service_specialties(db: Session, service_id: int) -> list[str]:
+    """The specialty of every provider linked to this service through
+    provider_services, each listed once, in alphabetical order.
+
+    Specialty lives on providers, not services, and provider_services is the
+    same "who offers it" link Week 1's search uses. A service nobody is
+    linked to yet has none.
+    """
+    names = db.scalars(
+        select(Specialty.name)
+        .join(Provider, Provider.specialty_id == Specialty.id)
+        .join(ProviderService, ProviderService.provider_id == Provider.id)
+        .where(ProviderService.service_id == service_id)
+    ).all()
+    return sorted(set(names))
+
+
 class PublishActivities:
-    """The four Activities the publish Workflow calls, in order.
+    """The Activities the publish Workflow calls.
 
     session_factory defaults to the real SessionLocal for production use.
     Tests construct this with a factory that hands back the test's own
     db_session instead, so every method below runs against the test
     database without any of the Activity code knowing the difference.
+
+    embeddings_factory works the same way for the embedding provider, so
+    tests hand in FakeEmbeddings and never reach the network. It is called
+    inside embed_chunks, not here: a worker started without an embedding
+    key still runs every other workflow, and only a publish fails, with the
+    provider's own "key is empty" error.
     """
 
     def __init__(
         self,
         session_factory: Callable[[], AbstractContextManager[Session]] = SessionLocal,
+        embeddings_factory: Callable[[], EmbeddingProvider] = get_embedding_provider,
     ) -> None:
-        """Store the session factory; open nothing until a method runs."""
+        """Store both factories; open nothing until a method runs."""
         self._session_factory = session_factory
+        self._embeddings_factory = embeddings_factory
 
     @activity.defn
     def validate_service(self, input: ServiceInput) -> None:
@@ -144,26 +193,17 @@ class PublishActivities:
         """Build the one enriched text block that represents this service in
         semantic search, for chunk_content to store.
 
-        Specialty lives on providers, not services, so it is read through
-        provider_services: the specialty of every provider qualified to
-        deliver this service -- the same "who offers it" link Week 1's
-        search uses. A service nobody is linked to yet has none. The text
-        format itself belongs to app.ai.chunking.
+        The specialties come from _service_specialties(); the text format
+        itself belongs to app.ai.chunking.
         """
         set_correlation_id(input.correlation_id)
         with self._session_factory() as db:
             service = db.get(Service, input.service_id)
-            specialties = db.scalars(
-                select(Specialty.name)
-                .join(Provider, Provider.specialty_id == Specialty.id)
-                .join(ProviderService, ProviderService.provider_id == Provider.id)
-                .where(ProviderService.service_id == service.id)
-            ).all()
             # validate_service runs first in the workflow and fails the
             # publish if either text field is missing, so neither is None here.
             return build_service_chunk_text(
                 department=service.department.name,
-                specialties=list(specialties),
+                specialties=_service_specialties(db, service.id),
                 name=service.name,
                 description=service.description,
                 prep_instructions=service.prep_instructions,
@@ -203,6 +243,82 @@ class PublishActivities:
             return 1
 
     @activity.defn
+    def embed_chunks(self, input: ServiceInput) -> int:
+        """Embed this service's chunks, store the vectors with their
+        metadata, and return how many were stored.
+
+        All of the service's chunk texts go to the provider in one embed()
+        call, which the provider sends in batches of EMBEDDING_BATCH_SIZE,
+        so there is never one request per chunk.
+
+        A failure the provider calls permanent (a missing or rejected key, a
+        vector of the wrong size) is raised non-retryable, so the workflow
+        fails the publish at once rather than retrying what no retry can
+        fix. A transient one (a timeout, 429, 5xx) is raised retryable, and
+        the workflow's retry policy tries again. The vectors replace the
+        service's old ones, so a retried attempt stores what one would.
+        """
+        set_correlation_id(input.correlation_id)
+        with self._session_factory() as db:
+            service = db.get(Service, input.service_id)
+            chunks = db.scalars(
+                select(ContentChunk)
+                .where(
+                    ContentChunk.source_type == ContentSourceType.SERVICE,
+                    ContentChunk.source_id == service.id,
+                )
+                .order_by(ContentChunk.chunk_index)
+            ).all()
+
+            try:
+                provider = self._embeddings_factory()
+                # Checked before calling out: the column only holds vectors
+                # of this size, and a mismatch would otherwise surface as a
+                # database error that Temporal retries until it gives up.
+                if provider.dimensions != EMBEDDING_DIMENSIONS:
+                    raise PermanentEmbeddingError(
+                        f"the provider makes {provider.dimensions}-number "
+                        f"vectors; chunk_embeddings holds {EMBEDDING_DIMENSIONS}"
+                    )
+                vectors = provider.embed([chunk.text for chunk in chunks])
+            # Both re-raised `from None`, dropping the httpx exception chain.
+            # Temporal sends the whole chain with a stack trace per link, and
+            # keeps a retrying Activity's last failure only up to a size
+            # limit. A timeout's chain measured 3.7 KB before this Activity's
+            # own frames, and publish-status showed "Failure exceeds size
+            # limit." instead of the error. The message already names the
+            # underlying exception, e.g. "Hugging Face unreachable
+            # (ConnectTimeout)".
+            except PermanentEmbeddingError as err:
+                raise ApplicationError(
+                    str(err), type="EMBEDDING_FAILED", non_retryable=True
+                ) from None
+            except TransientEmbeddingError as err:
+                raise ApplicationError(str(err), type="EMBEDDING_UNAVAILABLE") from None
+
+            specialties = _service_specialties(db, service.id)
+            get_vector_store(db).replace_service_vectors(
+                service.id,
+                [
+                    VectorRecord(
+                        chunk_id=chunk.id,
+                        embedding=vector,
+                        model=provider.model,
+                        department=service.department.name,
+                        specialties=specialties,
+                    )
+                    for chunk, vector in zip(chunks, vectors, strict=True)
+                ],
+            )
+            embedded_at = datetime.now(UTC)
+            for chunk in chunks:
+                chunk.embedded_at = embedded_at
+            db.commit()
+
+            logger.info("embedded %d chunks for service %s", len(chunks), service.id)
+            return len(chunks)
+
+    @activity.defn
     def mark_published(self, input: ServiceInput) -> None:
         """Transition the service to PUBLISHED -- the workflow's last step --
         and make its vectors searchable in the same transaction, so search
@@ -226,18 +342,19 @@ class PublishActivities:
             db.commit()
 
     @activity.defn
-    def mark_publish_failed(self, input: ServiceInput) -> None:
-        """Transition the service to PUBLISH_FAILED.
+    def mark_publish_failed(self, input: PublishFailedInput) -> None:
+        """Transition the service to PUBLISH_FAILED and record why.
 
-        Called only after validate_service's non-retryable rejection --
-        the Workflow's clean-failure path, not something Activities decide
-        for themselves.
+        Called after validate_service rejects the service or embed_chunks
+        gives up -- the Workflow's clean-failure path, not something
+        Activities decide for themselves.
         """
         set_correlation_id(input.correlation_id)
         service_id = input.service_id
         with self._session_factory() as db:
             service = db.get(Service, service_id)
             service.status = ServiceStatus.PUBLISH_FAILED
+            service.publish_error = input.reason
             db.commit()
 
 
