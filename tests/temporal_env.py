@@ -8,6 +8,8 @@ what keeps the suite off the network.
 
 import os
 
+import pytest
+from temporalio.client import Client
 from temporalio.testing import WorkflowEnvironment
 
 
@@ -26,4 +28,19 @@ async def start_test_env() -> WorkflowEnvironment:
     """
     return await WorkflowEnvironment.start_time_skipping(
         test_server_existing_path=os.getenv("TEMPORAL_TEST_SERVER_PATH") or None
+    )
+
+
+def use_test_client(monkeypatch: pytest.MonkeyPatch, client: Client) -> None:
+    """Make start_publish() start its workflow on the test server.
+
+    Patched where service_publish.py uses get_temporal_client, not where
+    it is defined, the same as the publish route tests.
+    """
+
+    async def _get_test_client() -> Client:
+        return client
+
+    monkeypatch.setattr(
+        "app.services.service_publish.get_temporal_client", _get_test_client
     )

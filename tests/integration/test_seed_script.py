@@ -9,18 +9,11 @@ worker running the real publish Activities on this test's db_session, so
 the chunk it writes can be read back here.
 """
 
-from collections.abc import AsyncIterator
-from concurrent.futures import ThreadPoolExecutor
-from contextlib import nullcontext
-
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from temporalio.client import Client
-from temporalio.worker import Worker
 
-from app.ai.embeddings import FakeEmbeddings
-from app.core.config import settings
 from app.core.security import hash_password, verify_password
 from app.models import (
     ChunkEmbedding,
@@ -35,10 +28,8 @@ from app.models import (
     User,
 )
 from app.models.enums import ServiceStatus
-from app.temporal.activities import PublishActivities
-from app.temporal.workflows import PublishServiceWorkflow
 from scripts.seed import SEED_ACCOUNTS, SEED_PASSWORD, publish_services, seed
-from tests.temporal_env import start_test_env
+from tests.temporal_env import start_test_env, use_test_client
 
 
 def _count(db: Session, model) -> int:
@@ -118,58 +109,6 @@ def test_seed_repairs_an_unparseable_password_hash(db_session: Session) -> None:
     seed(db_session)
 
     assert verify_password(SEED_PASSWORD, user.password_hash)
-
-
-def _use_test_client(monkeypatch: pytest.MonkeyPatch, client: Client) -> None:
-    """Make start_publish() start its workflow on the test server.
-
-    Patched where service_publish.py uses get_temporal_client, not where
-    it is defined, the same as the publish route tests.
-    """
-
-    async def _get_test_client() -> Client:
-        return client
-
-    monkeypatch.setattr(
-        "app.services.service_publish.get_temporal_client", _get_test_client
-    )
-
-
-@pytest.fixture()
-async def publishing_client(
-    db_session: Session, monkeypatch: pytest.MonkeyPatch
-) -> AsyncIterator[Client]:
-    """A Temporal test server with a worker running the real publish
-    Activities against the test database, embedding with FakeEmbeddings so
-    nothing reaches the network.
-
-    The worker listens on the real task queue because start_publish()
-    reads it from settings. The Activities are plain functions, so the
-    worker needs a thread pool to run them; one thread keeps them in
-    sequence, which db_session (not thread-safe) relies on.
-    """
-    activities = PublishActivities(
-        session_factory=lambda: nullcontext(db_session),
-        embeddings_factory=FakeEmbeddings,
-    )
-    async with await start_test_env() as env:
-        _use_test_client(monkeypatch, env.client)
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            async with Worker(
-                env.client,
-                task_queue=settings.temporal_task_queue,
-                workflows=[PublishServiceWorkflow],
-                activities=[
-                    activities.validate_service,
-                    activities.structure_content,
-                    activities.chunk_content,
-                    activities.embed_chunks,
-                    activities.mark_published,
-                    activities.mark_publish_failed,
-                ],
-                activity_executor=executor,
-            ):
-                yield env.client
 
 
 def _chunks_for(db: Session, service: Service) -> list[ContentChunk]:
@@ -255,7 +194,7 @@ async def test_publish_services_stops_with_a_message_when_no_worker_runs(
     services = seed(db_session)
     monkeypatch.setattr("scripts.seed.PUBLISH_TIMEOUT_SECONDS", 0.5)
     async with await start_test_env() as env:
-        _use_test_client(monkeypatch, env.client)
+        use_test_client(monkeypatch, env.client)
 
         with pytest.raises(SystemExit, match="Is temporal-worker running"):
             await publish_services(db_session, services, env.client)
