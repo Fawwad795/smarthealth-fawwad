@@ -1472,3 +1472,71 @@ Python, enrich the chunk text, and build the embedding provider.
   budget cover OpenAI?
 - Re-publish for 4.7: PUBLISHED -> PUBLISHING directly, or back through DRAFT?
 - Week 3's two (relay `attempts=1`, uncovered handler branches) still open.
+
+### Day 2 - 2026-10-13
+
+**Goal:** Fix the seed's publish shortcut, store vectors with their metadata,
+and embed inside the publish workflow.
+
+**Done**
+
+- Seed: services start DRAFT and publish through `start_publish` and the real
+  workflow; providers linked first, so chunks carry specialties.
+- 4.6: `chunk_embeddings` (`vector(384)`, model, metadata, `published`) behind
+  `VectorStore`.
+- 4.5: `embed_chunks` Activity; 5 attempts 2/4/8/16 s apart, then
+  `PUBLISH_FAILED` with `services.publish_error`.
+- `publish-status` shows step, attempt and last error from Temporal while
+  publishing.
+- `LocalEmbeddings` (fastembed) is the default; model baked into the image,
+  `HF_HUB_OFFLINE=1`.
+- 427 -> 470 tests, 98.02% coverage; 25 mutations caught, one weak test
+  rewritten. PR #18.
+
+**Decisions**
+
+| Decision | Why |
+|---|---|
+| `published` stored on the vector | Part B MUST; a swapped-in store can't join `services` |
+| Vectors stored unpublished; `mark_published` flips them | Search never sees an unfinished publish |
+| `ON DELETE CASCADE` chunk -> vector | `chunk_content` deletes chunks on every publish |
+| No HNSW index | Exact scan is small; HNSW filters after its scan |
+| Bounded embed retries, then `PUBLISH_FAILED` | Temporal's default retries forever |
+| Provider errors raised `from None` | The httpx chain hit Temporal's failure size limit |
+| Local model over hosted HF | Free credits ran out (402); same scores to 3 dp |
+
+**Cost time**
+
+- Test image was 3 weeks old and had no `pgvector`; rebuilt.
+- Worker and API held an old `.env` comment as the API key: `restart` never
+  re-reads `.env`.
+- HF free credits ran out mid-check (HTTP 402).
+- `publish-status` showed "Failure exceeds size limit." during retries.
+- Build context was ~1 GB from `.tmp/`; added to `.dockerignore`.
+- API crashed on reload: its old image had no `fastembed`.
+
+**Explain out loud**
+
+- A pending Activity's `attempt` is the one running or waiting to run;
+  `last_error` is why the one before it failed.
+- `raise ... from None` drops the cause chain Temporal would send with a stack
+  trace per link.
+- `up -d --force-recreate` re-reads `.env`; `restart` keeps the old environment.
+
+**Carrying into Day 3**
+
+- 4.7 re-index on re-publish; needs the re-publish path and an unpublish
+  endpoint.
+- 4.9: `chunk_content` must keep unchanged chunks, or the cascade deletes
+  their vectors.
+- 4.8 `POST /search`; 4.10 eval set will set `RETRIEVAL_MIN_SIMILARITY`.
+- 20 crash-demo services are PUBLISHED with no vectors; `make reset` before
+  4.10.
+- Regenerate `docs/diagrams/erd-core-domain.svg`.
+
+**Open questions**
+
+- Is a local model acceptable in place of a hosted API for the demo?
+- Re-publish for 4.7: PUBLISHED -> PUBLISHING directly, or back through DRAFT?
+  Either way the vectors stay unpublished until it finishes.
+- Week 3's two (relay `attempts=1`, uncovered handler branches) still open.
