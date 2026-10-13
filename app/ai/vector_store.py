@@ -6,14 +6,15 @@ VectorStore and get one from get_vector_store(). PgVectorStore, the only
 implementation, writes to the chunk_embeddings table in the existing
 Postgres. Search joins the interface with task 4.8.
 
-Neither method commits. The caller owns the transaction, so a service's
-status and its vectors change together or not at all.
+No method commits. The caller owns the transaction, so a service's status
+and its vectors change together or not at all.
 """
 
 from abc import ABC, abstractmethod
+from collections.abc import Collection
 from dataclasses import dataclass
 
-from sqlalchemy import delete, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.models import ChunkEmbedding
@@ -39,15 +40,33 @@ class VectorStore(ABC):
     """The contract every vector store implementation keeps."""
 
     @abstractmethod
-    def replace_service_vectors(
-        self, service_id: int, records: list[VectorRecord]
-    ) -> None:
-        """Remove every vector stored for this service and store `records`
-        in their place, unpublished.
+    def embedded_chunk_ids(self, service_id: int, model: str) -> set[int]:
+        """The ids of this service's chunks that already have a vector made
+        by `model`.
 
-        Replace, never add: running it twice leaves the same rows as running
-        it once. That is what makes a retried Activity safe, and what stops
-        a re-publish leaving a stale or duplicate vector behind.
+        The embedding Activity skips these (task 4.9). A vector made by any
+        other model does not count: two models place text in unrelated
+        spaces, so its distance to a new query's vector means nothing.
+        """
+
+    @abstractmethod
+    def store_service_vectors(
+        self,
+        service_id: int,
+        records: list[VectorRecord],
+        current_chunk_ids: Collection[int],
+    ) -> None:
+        """Store `records` unpublished, each replacing any vector its chunk
+        already has, and remove every vector of this service whose chunk is
+        not in `current_chunk_ids`.
+
+        A vector whose chunk is current and not in `records` is kept as it
+        is: that is the vector task 4.9 avoids recomputing. Every chunk in
+        `records` must be in `current_chunk_ids`.
+
+        Running it twice leaves the same rows as running it once, which is
+        what makes a retried Activity safe and stops a re-publish leaving a
+        stale or duplicate vector behind.
         """
 
     @abstractmethod
@@ -62,18 +81,39 @@ class PgVectorStore(VectorStore):
         """Keep the caller's session; every write joins its transaction."""
         self._db = db
 
-    def replace_service_vectors(
-        self, service_id: int, records: list[VectorRecord]
-    ) -> None:
-        """Delete this service's vectors, then insert `records`.
+    def embedded_chunk_ids(self, service_id: int, model: str) -> set[int]:
+        """One SELECT of chunk ids, filtered on service and model."""
+        return set(
+            self._db.scalars(
+                select(ChunkEmbedding.chunk_id).where(
+                    ChunkEmbedding.service_id == service_id,
+                    ChunkEmbedding.model == model,
+                )
+            )
+        )
 
-        Deleting by service, not upserting chunk by chunk, means the vector
-        of a chunk that has been dropped cannot survive. Here the CASCADE on
-        chunk_id already guarantees that; the interface promises it for any
-        store, including one with no foreign keys.
+    def store_service_vectors(
+        self,
+        service_id: int,
+        records: list[VectorRecord],
+        current_chunk_ids: Collection[int],
+    ) -> None:
+        """One DELETE for every vector being replaced or no longer current,
+        then one INSERT per record.
+
+        Here the CASCADE on chunk_id already removes the vector of a deleted
+        chunk, so the "no longer current" half finds nothing. The interface
+        promises it anyway, for a store with no foreign keys.
         """
+        replaced = [record.chunk_id for record in records]
         self._db.execute(
-            delete(ChunkEmbedding).where(ChunkEmbedding.service_id == service_id)
+            delete(ChunkEmbedding).where(
+                ChunkEmbedding.service_id == service_id,
+                or_(
+                    ChunkEmbedding.chunk_id.not_in(current_chunk_ids),
+                    ChunkEmbedding.chunk_id.in_(replaced),
+                ),
+            )
         )
         self._db.add_all(
             ChunkEmbedding(

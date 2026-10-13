@@ -39,7 +39,7 @@ class ChunkEmbedding(Base, TimestampMixin):
 
     # The one exception to this schema's ON DELETE RESTRICT rule. A vector is
     # computed from its chunk's text and means nothing once that text is
-    # gone, and chunk_content deletes a service's chunks on every publish.
+    # gone, and chunk_content deletes a chunk whose text has changed.
     # CASCADE makes the database itself remove the old vector in the same
     # statement, so no re-publish can leave an orphan behind. Unique: one
     # vector per chunk, replaced rather than added to when re-embedded.

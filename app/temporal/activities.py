@@ -15,7 +15,7 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
@@ -211,52 +211,76 @@ class PublishActivities:
 
     @activity.defn
     def chunk_content(self, input: ChunkContentInput) -> int:
-        """Replace this service's content_chunks with one chunk holding
-        `input.text`, and return how many chunks were written.
+        """Make `input.text` this service's one chunk, and return how many
+        chunks the service now has.
 
-        Delete-then-insert in one transaction, not an incremental diff:
-        this is both how re-publishing "replaces chunks atomically" (the
-        Definition of Done) and how a retried attempt stays idempotent --
-        run once or run twice, the end state is identical either way.
+        A chunk whose text_hash matches the new text is left exactly as it
+        is, so the vector stored against it survives (task 4.9). Any other
+        chunk is deleted, and the CASCADE on chunk_embeddings.chunk_id
+        deletes its stale vector in the same statement; a fresh chunk then
+        takes its place with no vector, which is how embed_chunks knows to
+        embed it.
+
+        All in one transaction, so re-publishing replaces chunks atomically
+        (the Definition of Done). And a retried attempt is idempotent: the
+        second run finds the hash unchanged and writes nothing.
         """
         set_correlation_id(input.correlation_id)
+        text_hash = hashlib.sha256(input.text.encode()).hexdigest()
         with self._session_factory() as db:
-            db.execute(
-                delete(ContentChunk).where(
+            existing = db.scalars(
+                select(ContentChunk).where(
                     ContentChunk.source_type == ContentSourceType.SERVICE,
                     ContentChunk.source_id == input.service_id,
                 )
-            )
-            db.add(
-                ContentChunk(
-                    source_type=ContentSourceType.SERVICE,
-                    source_id=input.service_id,
-                    chunk_index=0,
-                    text=input.text,
-                    # A real tokenizer arrives with Week 4's embedding step;
-                    # this rough estimate is enough for now.
-                    token_count=len(input.text) // 4,
-                    text_hash=hashlib.sha256(input.text.encode()).hexdigest(),
+            ).all()
+
+            unchanged = None
+            for chunk in existing:
+                if chunk.chunk_index == 0 and chunk.text_hash == text_hash:
+                    unchanged = chunk
+                else:
+                    db.delete(chunk)
+            # The deletes must reach Postgres before the insert below. In
+            # one flush SQLAlchemy inserts before it deletes, and the unique
+            # (source_type, source_id, chunk_index) would reject the new
+            # chunk 0 while the old one still exists.
+            db.flush()
+
+            if unchanged is None:
+                db.add(
+                    ContentChunk(
+                        source_type=ContentSourceType.SERVICE,
+                        source_id=input.service_id,
+                        chunk_index=0,
+                        text=input.text,
+                        # A rough estimate: the model's own tokenizer would
+                        # count exactly, but nothing yet reads this column.
+                        token_count=len(input.text) // 4,
+                        text_hash=text_hash,
+                    )
                 )
-            )
             db.commit()
             return 1
 
     @activity.defn
     def embed_chunks(self, input: ServiceInput) -> int:
-        """Embed this service's chunks, store the vectors with their
-        metadata, and return how many were stored.
+        """Embed this service's chunks that have no vector from the current
+        model, store the vectors with their metadata, and return how many
+        were embedded.
 
-        All of the service's chunk texts go to the provider in one embed()
-        call, which the provider sends in batches of EMBEDDING_BATCH_SIZE,
-        so there is never one request per chunk.
+        A chunk chunk_content left unchanged keeps its vector and is not
+        sent again (task 4.9); when every chunk is unchanged, the provider is
+        never called. The rest go to the provider in one embed() call, which
+        it sends in batches of EMBEDDING_BATCH_SIZE, so there is never one
+        request per chunk.
 
         A failure the provider calls permanent (a missing or rejected key, a
         vector of the wrong size) is raised non-retryable, so the workflow
         fails the publish at once rather than retrying what no retry can
         fix. A transient one (a timeout, 429, 5xx) is raised retryable, and
-        the workflow's retry policy tries again. The vectors replace the
-        service's old ones, so a retried attempt stores what one would.
+        the workflow's retry policy tries again. A retried attempt finds the
+        first attempt's vectors already stored and embeds nothing.
         """
         set_correlation_id(input.correlation_id)
         with self._session_factory() as db:
@@ -269,6 +293,7 @@ class PublishActivities:
                 )
                 .order_by(ContentChunk.chunk_index)
             ).all()
+            store = get_vector_store(db)
 
             try:
                 provider = self._embeddings_factory()
@@ -280,7 +305,17 @@ class PublishActivities:
                         f"the provider makes {provider.dimensions}-number "
                         f"vectors; chunk_embeddings holds {EMBEDDING_DIMENSIONS}"
                     )
-                vectors = provider.embed([chunk.text for chunk in chunks])
+                # Keyed on the chunk id, not on the hash: chunk_content
+                # deletes a chunk whose text changed, so a surviving chunk
+                # with a vector is one whose text is unchanged. Checking the
+                # model too means switching models re-embeds everything.
+                embedded = store.embedded_chunk_ids(service.id, provider.model)
+                to_embed = [chunk for chunk in chunks if chunk.id not in embedded]
+                vectors = (
+                    provider.embed([chunk.text for chunk in to_embed])
+                    if to_embed
+                    else []
+                )
             # Both re-raised `from None`, dropping the httpx exception chain.
             # Temporal sends the whole chain with a stack trace per link, and
             # keeps a retrying Activity's last failure only up to a size
@@ -296,8 +331,11 @@ class PublishActivities:
             except TransientEmbeddingError as err:
                 raise ApplicationError(str(err), type="EMBEDDING_UNAVAILABLE") from None
 
+            # department and specialties need no refresh on a kept vector:
+            # both are part of the chunk text, so if either had changed the
+            # hash would have too, and the chunk would not have been kept.
             specialties = _service_specialties(db, service.id)
-            get_vector_store(db).replace_service_vectors(
+            store.store_service_vectors(
                 service.id,
                 [
                     VectorRecord(
@@ -307,16 +345,22 @@ class PublishActivities:
                         department=service.department.name,
                         specialties=specialties,
                     )
-                    for chunk, vector in zip(chunks, vectors, strict=True)
+                    for chunk, vector in zip(to_embed, vectors, strict=True)
                 ],
+                current_chunk_ids=[chunk.id for chunk in chunks],
             )
             embedded_at = datetime.now(UTC)
-            for chunk in chunks:
+            for chunk in to_embed:
                 chunk.embedded_at = embedded_at
             db.commit()
 
-            logger.info("embedded %d chunks for service %s", len(chunks), service.id)
-            return len(chunks)
+            logger.info(
+                "embedded %d of %d chunks for service %s",
+                len(to_embed),
+                len(chunks),
+                service.id,
+            )
+            return len(to_embed)
 
     @activity.defn
     def mark_published(self, input: ServiceInput) -> None:

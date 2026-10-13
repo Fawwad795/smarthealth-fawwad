@@ -45,8 +45,9 @@ class ContentChunk(Base, TimestampMixin):
     text: Mapped[str] = mapped_column(Text, nullable=False)
     token_count: Mapped[int] = mapped_column(Integer, nullable=False)
 
-    # sha256 hex digest of `text`. Week 4 task 4.9 skips re-embedding a
-    # chunk whose hash hasn't changed since the last publish.
+    # sha256 hex digest of `text`. A re-publish whose text hashes the same
+    # keeps this row, and with it the row's vector, so the chunk is not
+    # embedded again (task 4.9).
     text_hash: Mapped[str] = mapped_column(String(64), nullable=False)
 
     # Null until Part B's embedding Activity runs. Week 2 populates every

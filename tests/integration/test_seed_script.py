@@ -229,19 +229,21 @@ async def test_publish_services_leaves_published_services_alone_on_a_rerun(
 ) -> None:
     """A second seed run must not publish again.
 
-    chunk_content deletes and re-inserts a service's chunk, so an
-    unchanged chunk id proves no second workflow ran.
+    mark_published stamps published_at on every run of the workflow, so an
+    unchanged published_at proves no second workflow ran. (The chunk id
+    would not: chunk_content keeps the row of unchanged text, task 4.9.)
     """
     services = seed(db_session)
     await publish_services(db_session, services, publishing_client)
-    first_chunk_ids = {s.id: _chunks_for(db_session, s)[0].id for s in services}
+    db_session.expire_all()
+    first_published_at = {s.id: s.published_at for s in services}
 
     await publish_services(db_session, seed(db_session), publishing_client)
 
+    db_session.expire_all()
     for service in services:
         assert service.status == ServiceStatus.PUBLISHED
-        [chunk] = _chunks_for(db_session, service)
-        assert chunk.id == first_chunk_ids[service.id]
+        assert service.published_at == first_published_at[service.id]
 
 
 async def test_publish_services_stops_with_a_message_when_no_worker_runs(

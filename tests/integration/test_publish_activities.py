@@ -6,6 +6,7 @@ every write here lands in the same rolled-back transaction as the rest of
 the suite.
 """
 
+import hashlib
 from contextlib import nullcontext
 
 import httpx
@@ -208,6 +209,77 @@ def test_chunk_content_replaces_rather_than_duplicates(
     assert chunks[0].text == "second version"
 
 
+def _chunks(db_session: Session, service: Service) -> list[ContentChunk]:
+    """The service's chunks, read back from Postgres, in index order."""
+    db_session.expire_all()
+    return list(
+        db_session.scalars(
+            select(ContentChunk)
+            .where(
+                ContentChunk.source_type == ContentSourceType.SERVICE,
+                ContentChunk.source_id == service.id,
+            )
+            .order_by(ContentChunk.chunk_index)
+        )
+    )
+
+
+def test_chunk_content_keeps_the_row_of_unchanged_text(
+    activities: PublishActivities, db_session: Session, department: Department
+) -> None:
+    """Task 4.9: the same row, not a fresh one with equal text. A fresh row
+    would take its vector with it through the CASCADE."""
+    service = _service(db_session, department)
+    activities.chunk_content(ChunkContentInput(service.id, "same text"))
+    [before] = _chunks(db_session, service)
+
+    activities.chunk_content(ChunkContentInput(service.id, "same text"))
+
+    [after] = _chunks(db_session, service)
+    assert after.id == before.id
+
+
+def test_chunk_content_replaces_the_row_of_changed_text_with_its_new_hash(
+    activities: PublishActivities, db_session: Session, department: Department
+) -> None:
+    service = _service(db_session, department)
+    activities.chunk_content(ChunkContentInput(service.id, "first version"))
+    [before] = _chunks(db_session, service)
+
+    activities.chunk_content(ChunkContentInput(service.id, "second version"))
+
+    [after] = _chunks(db_session, service)
+    assert after.id != before.id
+    assert after.text_hash == hashlib.sha256(b"second version").hexdigest()
+    assert after.embedded_at is None
+
+
+def test_chunk_content_removes_chunks_past_the_one_it_writes(
+    activities: PublishActivities, db_session: Session, department: Department
+) -> None:
+    """A service has one chunk, but a stray second one (left by a past
+    chunking approach) must not survive and stay searchable -- even when
+    chunk 0 itself is unchanged and kept, and even when the stray chunk's
+    hash matches too: only chunk 0 can be the unchanged one."""
+    service = _service(db_session, department)
+    activities.chunk_content(ChunkContentInput(service.id, "same text"))
+    db_session.add(
+        ContentChunk(
+            source_type=ContentSourceType.SERVICE,
+            source_id=service.id,
+            chunk_index=1,
+            text="same text",
+            token_count=1,
+            text_hash=hashlib.sha256(b"same text").hexdigest(),
+        )
+    )
+    db_session.flush()
+
+    activities.chunk_content(ChunkContentInput(service.id, "same text"))
+
+    assert [chunk.chunk_index for chunk in _chunks(db_session, service)] == [0]
+
+
 def test_mark_published_sets_status_and_timestamp(
     activities: PublishActivities, db_session: Session, department: Department
 ) -> None:
@@ -230,7 +302,7 @@ def test_mark_published_makes_the_services_vectors_searchable(
     chunk = db_session.scalars(
         select(ContentChunk).where(ContentChunk.source_id == service.id)
     ).one()
-    PgVectorStore(db_session).replace_service_vectors(
+    PgVectorStore(db_session).store_service_vectors(
         service.id,
         [
             VectorRecord(
@@ -241,6 +313,7 @@ def test_mark_published_makes_the_services_vectors_searchable(
                 specialties=[],
             )
         ],
+        [chunk.id],
     )
 
     activities.mark_published(ServiceInput(service.id))
@@ -379,6 +452,124 @@ def test_embed_chunks_twice_stores_one_vector_per_chunk(
     activities.embed_chunks(ServiceInput(service.id))
 
     assert len(_vectors(db_session, service)) == 1
+
+
+def test_republishing_unchanged_text_embeds_nothing(
+    activities: PublishActivities,
+    fake_embeddings: FakeEmbeddings,
+    db_session: Session,
+    department: Department,
+) -> None:
+    """Task 4.9 end to end: chunk and embed, then chunk and embed the same
+    text again. The provider is not called the second time, the vector is
+    the same row, and embedded_at still says when it was really embedded."""
+    service = _service(db_session, department)
+    activities.chunk_content(ChunkContentInput(service.id, "same text"))
+    activities.embed_chunks(ServiceInput(service.id))
+    [before] = _vectors(db_session, service)
+    [chunk] = _chunks(db_session, service)
+    first_embedded_at = chunk.embedded_at
+    fake_embeddings.calls.clear()
+
+    activities.chunk_content(ChunkContentInput(service.id, "same text"))
+    embedded = activities.embed_chunks(ServiceInput(service.id))
+
+    assert embedded == 0
+    assert fake_embeddings.calls == []
+    [after] = _vectors(db_session, service)
+    assert after.id == before.id
+    [chunk] = _chunks(db_session, service)
+    assert chunk.embedded_at == first_embedded_at
+
+
+def test_republishing_changed_text_embeds_it_and_leaves_one_vector(
+    activities: PublishActivities,
+    fake_embeddings: FakeEmbeddings,
+    db_session: Session,
+    department: Department,
+) -> None:
+    service = _service(db_session, department)
+    activities.chunk_content(ChunkContentInput(service.id, "first version"))
+    activities.embed_chunks(ServiceInput(service.id))
+    fake_embeddings.calls.clear()
+
+    activities.chunk_content(ChunkContentInput(service.id, "second version"))
+    embedded = activities.embed_chunks(ServiceInput(service.id))
+
+    assert embedded == 1
+    assert fake_embeddings.calls == [["second version"]]
+    [vector] = _vectors(db_session, service)
+    assert [float(x) for x in vector.embedding] == pytest.approx(
+        FakeEmbeddings().embed(["second version"])[0]
+    )
+
+
+def test_embed_chunks_sends_only_the_chunks_without_a_vector(
+    activities: PublishActivities,
+    fake_embeddings: FakeEmbeddings,
+    db_session: Session,
+    department: Department,
+) -> None:
+    """With several chunks, one already embedded: the batch holds only the
+    others, and the embedded one's vector is kept, not recomputed."""
+    service = _service(db_session, department)
+    chunks = [
+        ContentChunk(
+            source_type=ContentSourceType.SERVICE,
+            source_id=service.id,
+            chunk_index=index,
+            text=f"part {index}",
+            token_count=2,
+            text_hash="0" * 64,
+        )
+        for index in range(3)
+    ]
+    db_session.add(chunks[0])
+    db_session.flush()
+    activities.embed_chunks(ServiceInput(service.id))
+    [kept] = _vectors(db_session, service)
+    db_session.add_all(chunks[1:])
+    db_session.flush()
+    fake_embeddings.calls.clear()
+
+    embedded = activities.embed_chunks(ServiceInput(service.id))
+
+    assert embedded == 2
+    [batch] = fake_embeddings.calls
+    assert sorted(batch) == ["part 1", "part 2"]
+    vectors = _vectors(db_session, service)
+    assert len(vectors) == 3
+    assert kept.id in {vector.id for vector in vectors}
+
+
+def test_embed_chunks_re_embeds_a_vector_made_by_another_model(
+    db_session: Session, department: Department
+) -> None:
+    """Switching EMBEDDING_MODEL must not leave old-model vectors behind: a
+    query embedded by the new model cannot be compared with them."""
+    service = _service(db_session, department)
+    old = _activities_with(db_session, _RenamedFake("old-model"))
+    old.chunk_content(ChunkContentInput(service.id, "some text"))
+    old.embed_chunks(ServiceInput(service.id))
+
+    new_provider = _RenamedFake("new-model")
+    embedded = _activities_with(db_session, new_provider).embed_chunks(
+        ServiceInput(service.id)
+    )
+
+    assert embedded == 1
+    assert new_provider.calls == [["some text"]]
+    [vector] = _vectors(db_session, service)
+    assert vector.model == "new-model"
+
+
+class _RenamedFake(FakeEmbeddings):
+    """FakeEmbeddings under another model name, to stand in for a change of
+    EMBEDDING_MODEL."""
+
+    def __init__(self, model: str) -> None:
+        super().__init__()
+        self.model = model
 
 
 def test_embed_chunks_raises_a_permanent_failure_as_non_retryable(
