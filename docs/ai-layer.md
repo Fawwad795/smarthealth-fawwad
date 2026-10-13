@@ -171,17 +171,18 @@ even the two clear matches; task 4.10's eval set will choose the value.
 
 Each chunk's vector is one row in `chunk_embeddings`, in the same Postgres as
 everything else. Code never touches the table directly. It goes through
-`VectorStore` in `app/ai/vector_store.py`, which has two methods:
+`VectorStore` in `app/ai/vector_store.py`, which has three methods:
 
 | Method | What it does |
 |---|---|
-| `replace_service_vectors(service_id, records)` | Deletes every vector the service has, then stores the new ones. Running it twice leaves the same rows as running it once, so a retried Activity cannot duplicate a vector and a re-publish cannot leave a stale one |
+| `embedded_chunk_ids(service_id, model)` | The service's chunks that already have a vector from this model, which `embed_chunks` skips (section 5) |
+| `store_service_vectors(service_id, records, current_chunk_ids)` | Stores each record, replacing any vector its chunk already has, and deletes the service's vectors whose chunk is no longer current. Vectors of current chunks it was not given are kept. Running it twice leaves the same rows as running it once, so a retried Activity cannot duplicate a vector and a re-publish cannot leave a stale one |
 | `set_published(service_id, published)` | Sets the published flag on all of the service's vectors |
 
 `get_vector_store()` is the only place that names the implementation,
-`PgVectorStore`, so moving to another store means writing one class. Neither
-method commits: the caller's transaction covers the vectors and the service's
-own status together.
+`PgVectorStore`, so moving to another store means writing one class. No method
+commits: the caller's transaction covers the vectors and the service's own
+status together.
 
 Every row carries the metadata Part B requires:
 
@@ -208,8 +209,8 @@ The table enforces three things itself:
   vectors that compare as nonsense.
 - `chunk_id` is unique: one vector per chunk.
 - Deleting a chunk deletes its vector (`ON DELETE CASCADE`). `chunk_content`
-  replaces a service's chunks on every publish, so without this the second
-  publish of a service would either fail or leave the old vector behind.
+  replaces a chunk whose text has changed, so without this a re-publish of an
+  edited service would either fail or leave the old vector behind.
 
 There is no vector index. Every search compares the query with every stored
 vector, which is exact and, for one clinic's catalogue, small. An approximate
@@ -221,10 +222,38 @@ for.
 
 Publishing a service runs five Activities in order: `validate_service`,
 `structure_content`, `chunk_content`, `embed_chunks` and `mark_published`.
-`embed_chunks` sends the service's chunk texts to the embedding provider in one
-`embed()` call, stores the vectors with `replace_service_vectors`, and sets each
-chunk's `embedded_at`, all in one transaction. The vectors are stored
-unpublished, and `mark_published` makes them searchable (section 4).
+`embed_chunks` sends the texts of the chunks that need a vector to the embedding
+provider in one `embed()` call, stores the vectors with `store_service_vectors`,
+and sets those chunks' `embedded_at`, all in one transaction. The vectors are
+stored unpublished, and `mark_published` makes them searchable (section 4).
+
+### Skipping unchanged chunks
+
+Each chunk stores `text_hash`, the SHA-256 of its text. On a re-publish,
+`chunk_content` compares the new text's hash with the stored chunk's:
+
+- Same hash: the chunk row is left alone, and so is its vector.
+- Different hash: the chunk is deleted, the CASCADE deletes its vector, and a
+  new chunk is inserted with no vector.
+
+`embed_chunks` then embeds only the chunks with no vector from the current model.
+It asks by chunk id, not by hash: a chunk that survived `chunk_content` has
+unchanged text by construction. Asking for the current model as well means
+changing `EMBEDDING_MODEL` re-embeds everything, because vectors from two models
+cannot be compared. When nothing needs embedding, the provider is not called.
+
+`department` and `specialties` on a kept vector need no refresh. Both appear in
+the chunk text (section 2), so a change to either changes the hash. The same is
+why section 2 sorts and de-duplicates specialties: the same service must always
+produce the same text, or the hash would change when nothing else did.
+
+Checked live against the worker and the local model, on a throwaway service:
+
+| Publish | Worker log | Chunk row | Vector row |
+|---|---|---|---|
+| First | `embedded 1 of 1 chunks` | 41 | 5 |
+| Same text again | `embedded 0 of 1 chunks` | 41, same `embedded_at` | 5 |
+| After editing the description | `embedded 1 of 1 chunks` | 42 | 6; row 5 gone |
 
 ### Batching
 
@@ -294,7 +323,6 @@ message still names the underlying exception.
   hosted provider is one setting away.
 - The image is about 290 MB larger (200 MB of packages, 87 MB of model), and
   every process that embeds holds the model in memory.
-- Every publish re-embeds, even unchanged text (task 4.9).
 - Adding `embed_chunks` changed the publish workflow's steps. A publish that was
   already running when the new worker started would fail to replay, so deploy
   this with no publish in flight.

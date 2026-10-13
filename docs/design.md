@@ -651,9 +651,11 @@ flowchart LR
 `validate_service` returns every missing field at once and is **non-retryable** —
 a missing description is still missing on the next attempt. That failure is
 expected, so the Workflow catches it and ends cleanly in `PUBLISH_FAILED`;
-anything else is left to Temporal's retry policy. `chunk_content` deletes and
-re-inserts in one transaction, which is simultaneously how re-publishing replaces
-chunks atomically and how a retried attempt stays idempotent.
+anything else is left to Temporal's retry policy. `chunk_content` keeps a chunk
+whose text hash is unchanged and replaces any other, in one transaction. That is
+how re-publishing replaces chunks atomically, how a retried attempt stays
+idempotent (the second run finds nothing changed), and how an unchanged chunk
+keeps its vector instead of being embedded again.
 
 `embed_chunks` calls an outside service, so it has its own retry policy: five
 attempts, 2, 4, 8 and 16 s apart. A permanent error (a rejected key, a vector of
