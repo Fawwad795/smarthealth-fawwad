@@ -214,7 +214,8 @@ Temporal UI, **http://localhost:8233**, under workflow id `publish-service-<id>`
 |---|---|---|
 | `description is required` (or `prep_instructions`) | Validation | Fill the field, publish again |
 | `EMBEDDING_API_KEY is empty` or `... non-ASCII character ...` | The key the worker loaded | Check `.env`, then recreate the worker (below) |
-| `Hugging Face returned HTTP 402 for 1 texts` | The account is out of inference credits | Add credits or switch providers; retrying will not help |
+| `could not load <model> (...)` | `EMBEDDING_PROVIDER=local`, and the model is not in the image (an old image, or a changed `EMBEDDING_MODEL`) | `docker compose build`, then recreate the containers (below) |
+| `Hugging Face returned HTTP 402 for 1 texts` | `EMBEDDING_PROVIDER=huggingface`, and the account is out of inference credits | Add credits, or set `EMBEDDING_PROVIDER=local`; retrying will not help |
 | `Hugging Face unreachable (...)`, `HTTP 429`, `HTTP 5xx` | Provider down or rate-limited | Retried 5 times automatically; publish again once it recovers |
 
 **`docker compose restart` does not re-read `.env`.** A container keeps the

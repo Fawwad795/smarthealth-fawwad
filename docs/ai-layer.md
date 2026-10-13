@@ -104,15 +104,21 @@ base class, so a provider missing `embed()` fails when it is constructed. A
 `typing.Protocol` would only be checked by mypy, which this repo runs on
 `app/models` alone.
 
-`EMBEDDING_PROVIDER` picks one of two implementations:
+`EMBEDDING_PROVIDER` picks one of three implementations:
 
 | Provider | Used by | How it works |
 |---|---|---|
-| `HuggingFaceEmbeddings` | the running app | Sends up to `EMBEDDING_BATCH_SIZE` (64) texts per request to Hugging Face's hosted `all-MiniLM-L6-v2` and gets back 384 numbers per text, already scaled to length 1 |
+| `LocalEmbeddings` | the running app (the default since Day 2) | Runs `all-MiniLM-L6-v2` inside the API and worker processes with `fastembed`, which uses ONNX Runtime. The image downloads the model (87 MB) at build time and then blocks Hugging Face Hub access, so embedding needs no key, no quota and no network. Each process loads the model once, in about 0.6 s; three chunks then take about 0.06 s |
+| `HuggingFaceEmbeddings` | optional, `EMBEDDING_PROVIDER=huggingface` | Sends up to `EMBEDDING_BATCH_SIZE` (64) texts per request to Hugging Face's hosted `all-MiniLM-L6-v2` and gets back 384 numbers per text, already scaled to length 1 |
 | `FakeEmbeddings` | the test suite | Hashes each word to one of 384 positions, counts it there and scales the result to length 1, so texts that share words point partly the same way. It uses `hashlib`, because the built-in `hash()` is salted per process and would give different vectors on every run |
 
-Each request pays a network round trip and counts against the rate limit, so
-texts go in batches. Ten texts in one request took 0.9 s with the model warm;
+The hosted provider was the default on Day 1. On Day 2 the account ran out of
+free inference credits and every call returned HTTP 402, so the default moved
+to `LocalEmbeddings`. It is the same model: it reproduces every score in the
+table below to three decimals.
+
+For the hosted provider, each request pays a network round trip and counts
+against the rate limit, so texts go in batches. Ten texts in one request took 0.9 s with the model warm;
 the first request after an idle period took 8 s while Hugging Face loaded the
 model. `EMBEDDING_TIMEOUT_SECONDS` is 20 s: above that cold start, and below the
 publish Activities' 30 s timeout, so a slow call fails inside the provider,
@@ -140,7 +146,9 @@ docker compose run --rm -e RUN_LIVE_TESTS=1 test pytest -m live
 
 ### Measured similarities
 
-Queries against the three seeded services' chunks, on Week 4 Day 1:
+Queries against the three seeded services' chunks, on Week 4 Day 1 through
+Hugging Face. `LocalEmbeddings` gave the same scores on Day 2, and
+`test_embeddings_local.py` checks the first row against the real model:
 
 | Query | Highest score | Next highest |
 |---|---|---|
@@ -234,6 +242,10 @@ go through the same `embed()` with a list, never one request per text.
 | Transient | a timeout, a refused connection, HTTP 429, HTTP 5xx | Raised retryable (`EMBEDDING_UNAVAILABLE`) and retried: five attempts in all, 2, 4, 8 and 16 s apart |
 | Permanent | an empty or non-ASCII key, any other non-200 status (including 402, out of credits), a vector of the wrong size | Raised non-retryable (`EMBEDDING_FAILED`): one attempt |
 
+The transient row describes the hosted provider. `LocalEmbeddings` makes no
+network call, so its failures are permanent: a model missing from the image, or
+vectors of the wrong size.
+
 Once `embed_chunks` stops, the workflow ends the publish in `PUBLISH_FAILED` and
 saves the error in `services.publish_error`. Temporal's default policy would
 retry forever and leave the service in `PUBLISHING` while the provider stayed
@@ -277,11 +289,11 @@ message still names the underlying exception.
 
 ### Known limitations
 
-- The Hugging Face account used here has run out of free inference credits.
-  Every real embedding call now returns HTTP 402 ("You have no remaining
-  credits"), so the seeded services end in `PUBLISH_FAILED` until the account
-  has credits or the provider changes. The suite is unaffected: it uses
-  `FakeEmbeddings`.
+- With the default `LocalEmbeddings`, the retry path is no longer exercised by
+  real network failures. The tests and the live check above cover it, and the
+  hosted provider is one setting away.
+- The image is about 290 MB larger (200 MB of packages, 87 MB of model), and
+  every process that embeds holds the model in memory.
 - Every publish re-embeds, even unchanged text (task 4.9).
 - Adding `embed_chunks` changed the publish workflow's steps. A publish that was
   already running when the new worker started would fail to replay, so deploy
