@@ -14,18 +14,24 @@ def _service(status: ServiceStatus) -> Service:
     return Service(id=1, department_id=1, name="X-Ray", status=status)
 
 
-@pytest.mark.parametrize("status", [ServiceStatus.DRAFT, ServiceStatus.PUBLISH_FAILED])
-def test_publish_allowed_from_draft_or_publish_failed(status: ServiceStatus) -> None:
+@pytest.mark.parametrize(
+    "status",
+    [
+        ServiceStatus.DRAFT,
+        ServiceStatus.PUBLISH_FAILED,
+        ServiceStatus.PUBLISHED,
+        ServiceStatus.INACTIVE,
+    ],
+)
+def test_publish_allowed_unless_a_publish_is_running(status: ServiceStatus) -> None:
+    """PUBLISHED and INACTIVE included: publishing again is how a service
+    is re-indexed (task 4.7)."""
     ensure_can_publish(_service(status))  # no exception
 
 
-@pytest.mark.parametrize(
-    "status",
-    [ServiceStatus.PUBLISHING, ServiceStatus.PUBLISHED, ServiceStatus.INACTIVE],
-)
-def test_publish_rejected_from_every_other_status(status: ServiceStatus) -> None:
+def test_publish_rejected_while_publishing() -> None:
     with pytest.raises(AppError) as exc_info:
-        ensure_can_publish(_service(status))
+        ensure_can_publish(_service(ServiceStatus.PUBLISHING))
     assert exc_info.value.status_code == 409
     assert exc_info.value.code == "SERVICE_NOT_PUBLISHABLE"
 

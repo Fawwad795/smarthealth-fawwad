@@ -34,6 +34,7 @@ class ServiceStatus(StrEnum):
 
     DRAFT -> PUBLISHING -> PUBLISHED -> INACTIVE
              PUBLISHING -> PUBLISH_FAILED -> PUBLISHING (retry)
+    PUBLISHED or INACTIVE -> PUBLISHING (publish again)
 
     PUBLISHING and PUBLISH_FAILED exist so the row can say "a workflow is
     running right now" and "the last attempt failed" — states a boolean

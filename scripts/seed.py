@@ -41,7 +41,7 @@ from app.models import (
     Specialty,
     User,
 )
-from app.models.enums import UserRole
+from app.models.enums import ServiceStatus, UserRole
 from app.schemas.department import DepartmentCreate
 from app.schemas.provider import ProviderCreate
 from app.schemas.provider_schedule import ProviderScheduleCreate
@@ -382,16 +382,20 @@ async def publish_services(
     time, waiting for each to finish, and print where it ended up.
 
     start_publish() is the same function POST /services/{id}/publish
-    calls, so the seed follows the API's rules rather than its own. Its
-    status check decides what may be published: on a re-run the services
-    are already PUBLISHED, it raises a 409 AppError, and the service is
-    left as it is.
+    calls, so the seed follows the API's rules rather than its own. A
+    PUBLISHED service is skipped here first: the API allows publishing it
+    again (task 4.7), and a re-run of the seed must not re-publish all of
+    them. Anything else start_publish refuses, a service still
+    PUBLISHING, raises a 409 AppError and is left as it is.
 
     `client` is for tests, which pass their own Temporal test server.
     """
     if client is None:
         client = await get_temporal_client()
     for service in services:
+        if service.status == ServiceStatus.PUBLISHED:
+            print(f"  {service.name}: already PUBLISHED, left as it is")
+            continue
         try:
             _, workflow_id = await service_publish.start_publish(db, service.id)
         except AppError:

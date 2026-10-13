@@ -180,7 +180,7 @@ def update_service(
         {
             status.HTTP_403_FORBIDDEN: "Admin only.",
             status.HTTP_404_NOT_FOUND: "SERVICE_NOT_FOUND.",
-            status.HTTP_409_CONFLICT: "SERVICE_NOT_PUBLISHABLE -- not DRAFT or PUBLISH_FAILED.",
+            status.HTTP_409_CONFLICT: "SERVICE_NOT_PUBLISHABLE -- a publish is already running.",
         }
     ),
 )
@@ -191,9 +191,13 @@ async def publish_service(
 ) -> ServicePublishStatusResponse:
     """Start the publish workflow for a service. ADMIN only.
 
+    Also how an edited PUBLISHED service, or an INACTIVE one, is published
+    again: its old vectors leave search now and its new ones join when
+    the workflow finishes.
+
     202: the workflow has started, not necessarily finished -- poll GET
     publish-status for the outcome. 404 if the service doesn't exist, 409
-    if it isn't DRAFT or PUBLISH_FAILED.
+    if it is PUBLISHING already.
     """
     service, workflow_id = await service_publish.start_publish(db, service_id)
     return ServicePublishStatusResponse(
@@ -202,6 +206,33 @@ async def publish_service(
         published_at=service.published_at,
         workflow_id=workflow_id,
     )
+
+
+@router.post(
+    "/{service_id}/unpublish",
+    response_model=ServiceResponse,
+    summary="Take a published service out of the catalogue",
+    responses=error_responses(
+        {
+            status.HTTP_403_FORBIDDEN: "Admin only.",
+            status.HTTP_404_NOT_FOUND: "SERVICE_NOT_FOUND.",
+            status.HTTP_409_CONFLICT: "SERVICE_NOT_UNPUBLISHABLE -- not PUBLISHED.",
+        }
+    ),
+)
+def unpublish_service(
+    service_id: int,
+    db: Session = Depends(get_db),
+    _current_user=Depends(require_role(UserRole.ADMIN)),
+) -> ServiceResponse:
+    """Move a PUBLISHED service to INACTIVE and remove it from search.
+    ADMIN only.
+
+    200 with the service, done by the time it returns: no workflow is
+    involved. 404 if the service doesn't exist, 409 if it isn't PUBLISHED.
+    """
+    service = service_publish.unpublish_service(db, service_id)
+    return ServiceResponse.model_validate(service)
 
 
 @router.get(
