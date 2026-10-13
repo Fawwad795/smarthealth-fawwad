@@ -9,4 +9,9 @@ __pycache__/
 .ruff_cache/
 htmlcov/
 .coverage
+.mypy_cache/
 CLAUDE.md
+.claude/
+# Local scratch work (the explainer-video toolkit, about 1GB). Without this
+# line every build sent it to Docker before a single layer ran.
+.tmp/
