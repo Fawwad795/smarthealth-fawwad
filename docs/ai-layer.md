@@ -255,6 +255,37 @@ Checked live against the worker and the local model, on a throwaway service:
 | Same text again | `embedded 0 of 1 chunks` | 41, same `embedded_at` | 5 |
 | After editing the description | `embedded 1 of 1 chunks` | 42 | 6; row 5 gone |
 
+### Re-publishing and unpublishing
+
+Editing a published service with `PATCH /services/{id}` changes its row at once,
+but its chunk and vector still hold the old text. Publishing it again is how the
+index catches up. `POST /services/{id}/publish` accepts a `PUBLISHED` or
+`INACTIVE` service and moves it straight to `PUBLISHING`; only a service already
+`PUBLISHING` gets a 409.
+
+Search filters on the vector's own `published` flag, not on `services.status`
+(section 4). So `start_publish` sets the service's vectors to unpublished in the
+same transaction that moves it to `PUBLISHING`, and `mark_published` sets them
+back when the workflow finishes. In between, `chunk_content` and `embed_chunks`
+replace whatever changed. If the workflow never starts, the status and the flag
+are both rolled back.
+
+`POST /services/{id}/unpublish` moves a `PUBLISHED` service to `INACTIVE` and
+unpublishes its vectors, in one transaction and with no workflow. It keeps the
+chunks and vectors, so publishing the service again re-embeds nothing unchanged.
+
+Checked live through the API, on a throwaway service:
+
+| Step | Response | Service | Chunk / vector |
+|---|---|---|---|
+| Publish (from `DRAFT`) | 202 | `PUBLISHED` | 43 / 7, searchable |
+| Unpublish | 200 `INACTIVE` | `INACTIVE` | 43 / 7, not searchable |
+| Unpublish again | 409 `SERVICE_NOT_UNPUBLISHABLE` | unchanged | unchanged |
+| Publish (from `INACTIVE`) | 202 | `PUBLISHED` | 43 / 7, searchable again, not re-embedded |
+| Edit the description, publish again | 202 | `PUBLISHED` | 44 / 8, searchable; 43 / 7 gone |
+| Publish again with the worker stopped | 202 | `PUBLISHING` | 44 / 8, not searchable while it waits |
+| Two publish requests at once | 202 and 409 | `PUBLISHED` once the one workflow ends | 44 / 8 |
+
 ### Batching
 
 `HuggingFaceEmbeddings` sends up to `EMBEDDING_BATCH_SIZE` (64) texts per
@@ -326,3 +357,10 @@ message still names the underlying exception.
 - Adding `embed_chunks` changed the publish workflow's steps. A publish that was
   already running when the new worker started would fail to replay, so deploy
   this with no publish in flight.
+- A re-publish takes the service out of search, and out of booking (the saga's
+  `validate_eligibility` requires `PUBLISHED`), while its workflow runs: a
+  second or two with the local model. A re-publish that fails keeps it out until
+  a publish succeeds.
+- Between an edit and the re-publish, Week 1's keyword search shows the new
+  text and semantic search still matches the old. Nothing re-publishes
+  automatically after an edit.

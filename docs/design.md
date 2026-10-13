@@ -397,6 +397,7 @@ Publishing a service is a Temporal Workflow, not a boolean flip:
 ```
 DRAFT ──publish──> PUBLISHING ──success──> PUBLISHED ──unpublish──> INACTIVE
                         └──failure──> PUBLISH_FAILED ──retry──> PUBLISHING
+PUBLISHED or INACTIVE ──publish again──> PUBLISHING   (Week 4)
 ```
 
 The workflow validates the service is complete, structures its operational
@@ -496,6 +497,9 @@ migrating rows that had already been created without it.
 | `publish-status` asks Temporal for the pending Activity's attempt number and last error while a service is `PUBLISHING` | The row only says `PUBLISHING`. Temporal already tracks each pending Activity's attempt and last failure, which is what makes a retrying embedding call visible | That part of the endpoint now depends on Temporal; when Temporal is unreachable it returns the row without `progress` instead of failing |
 | `embed_chunks` re-raises provider errors as `ApplicationError` `from None` | Temporal sends an exception's whole cause chain, with a stack trace per link, and stores a retrying Activity's last failure only up to a size limit. A timeout's httpx chain measured 3.7 KB, and `publish-status` showed "Failure exceeds size limit." until the chain was dropped | The worker log loses the httpx traceback; the message keeps the underlying exception's name, such as `ConnectTimeout` |
 | Every vector is stored with `published = false`; only `mark_published` sets it true, in the same transaction as the service's status | Embedding runs while the service is still `PUBLISHING`. Writing the flag true at that point would make the service searchable before its publish finished, and a publish that then failed would leave it searchable | A re-publish hides the service from search from the moment its vectors are replaced until the workflow finishes. Whether that is acceptable is part of the open re-publish question (task 4.7) |
+| Publishing again goes straight from `PUBLISHED` or `INACTIVE` to `PUBLISHING`, not back through `DRAFT` (task 4.7) | It is how an edited service's chunk and vector catch up with its text. A trip through `DRAFT` would add a step that checks nothing | While the workflow runs, a second or two, the service is out of search and booking rejects it; a failed re-publish keeps it out until a publish succeeds |
+| `start_publish` and unpublish lock the service row (`SELECT ... FOR UPDATE`) before checking its status | Once `PUBLISHED` could be published, two clicks both read `PUBLISHED` and both passed; Temporal refused the second workflow, and its rollback marked the service `PUBLISHED` while the first workflow was still running. Without the lock, 5 of 20 concurrent requests got past the check | A second request waits for the first to commit, then gets a 409 |
+| Unpublish is a transaction, not a workflow, and keeps the chunks and vectors | One status and one flag change together, with nothing to retry or resume; kept vectors mean publishing again re-embeds nothing unchanged | No `service.unpublished` event: no consumer needs one yet |
 
 **Enum member names and values are kept identical** (`AVAILABLE = "AVAILABLE"`).
 SQLAlchemy persists a Python enum's `.name`, while a `str`-based enum serialises
@@ -645,7 +649,9 @@ flowchart LR
     V -->|SERVICE_INCOMPLETE| F([PUBLISH_FAILED])
     E -->|permanent error, or 5 attempts used| F
     F -->|retry| P
-    PUB -->|unpublish| I([INACTIVE])
+    PUB -->|POST /unpublish| I([INACTIVE])
+    PUB -->|POST /publish again| P
+    I -->|POST /publish again| P
 ```
 
 `validate_service` returns every missing field at once and is **non-retryable** —

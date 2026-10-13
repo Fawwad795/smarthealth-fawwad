@@ -196,7 +196,8 @@ flow. Idempotent event handling arrives with Week 3.
 | POST/GET/PATCH | `/api/v1/providers`, `/providers/{id}` | Provider profile CRUD | Admin write, any staff read |
 | POST/GET/PATCH | `/api/v1/providers/{id}/schedules`, `/schedules/{id}` | Weekly working-hours templates | Admin write, any staff read |
 | POST | `/api/v1/providers/{id}/schedules/generate-slots` | Turn templates into bookable `Slot` rows, idempotent | Admin |
-| POST | `/api/v1/services/{id}/publish` | Start the Temporal publish workflow (202 + workflow id) | Admin |
+| POST | `/api/v1/services/{id}/publish` | Start the Temporal publish workflow (202 + workflow id); also re-indexes a published or inactive service | Admin |
+| POST | `/api/v1/services/{id}/unpublish` | Take a published service out of the catalogue and search (`INACTIVE`) | Admin |
 | GET | `/api/v1/services/{id}/publish-status` | Where the publish lifecycle stands | Any staff |
 | POST | `/api/v1/appointments` | Start the scheduling saga (202 + id). Requires `Idempotency-Key` | Patient (self), front desk/admin (on behalf) |
 | GET | `/api/v1/appointments/{id}` | Current booking state | Patient (own), any staff |
