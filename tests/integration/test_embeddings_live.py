@@ -14,6 +14,7 @@ import os
 
 import pytest
 
+from app.ai import embeddings
 from app.ai.embeddings import HuggingFaceEmbeddings, get_embedding_provider
 
 pytestmark = [
@@ -25,7 +26,11 @@ pytestmark = [
 ]
 
 
-def test_hugging_face_returns_unit_vectors_that_rank_by_meaning() -> None:
+def test_hugging_face_returns_unit_vectors_that_rank_by_meaning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The default provider is local; this test is about the hosted one.
+    monkeypatch.setattr(embeddings.settings, "embedding_provider", "huggingface")
     provider = get_embedding_provider()
     assert isinstance(provider, HuggingFaceEmbeddings)
 

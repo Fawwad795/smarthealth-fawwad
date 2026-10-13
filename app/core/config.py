@@ -84,22 +84,26 @@ class Settings(BaseSettings):
     billing_force_fail: bool = False
 
     # --- Embeddings (Week 4+) ---
-    # Which EmbeddingProvider app/ai/embeddings.py builds. "fake" is the
-    # network-free hashing stand-in, for running the stack without a key.
-    embedding_provider: Literal["huggingface", "fake"] = "huggingface"
-    # SecretStr so the key prints as '**********' in any repr or log line;
-    # reading it takes an explicit .get_secret_value().
+    # Which EmbeddingProvider app/ai/embeddings.py builds. "local" runs the
+    # model in-process from the image: no key, no quota, no network.
+    # "huggingface" calls the hosted API with EMBEDDING_API_KEY. "fake" is the
+    # hashing stand-in the tests use, which knows nothing about meaning.
+    embedding_provider: Literal["local", "huggingface", "fake"] = "local"
+    # Only the huggingface provider uses this. SecretStr so the key prints as
+    # '**********' in any repr or log line; reading it takes an explicit
+    # .get_secret_value().
     embedding_api_key: SecretStr = SecretStr("")
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
     # Fixed by the model, and by the vector column built for it: changing
     # the model means a migration and re-embedding every service.
     embedding_dimensions: int = 384
-    # Texts per HTTP request. The brief asks for 32-100: per-request
-    # overhead and the rate limit are paid once per batch, not per text.
+    # Texts per batch. The brief asks for 32-100: for the hosted API,
+    # per-request overhead and the rate limit are paid once per batch, not
+    # per text; the local model runs each batch as one ONNX call.
     embedding_batch_size: int = 64
-    # Above the ~8s measured for a cold Hugging Face model, and below the
-    # publish Activities' 30s timeout, so the HTTP call fails and is
-    # classified before Temporal abandons the attempt.
+    # huggingface provider only. Above the ~8s measured for a cold Hugging
+    # Face model, and below the publish Activities' 30s timeout, so the HTTP
+    # call fails and is classified before Temporal abandons the attempt.
     embedding_timeout_seconds: float = 20.0
 
 

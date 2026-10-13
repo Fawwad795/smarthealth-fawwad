@@ -28,6 +28,7 @@ prometheus-client==0.21.1     # the official Python client
 
 # --- AI layer (Week 4+) -------------------------------------------------
 httpx==0.28.1                 # embedding provider calls; also FastAPI's TestClient
+fastembed==0.9.0              # runs the embedding model in-process (ONNX); no key, no quota
 
 # --- Config / validation -----------------------------------------------
 pydantic==2.10.4

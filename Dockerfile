@@ -30,6 +30,15 @@ RUN python scripts/fetch_test_server.py
 # belong in .env.
 ENV TEMPORAL_TEST_SERVER_PATH=/opt/temporal/temporal-test-server
 
+# Bake the embedding model into the image, for the same reasons: no
+# download at runtime, and no network needed to embed. Outside /app, so
+# docker-compose's source mount does not hide it. HF_HUB_OFFLINE comes
+# after the download, so the build may fetch but a container never will.
+ENV EMBEDDING_MODEL_DIR=/opt/models
+COPY scripts/fetch_embedding_model.py scripts/
+RUN python scripts/fetch_embedding_model.py
+ENV HF_HUB_OFFLINE=1
+
 COPY . .
 
 EXPOSE 8000

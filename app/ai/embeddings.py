@@ -3,19 +3,23 @@
 Everything that needs an embedding (the publish workflow in task 4.5,
 search in 4.8, the eval script in 4.10) depends on EmbeddingProvider and
 never on a vendor. get_embedding_provider() picks the implementation from
-settings; tests construct FakeEmbeddings directly, so the suite needs no
-network and no key.
+settings: LocalEmbeddings by default, which runs the model in this process,
+or HuggingFaceEmbeddings, which calls Hugging Face's hosted inference. Tests
+construct FakeEmbeddings directly, so the suite needs no network and no key.
 
 Error messages carry status codes and counts, never the input texts: a
 search query is the patient's own words (rule 6.6).
 """
 
+import functools
 import hashlib
 import math
+import os
 import re
 from abc import ABC, abstractmethod
 
 import httpx
+from fastembed import TextEmbedding
 
 from app.core.config import settings
 
@@ -164,6 +168,71 @@ class HuggingFaceEmbeddings(EmbeddingProvider):
         return vectors
 
 
+@functools.lru_cache(maxsize=None)
+def _load_local_model(model: str) -> TextEmbedding:
+    """Load `model` from the image, once per process.
+
+    Loading reads 87MB from disk and takes about 0.6 s, while embedding one
+    service takes milliseconds, and the publish Activity builds a provider
+    on every attempt. Cached per process, so the API and the worker each
+    load it once. A failed load is not cached, so the next attempt tries
+    again.
+
+    The Dockerfile downloads the model into EMBEDDING_MODEL_DIR at build
+    time and then sets HF_HUB_OFFLINE, so any failure here means the model
+    is not in the image. No retry can fix that, hence permanent.
+    """
+    try:
+        return TextEmbedding(model, cache_dir=os.getenv("EMBEDDING_MODEL_DIR") or None)
+    except Exception as exc:
+        raise PermanentEmbeddingError(
+            f"could not load {model} ({type(exc).__name__}); the image downloads "
+            "it at build time, so rebuild it after changing EMBEDDING_MODEL"
+        ) from None
+
+
+class LocalEmbeddings(EmbeddingProvider):
+    """Runs the model inside this process with fastembed (ONNX Runtime).
+
+    The default provider. It needs no key, has no quota and makes no network
+    call, so a demo cannot be stopped by an outside service. The same
+    all-MiniLM-L6-v2 model gave the same scores, to three decimals, as Hugging
+    Face's hosted inference did on Week 4 Day 1 (docs/ai-layer.md section 3).
+    """
+
+    def __init__(
+        self,
+        *,
+        model: str,
+        dimensions: int,
+        batch_size: int,
+        encoder: TextEmbedding | None = None,
+    ) -> None:
+        """Load the model, or take `encoder`, which the tests pass instead."""
+        super().__init__(model, dimensions)
+        self._batch_size = batch_size
+        self._encoder = encoder or _load_local_model(model)
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        """Embed `texts` in batches of `batch_size`, in this process.
+
+        fastembed returns numpy arrays; converted to plain lists of floats so
+        callers get the same type from every provider.
+        """
+        vectors = [
+            vector.tolist()
+            for vector in self._encoder.embed(texts, batch_size=self._batch_size)
+        ]
+        if len(vectors) != len(texts) or any(
+            len(vector) != self.dimensions for vector in vectors
+        ):
+            raise PermanentEmbeddingError(
+                f"expected {len(texts)} vectors of {self.dimensions} numbers "
+                f"from {self.model}"
+            )
+        return vectors
+
+
 # Lower-cased runs of letters and digits: "X-Ray" gives "x" and "ray".
 _WORD = re.compile(r"[a-z0-9]+")
 
@@ -214,10 +283,16 @@ def get_embedding_provider() -> EmbeddingProvider:
 
     The one place that reads the embedding settings, so swapping providers
     is a config change. Settings validation has already rejected any other
-    value, so these two branches are complete.
+    value, so these three branches are complete.
     """
     if settings.embedding_provider == "fake":
         return FakeEmbeddings(settings.embedding_dimensions)
+    if settings.embedding_provider == "local":
+        return LocalEmbeddings(
+            model=settings.embedding_model,
+            dimensions=settings.embedding_dimensions,
+            batch_size=settings.embedding_batch_size,
+        )
     return HuggingFaceEmbeddings(
         api_key=settings.embedding_api_key.get_secret_value(),
         model=settings.embedding_model,

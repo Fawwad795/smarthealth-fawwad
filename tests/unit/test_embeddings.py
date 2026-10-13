@@ -11,6 +11,7 @@ import json
 import math
 
 import httpx
+import numpy as np
 import pytest
 from pydantic import SecretStr
 
@@ -19,12 +20,14 @@ from app.ai.embeddings import (
     EmbeddingProvider,
     FakeEmbeddings,
     HuggingFaceEmbeddings,
+    LocalEmbeddings,
     PermanentEmbeddingError,
     TransientEmbeddingError,
     get_embedding_provider,
 )
 from app.core.config import Settings
 from app.models.chunk_embedding import EMBEDDING_DIMENSIONS
+from scripts import fetch_embedding_model
 
 PATIENT_TEXT = "a question in the patient's own words"
 
@@ -246,3 +249,109 @@ def test_default_dimensions_match_the_vector_column() -> None:
     default = Settings.model_fields["embedding_dimensions"].default
 
     assert default == EMBEDDING_DIMENSIONS
+
+
+# --- the local provider ---------------------------------------------------
+
+
+class _FakeEncoder:
+    """Stands in for fastembed's TextEmbedding: records each call and returns
+    numpy arrays, as the real one does."""
+
+    def __init__(self, dimensions: int) -> None:
+        self.dimensions = dimensions
+        self.calls: list[tuple[list[str], int]] = []
+
+    def embed(self, texts: list[str], batch_size: int):
+        self.calls.append((list(texts), batch_size))
+        return (np.full(self.dimensions, 0.5, dtype=np.float32) for _ in texts)
+
+
+@pytest.fixture()
+def fresh_model_cache():
+    """Empty the per-process model cache around a test that loads a model."""
+    embeddings._load_local_model.cache_clear()
+    yield
+    embeddings._load_local_model.cache_clear()
+
+
+def test_local_embeds_in_batches_and_returns_plain_floats() -> None:
+    encoder = _FakeEncoder(dimensions=3)
+    provider = LocalEmbeddings(model="m", dimensions=3, batch_size=64, encoder=encoder)
+
+    vectors = provider.embed(["one", "two"])
+
+    assert encoder.calls == [(["one", "two"], 64)]
+    assert vectors == [[0.5, 0.5, 0.5], [0.5, 0.5, 0.5]]
+    assert type(vectors[0][0]) is float
+
+
+def test_local_rejects_vectors_of_the_wrong_size() -> None:
+    provider = LocalEmbeddings(
+        model="m", dimensions=384, batch_size=64, encoder=_FakeEncoder(dimensions=3)
+    )
+
+    with pytest.raises(PermanentEmbeddingError, match="384 numbers"):
+        provider.embed(["one"])
+
+
+def test_local_reports_a_model_missing_from_the_image_as_permanent(
+    monkeypatch: pytest.MonkeyPatch, fresh_model_cache: None
+) -> None:
+    """With HF_HUB_OFFLINE set, a model the image did not download cannot be
+    fetched, and no retry changes that."""
+
+    def _not_in_image(model: str, cache_dir: str | None) -> None:
+        raise ValueError("Could not load model from the cache")
+
+    monkeypatch.setattr(embeddings, "TextEmbedding", _not_in_image)
+
+    with pytest.raises(PermanentEmbeddingError, match="could not load other/model"):
+        LocalEmbeddings(model="other/model", dimensions=384, batch_size=64)
+
+
+def test_local_loads_the_model_once_per_process(
+    monkeypatch: pytest.MonkeyPatch, fresh_model_cache: None
+) -> None:
+    """The publish Activity builds a provider on every attempt; reading the
+    model from disk each time would cost about 0.6 s per publish."""
+    loads: list[str] = []
+
+    def _counting_load(model: str, cache_dir: str | None) -> _FakeEncoder:
+        loads.append(model)
+        return _FakeEncoder(dimensions=3)
+
+    monkeypatch.setattr(embeddings, "TextEmbedding", _counting_load)
+
+    LocalEmbeddings(model="m", dimensions=3, batch_size=64)
+    LocalEmbeddings(model="m", dimensions=3, batch_size=64)
+
+    assert loads == ["m"]
+
+
+def test_factory_builds_the_local_provider_from_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(embeddings.settings, "embedding_provider", "local")
+    monkeypatch.setattr(embeddings.settings, "embedding_model", "test/model")
+    monkeypatch.setattr(
+        embeddings, "_load_local_model", lambda model: _FakeEncoder(dimensions=384)
+    )
+
+    provider = get_embedding_provider()
+
+    assert isinstance(provider, LocalEmbeddings)
+    assert (provider.model, provider.dimensions) == ("test/model", 384)
+
+
+def test_local_is_the_default_provider() -> None:
+    """A fresh checkout embeds with no key and no network."""
+    assert Settings.model_fields["embedding_provider"].default == "local"
+
+
+def test_the_image_downloads_the_default_model() -> None:
+    """The Dockerfile bakes in fetch_embedding_model.MODEL, and the image is
+    offline afterwards, so it must be the model the settings ask for."""
+    default = Settings.model_fields["embedding_model"].default
+
+    assert fetch_embedding_model.MODEL == default
