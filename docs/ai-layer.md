@@ -381,7 +381,7 @@ POST /api/v1/search
     {"service_id": 5, "name": "Knee X-Ray", "department": "Orthopaedics",
      "specialties": ["Orthopedics"], "similarity": 0.798}
   ],
-  "min_similarity": 0.65,
+  "min_similarity": 0.31,
   "message": null
 }
 ```
@@ -396,7 +396,7 @@ Week 5 assistant will call too.
 | Setting | Value | Who sets it |
 |---|---|---|
 | `top_k` | 5 by default (`RETRIEVAL_TOP_K`), 1 to 20 | The request |
-| `RETRIEVAL_MIN_SIMILARITY` | 0.65, a placeholder | Server configuration only |
+| `RETRIEVAL_MIN_SIMILARITY` | 0.31, chosen by the eval set (section 7) | Server configuration only |
 
 A service scoring below the threshold is dropped, so fewer than `top_k` results,
 or none, can come back. None is a real answer: `results` is empty and `message`
@@ -404,25 +404,8 @@ says the clinic does not offer it, rather than showing the least-bad matches. Th
 request has no threshold field, so no client can ask for weak matches; a
 `min_similarity` sent anyway is ignored.
 
-The 0.65 is too strict. Measured on Week 4 Day 3 with the local model, over the
-three indexed seed services, no threshold applied:
-
-| Query | Best match | Next |
-|---|---|---|
-| knee x-ray | Knee X-Ray 0.798 | Echocardiogram 0.194 |
-| heart ultrasound | Echocardiogram 0.643 | Full Skin Check 0.185 |
-| scan of my heart | Echocardiogram 0.483 | Full Skin Check 0.274 |
-| my knee hurts when I walk | Knee X-Ray 0.471 | Echocardiogram 0.035 |
-| skin rash | Full Skin Check 0.418 | Knee X-Ray 0.056 |
-| check a mole on my arm | Full Skin Check 0.316 | Knee X-Ray 0.177 |
-| dental cleaning (not offered) | Full Skin Check 0.277 | Knee X-Ray 0.213 |
-| hair transplant (not offered) | Full Skin Check 0.212 | Echocardiogram 0.080 |
-| asdkjh qwe zzz | Full Skin Check 0.038 | Knee X-Ray 0.006 |
-
-The right service ranked first every time one applied. At 0.65 only "knee
-x-ray" gets an answer. The lowest right answer (0.316) and the highest
-not-offered query (0.277) are close, so the threshold needs task 4.10's eval
-set, not these nine queries.
+The 0.31 holds for `all-MiniLM-L6-v2` only. Another model spreads its scores
+differently, so changing `EMBEDDING_MODEL` means running `make eval` again.
 
 ### Filtering
 
@@ -471,8 +454,126 @@ FastAPI runs a plain `def` route in its thread pool instead.
 
 ### Known limitations
 
-- `RETRIEVAL_MIN_SIMILARITY` is still the 0.65 placeholder (above).
-- A `PUBLISHED` service with no vector cannot be found. The 20 services left by
-  Day 2's crash demo are in that state in the dev database until `make reset`.
+- A `PUBLISHED` service with no vector cannot be found. A service published
+  before Week 4 added embedding is in that state until it is published again.
 - After `EMBEDDING_MODEL` changes, search returns nothing until every service is
   published again, because no stored vector matches the new model.
+- A query for a kind of service the clinic offers, but for another part of the
+  body or another purpose, gets a weak match instead of "we don't offer that":
+  "chest x-ray" returns Knee X-Ray (section 7).
+
+## 7. Retrieval evaluation
+
+`scripts/eval_retrieval.py` (`make eval`) measures how often search finds the
+service a person meant, and it chose the threshold in section 6. It runs against
+the seeded stack, with the embedding provider and vector store `POST /search`
+uses, but ranks every published service with no threshold. The threshold is what
+it is choosing, so applying the current one would hide the scores the choice
+depends on.
+
+### The eval set
+
+`EVAL_SET` holds 34 queries written the way a patient might type them:
+
+- 24 offered: two for each of the 12 seeded services, each paired with the
+  service a person reading the catalogue would pick.
+- 10 not offered, such as "dental cleaning" and "eye test for new glasses",
+  plus one line of gibberish.
+
+The queries name a service, how it is done, or how to prepare for it ("what
+should I wear for a knee x-ray"). None describes a symptom, because picking a
+test for a symptom is clinical reasoning. Some are written to be hard: "MRI of
+my knee" competes with Knee X-Ray, and "chest x-ray", "pregnancy ultrasound
+scan", "sports massage" and "hair transplant" each share words with a service
+the clinic does offer.
+
+Expected services are named, not numbered, because ids differ between
+databases. The script stops if an expected service is not published, so a typo
+or an old seed cannot pass for a miss, and a unit test checks that the set
+expects exactly the seeded catalogue.
+
+The seed catalogue grew from 3 services to 12 for this (Week 4 Day 4). With 3,
+the right service was always in the top 5, so a top-5 hit rate could only read
+100%. The 12 include close pairs on purpose: Knee X-Ray and Knee MRI Scan, Full
+Skin Check and Mole Mapping, Resting ECG and the 24-hour monitor, and each
+department's consultation beside its other services.
+
+### Hit rate
+
+Measured on Week 4 Day 4 with `all-MiniLM-L6-v2`, no threshold:
+
+| Expected service ranked | Offered queries |
+|---|---|
+| First | 20 of 24 (83%) |
+| In the top 3 | 22 of 24 (92%) |
+| In the top 5 | 24 of 24 (100%) |
+
+The four that did not rank first are all short, general requests:
+
+| Query | Expected service: rank, similarity | Ranked first |
+|---|---|---|
+| physio appointment | Physiotherapy Session: 4th, 0.332 | Cardiology Consultation 0.469 |
+| see a skin doctor | Dermatology Consultation: 4th, 0.340 | Full Skin Check 0.383 |
+| see a cardiologist | Cardiology Consultation: 2nd, 0.437 | Resting ECG 0.451 |
+| see a bone and joint specialist | Orthopaedic Consultation: 2nd, 0.463 | Knee X-Ray 0.491 |
+
+Each still found its service within the 5 results `POST /search` returns.
+
+### Choosing the threshold
+
+`POST /search` returns the 5 best services scoring at least the threshold. For
+each candidate, the sweep counts the offered queries whose service would be among
+them, and the not-offered queries that would get "we don't offer that":
+
+| Threshold | Offered: service found | Not offered: refused | Right, of 34 |
+|---|---|---|---|
+| 0.20 | 24 | 2 | 26 |
+| 0.25 | 24 | 2 | 26 |
+| 0.30 | 24 | 7 | 31 |
+| **0.31, chosen** | **24** | **7** | **31** |
+| 0.35 | 22 | 7 | 29 |
+| 0.40 | 21 | 7 | 28 |
+| 0.45 | 20 | 9 | 29 |
+| 0.50 | 17 | 10 | 27 |
+| 0.55 | 15 | 10 | 25 |
+| 0.60 | 14 | 10 | 24 |
+| 0.65, Day 1 placeholder | 8 | 10 | 18 |
+
+At the 0.65 placeholder, 16 of the 24 offered queries were told the clinic does
+not offer what they asked for. At 0.31 all 24 find their service, and 7 of the
+10 not-offered queries are still refused.
+
+Any threshold between 0.298 and 0.332 gets the same 31 right. The highest unrelated
+not-offered query scored 0.298 ("hair transplant") and the lowest offered
+service 0.332 ("physio appointment"). 0.31 sits 0.012 above the first and 0.022
+below the second, closer to the not-offered side on purpose. A patient told
+"we don't offer that" about a service the clinic does offer cannot book it; a
+weak match still names a real service, which the patient can see does not fit.
+
+Checked live with 0.31 set: "physio appointment" returned Physiotherapy Session
+fourth at 0.332, and "hair transplant" returned no results and the "we don't
+offer" message.
+
+### What no threshold can fix
+
+Three not-offered queries score above three offered ones, so no threshold can
+refuse them without also refusing real services:
+
+| Not-offered query | Best match |
+|---|---|
+| sports massage | Physiotherapy Session 0.489 |
+| pregnancy ultrasound scan | Echocardiogram 0.441 |
+| chest x-ray | Knee X-Ray 0.428 |
+
+Each asks for a kind of service the clinic offers, for another purpose or part
+of the body. "chest x-ray" is closer to Knee X-Ray (0.428) than "physio
+appointment" is to Physiotherapy Session (0.332). Search returns these as weak
+matches. The Week 5 assistant will see the matched service's name and text, so
+it can tell a patient the clinic's X-ray is of the knee; search alone cannot.
+
+### Known limitations
+
+- 34 queries, written by the same person who wrote the catalogue. The gap the
+  threshold sits in is 0.034 wide, and new queries could land inside it.
+- The numbers hold for this model and this catalogue. A new model, or services
+  with different wording, needs `make eval` run again.
