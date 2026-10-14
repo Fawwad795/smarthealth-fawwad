@@ -114,7 +114,11 @@ class Settings(BaseSettings):
     # returned. Below it a match is noise, and an empty result is the
     # "we don't offer that" answer. Read on every search, never sent by the
     # client: a client that could lower it could ask for noise.
-    retrieval_min_similarity: float = 0.65
+    # 0.31 comes from the eval set (scripts/eval_retrieval.py, task 4.10):
+    # unrelated queries scored at most 0.298, and every offered query's
+    # service at least 0.332. It holds for all-MiniLM-L6-v2 only; a new
+    # model needs `make eval` run again.
+    retrieval_min_similarity: float = 0.31
     # The longest search query, in characters. Shared with the Week 5
     # assistant's question limit.
     ai_max_question_chars: int = 1000
