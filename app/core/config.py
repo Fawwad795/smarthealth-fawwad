@@ -106,6 +106,19 @@ class Settings(BaseSettings):
     # call fails and is classified before Temporal abandons the attempt.
     embedding_timeout_seconds: float = 20.0
 
+    # --- Retrieval (Week 4+) ---
+    # How many services POST /search returns when the request names no
+    # top_k. The brief's default.
+    retrieval_top_k: int = 5
+    # The lowest cosine similarity a service may score and still be
+    # returned. Below it a match is noise, and an empty result is the
+    # "we don't offer that" answer. Read on every search, never sent by the
+    # client: a client that could lower it could ask for noise.
+    retrieval_min_similarity: float = 0.65
+    # The longest search query, in characters. Shared with the Week 5
+    # assistant's question limit.
+    ai_max_question_chars: int = 1000
+
 
 # Imported everywhere as: from app.core.config import settings
 settings = Settings()

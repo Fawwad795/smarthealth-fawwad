@@ -326,3 +326,143 @@ def test_stored_vectors_rank_by_cosine_distance(
     ).all()
 
     assert ranked == [chunks[1].id, chunks[2].id, chunks[0].id]
+
+
+@pytest.fixture()
+def third_service(db_session: Session, department: Department) -> Service:
+    s = Service(department_id=department.id, name="Stress Test")
+    db_session.add(s)
+    db_session.flush()
+    return s
+
+
+def _index(
+    store: PgVectorStore,
+    db: Session,
+    service: Service,
+    *leading: float,
+    published: bool = True,
+    model: str = "test-model",
+) -> None:
+    """Give `service` one chunk whose vector points along `leading`."""
+    _store_all(store, service, _record(_chunk(db, service), *leading, model=model))
+    store.set_published(service.id, published)
+
+
+def _search(
+    store: PgVectorStore,
+    *leading: float,
+    top_k: int = 5,
+    min_similarity: float = 0.0,
+    model: str = "test-model",
+) -> list[tuple[int, float]]:
+    """(service_id, similarity rounded to 3 places) for each hit."""
+    return [
+        (hit.service_id, round(hit.similarity, 3))
+        for hit in store.search(
+            _vector(*leading), model=model, top_k=top_k, min_similarity=min_similarity
+        )
+    ]
+
+
+def test_search_ranks_services_by_similarity_with_their_metadata(
+    store: PgVectorStore,
+    db_session: Session,
+    service: Service,
+    other_service: Service,
+    third_service: Service,
+) -> None:
+    _index(store, db_session, service, 0.0, 1.0)  # at right angles: 0
+    _index(store, db_session, other_service, 1.0, 0.0)  # same direction: 1
+    _index(store, db_session, third_service, 1.0, 1.0)  # 45 degrees: 0.707
+
+    hits = store.search(
+        _vector(1.0, 0.0), model="test-model", top_k=5, min_similarity=0.0
+    )
+
+    assert [(hit.service_id, round(hit.similarity, 3)) for hit in hits] == [
+        (other_service.id, 1.0),
+        (third_service.id, 0.707),
+        (service.id, 0.0),
+    ]
+    assert hits[0].department == "Cardiology"
+    assert hits[0].specialties == ["Cardiology"]
+
+
+def test_search_never_returns_an_unpublished_vector(
+    store: PgVectorStore,
+    db_session: Session,
+    service: Service,
+    other_service: Service,
+) -> None:
+    """The published filter is in the query: an unpublished vector that
+    matches the query exactly still does not come back."""
+    _index(store, db_session, service, 1.0, published=False)
+    _index(store, db_session, other_service, 1.0, 1.0)
+
+    assert _search(store, 1.0) == [(other_service.id, 0.707)]
+
+
+def test_search_skips_vectors_made_by_another_model(
+    store: PgVectorStore,
+    db_session: Session,
+    service: Service,
+    other_service: Service,
+) -> None:
+    _index(store, db_session, service, 1.0, model="old-model")
+    _index(store, db_session, other_service, 1.0, 1.0)
+
+    assert _search(store, 1.0) == [(other_service.id, 0.707)]
+
+
+def test_search_drops_services_below_the_threshold(
+    store: PgVectorStore,
+    db_session: Session,
+    service: Service,
+    other_service: Service,
+) -> None:
+    """0.707 clears 0.7 and is the only one that does; at 0.8 nothing does,
+    which is the "we don't offer that" answer."""
+    _index(store, db_session, service, 1.0, 1.0)  # 0.707
+    _index(store, db_session, other_service, 1.0, 2.0)  # 0.447
+
+    assert _search(store, 1.0, min_similarity=0.7) == [(service.id, 0.707)]
+    assert _search(store, 1.0, min_similarity=0.8) == []
+
+
+def test_search_returns_at_most_top_k(
+    store: PgVectorStore,
+    db_session: Session,
+    service: Service,
+    other_service: Service,
+    third_service: Service,
+) -> None:
+    _index(store, db_session, service, 1.0)
+    _index(store, db_session, other_service, 1.0, 1.0)
+    _index(store, db_session, third_service, 1.0, 2.0)
+
+    assert [sid for sid, _ in _search(store, 1.0, top_k=2)] == [
+        service.id,
+        other_service.id,
+    ]
+
+
+def test_search_returns_a_service_once_at_its_best_chunks_score(
+    store: PgVectorStore,
+    db_session: Session,
+    service: Service,
+    other_service: Service,
+) -> None:
+    """A service with two chunks that both match must not take two of the
+    top_k places; it is ranked by its nearer chunk. Both of its chunks
+    (0.995, 0.981) beat the other service (0.894), so without the
+    one-per-service rule they would fill the top 2 between them."""
+    near, far = _chunk(db_session, service, 0), _chunk(db_session, service, 1)
+    _store_all(store, service, _record(near, 1.0, 0.1), _record(far, 1.0, 0.2))
+    store.set_published(service.id, True)
+    _index(store, db_session, other_service, 1.0, 0.5)
+
+    assert _search(store, 1.0, top_k=2) == [
+        (service.id, 0.995),
+        (other_service.id, 0.894),
+    ]
