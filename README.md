@@ -193,6 +193,7 @@ flow. Idempotent event handling arrives with Week 3.
 | POST/GET/PATCH | `/api/v1/departments`, `/departments/{id}` | Department CRUD | Admin write, any staff read |
 | POST/GET/PATCH | `/api/v1/services`, `/services/{id}` | Service CRUD (always created `DRAFT`) | Admin write, any staff read |
 | GET | `/api/v1/services/search` | Public catalog: published + offered, filterable | Public |
+| POST | `/api/v1/search` | Semantic search: published services ranked by meaning, with similarity scores; empty with a message when nothing clears the threshold | Any signed-in user |
 | POST/GET/PATCH | `/api/v1/providers`, `/providers/{id}` | Provider profile CRUD | Admin write, any staff read |
 | POST/GET/PATCH | `/api/v1/providers/{id}/schedules`, `/schedules/{id}` | Weekly working-hours templates | Admin write, any staff read |
 | POST | `/api/v1/providers/{id}/schedules/generate-slots` | Turn templates into bookable `Slot` rows, idempotent | Admin |

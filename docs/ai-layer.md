@@ -364,3 +364,115 @@ message still names the underlying exception.
 - Between an edit and the re-publish, Week 1's keyword search shows the new
   text and semantic search still matches the old. Nothing re-publishes
   automatically after an edit.
+
+## 6. Retrieval: `POST /search`
+
+`POST /api/v1/search` takes a query in the patient's own words and returns the
+published services nearest to it in meaning, each with its department,
+specialties and similarity score. Any signed-in user may call it.
+
+```json
+POST /api/v1/search
+{"query": "knee x-ray", "top_k": 5}
+
+200
+{
+  "results": [
+    {"service_id": 5, "name": "Knee X-Ray", "department": "Orthopaedics",
+     "specialties": ["Orthopedics"], "similarity": 0.798}
+  ],
+  "min_similarity": 0.65,
+  "message": null
+}
+```
+
+The query is embedded with the same provider and model that embedded the
+services, and the vector store returns the nearest services in one SQL query
+(`PgVectorStore.search`). The service layer is `app/ai/retrieval.py`, which the
+Week 5 assistant will call too.
+
+### k and the threshold
+
+| Setting | Value | Who sets it |
+|---|---|---|
+| `top_k` | 5 by default (`RETRIEVAL_TOP_K`), 1 to 20 | The request |
+| `RETRIEVAL_MIN_SIMILARITY` | 0.65, a placeholder | Server configuration only |
+
+A service scoring below the threshold is dropped, so fewer than `top_k` results,
+or none, can come back. None is a real answer: `results` is empty and `message`
+says the clinic does not offer it, rather than showing the least-bad matches. The
+request has no threshold field, so no client can ask for weak matches; a
+`min_similarity` sent anyway is ignored.
+
+The 0.65 is too strict. Measured on Week 4 Day 3 with the local model, over the
+three indexed seed services, no threshold applied:
+
+| Query | Best match | Next |
+|---|---|---|
+| knee x-ray | Knee X-Ray 0.798 | Echocardiogram 0.194 |
+| heart ultrasound | Echocardiogram 0.643 | Full Skin Check 0.185 |
+| scan of my heart | Echocardiogram 0.483 | Full Skin Check 0.274 |
+| my knee hurts when I walk | Knee X-Ray 0.471 | Echocardiogram 0.035 |
+| skin rash | Full Skin Check 0.418 | Knee X-Ray 0.056 |
+| check a mole on my arm | Full Skin Check 0.316 | Knee X-Ray 0.177 |
+| dental cleaning (not offered) | Full Skin Check 0.277 | Knee X-Ray 0.213 |
+| hair transplant (not offered) | Full Skin Check 0.212 | Echocardiogram 0.080 |
+| asdkjh qwe zzz | Full Skin Check 0.038 | Knee X-Ray 0.006 |
+
+The right service ranked first every time one applied. At 0.65 only "knee
+x-ray" gets an answer. The lowest right answer (0.316) and the highest
+not-offered query (0.277) are close, so the threshold needs task 4.10's eval
+set, not these nine queries.
+
+### Filtering
+
+Every filter is a `WHERE` clause in the vector query, applied before ranking, so
+an excluded vector never takes one of the `top_k` places:
+
+- **Published only.** The vector's own `published` flag (section 4), which is
+  false for a `DRAFT`, `PUBLISHING`, `PUBLISH_FAILED` or `INACTIVE` service.
+  "Offered" means the same here as in Week 1's catalogue search: a service is
+  offered exactly when it is `PUBLISHED`, and `INACTIVE` is how the clinic
+  withdraws one.
+- **Current model only.** A vector made by another model is not comparable with
+  the query's.
+- **The threshold**, as a maximum cosine distance (`<=>` is 1 − similarity).
+
+A service with several chunks appears once, at its nearest chunk's score
+(`DISTINCT ON (service_id)`). Today every service has one chunk, so this changes
+nothing until one has more.
+
+### PHI scoping
+
+Service search has no patient data to scope. The index is built only from
+service, department and specialty fields (section 2), so no query can reach a
+patient's details through it; a test searches for a synthetic patient's name
+and phone number and finds nothing. The query is the caller's own words and can
+name a condition or a person, so it is never logged or stored: the log line
+carries the result ids only (`search returned 1 services: [5]`), and a test
+checks that a name in the query does not reach the log.
+
+Scoping a patient's own data to the caller starts with the Week 5 assistant,
+the first retrieval that reads appointments. It will filter by the
+authenticated patient's id in the SQL query, in the endpoint, never in the
+prompt.
+
+### Failure
+
+| Request | Response |
+|---|---|
+| No token | 401 |
+| Empty or whitespace-only query, over 1,000 characters (`AI_MAX_QUESTION_CHARS`), or `top_k` outside 1–20 | 422 `VALIDATION_ERROR` |
+| The query cannot be embedded: provider down, no key, or a provider configured for vectors of another size | 503 `SEARCH_UNAVAILABLE`; the provider's message goes to the log, not the client |
+
+The route is a plain `def`, not `async def`. Embedding with the local model is
+CPU work that would stall every other request if it ran on the event loop;
+FastAPI runs a plain `def` route in its thread pool instead.
+
+### Known limitations
+
+- `RETRIEVAL_MIN_SIMILARITY` is still the 0.65 placeholder (above).
+- A `PUBLISHED` service with no vector cannot be found. The 20 services left by
+  Day 2's crash demo are in that state in the dev database until `make reset`.
+- After `EMBEDDING_MODEL` changes, search returns nothing until every service is
+  published again, because no stored vector matches the new model.
