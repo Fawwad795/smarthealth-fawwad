@@ -7,10 +7,14 @@ stale one. These tests publish, change the service, publish again, and
 read chunk_embeddings back.
 """
 
+import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from temporalio.client import Client
 
+from app.ai.embeddings import FakeEmbeddings
+from app.ai.retrieval import search_services
+from app.core.config import settings
 from app.models import ChunkEmbedding, ContentChunk, Department, Service
 from app.models.enums import ContentSourceType, ServiceStatus
 from app.schemas.service import ServiceUpdate
@@ -77,6 +81,42 @@ async def test_republishing_an_edited_service_leaves_one_vector_of_the_new_text(
     assert "knee and lower leg" in _chunk(db_session, service).text
     assert vector.published is True
     assert db_session.get(ChunkEmbedding, old_vector_id) is None
+
+
+def _found(db_session: Session, query: str) -> list[int]:
+    """The ids search returns for `query`, embedded the way the
+    publishing_client fixture embedded the services."""
+    return [
+        result.service_id
+        for result in search_services(db_session, query, 5, FakeEmbeddings())
+    ]
+
+
+async def test_wording_removed_by_a_republish_no_longer_finds_the_service(
+    db_session: Session,
+    department: Department,
+    publishing_client: Client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Re-indexing seen from search. A stale vector would go on matching
+    the old wording, so a word only the old text had must stop finding the
+    service once the edited text is published."""
+    monkeypatch.setattr(settings, "retrieval_min_similarity", 0.1)
+    service = _service(db_session, department)
+    service.prep_instructions = "Bring the orange form."
+    db_session.flush()
+    await _publish(db_session, publishing_client, service)
+    assert _found(db_session, "orange") == [service.id]
+
+    update_service(
+        db_session,
+        service.id,
+        ServiceUpdate(prep_instructions="Bring the purple form."),
+    )
+    await _publish(db_session, publishing_client, service)
+
+    assert _found(db_session, "orange") == []
+    assert _found(db_session, "purple") == [service.id]
 
 
 async def test_republishing_an_unchanged_service_keeps_its_vector_searchable(

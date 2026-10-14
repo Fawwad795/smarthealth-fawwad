@@ -184,6 +184,27 @@ def test_search_with_nothing_above_the_threshold_says_we_dont_offer_it(
     assert response.json()["message"].startswith("We don't offer a service")
 
 
+def test_search_ignores_a_threshold_sent_by_the_client(
+    client: TestClient,
+    db_session: Session,
+    department: Department,
+    patient_auth_headers: dict,
+    fake_search: None,
+) -> None:
+    """The threshold is server configuration. "hair transplant" shares no
+    word with the knee text, so it scores 0: a client threshold of 0 would
+    return it, and the server's must not."""
+    _indexed(db_session, department, "Knee X-Ray", KNEE_TEXT)
+
+    response = _search(
+        client, patient_auth_headers, query="hair transplant", min_similarity=0.0
+    )
+
+    assert response.status_code == 200
+    assert response.json()["results"] == []
+    assert response.json()["min_similarity"] == THRESHOLD
+
+
 def test_search_returns_at_most_top_k(
     client: TestClient,
     db_session: Session,
@@ -355,4 +376,22 @@ def test_search_logs_result_ids_but_never_the_query(
     _search(client, patient_auth_headers, query="knee x-ray for Zebulon")
 
     assert f"search returned 1 services: [{knee.id}]" in caplog.text
+    assert "Zebulon" not in caplog.text
+
+
+def test_a_failed_search_logs_the_reason_but_never_the_query(
+    client: TestClient,
+    patient_auth_headers: dict,
+    use_provider: Callable[[EmbeddingProvider], None],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The 503 path logs the provider's message, which carries status codes
+    and counts only. The query stays out of that line too."""
+    use_provider(_UnreachableEmbeddings())
+    caplog.set_level(logging.INFO, logger="app.ai.retrieval")
+
+    response = _search(client, patient_auth_headers, query="knee x-ray for Zebulon")
+
+    assert response.status_code == 503
+    assert "search unavailable: Hugging Face unreachable" in caplog.text
     assert "Zebulon" not in caplog.text
