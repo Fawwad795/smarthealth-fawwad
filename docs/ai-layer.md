@@ -577,3 +577,41 @@ it can tell a patient the clinic's X-ray is of the knee; search alone cannot.
   threshold sits in is 0.034 wide, and new queries could land inside it.
 - The numbers hold for this model and this catalogue. A new model, or services
   with different wording, needs `make eval` run again.
+
+## 8. Testing retrieval offline
+
+Every retrieval test embeds with `FakeEmbeddings` or with vectors written by
+hand, so the suite needs no model and no network (task 4.11). `FakeEmbeddings`
+hashes each word to a position in the vector, so texts that share words score
+high. It knows nothing about meaning, which is enough to test filters, the
+threshold and re-indexing.
+
+Two autouse fixtures in `tests/conftest.py` make this hold for every test,
+including one written in a hurry:
+
+- `fake_embeddings_by_default` sets `EMBEDDING_PROVIDER` to `fake`. The test
+  container reads the developer's `.env`, so a test that forgot to pass a fake
+  used whatever that file named: the in-image model here, or the hosted API on
+  a machine whose `.env` asks for it.
+- `no_network` (`tests/network_guard.py`) makes any lookup of a host outside the
+  compose stack raise `NetworkAccessBlocked`. Postgres, Redis and this machine
+  are allowed. Tests marked `live` are left alone, and skip themselves unless
+  `RUN_LIVE_TESTS=1`. The error is deliberately not an `OSError`: httpx would
+  turn one into a connection error, the hosted provider would report "Hugging
+  Face unreachable", and a test expecting a 503 would pass while it was really
+  trying to reach the internet.
+
+With both fixtures on, the existing suite passed unchanged, so no test had been
+reaching the network or depending on `.env`'s provider.
+
+| Guarantee | Tested by |
+|---|---|
+| Published services only | An unpublished vector is never returned, in the vector store and through `POST /search` for each of `DRAFT`, `PUBLISHING`, `PUBLISH_FAILED` and `INACTIVE`. Unpublishing, and a re-publish while it runs, take the vectors out of search |
+| Current model only | A vector made by another model is skipped |
+| Threshold | A weaker service is dropped, a score exactly at the threshold is kept, nothing above it gives the "we don't offer" message, and a `min_similarity` sent by the client is ignored |
+| PHI | A synthetic patient's name and phone number cannot be found, and the query never reaches the log, on success or on a 503 |
+| Re-index | Re-publishing edited text leaves one vector, of the new text; unchanged text keeps its vector; a word only the old text had stops finding the service |
+
+Each guarantee was also broken on purpose on Week 4 Day 4, one at a time: 14
+breaks, including turning off each fixture above, and every one failed at
+least one test.
