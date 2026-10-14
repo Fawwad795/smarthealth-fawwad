@@ -68,6 +68,21 @@ behaviour, not "at the end".
 - Workers do not hot-reload. Restart `consumer` / `celery-worker` before any live
   check, or it proves the old code.
 
+## Established in Week 4 — follow it
+
+- **Two autouse fixtures guard every test**: `fake_embeddings_by_default` (the test
+  container reads the developer's `.env`) and `no_network` (`tests/network_guard.py`
+  blocks lookups of any host outside the compose stack). Real-API tests are marked
+  `live` and skip unless `RUN_LIVE_TESTS=1`.
+- **The guard's error is deliberately not an `OSError`.** httpx would turn one into a
+  connection error, and a test expecting a 503 would pass while actually trying to
+  reach the internet.
+- **Test file basenames must be unique across `unit/` and `integration/`** — there is
+  no `__init__.py`, so two `test_x.py` files collide at collection.
+- **`migrations/env.py` calls `fileConfig(..., disable_existing_loggers=False)`.**
+  The default silences every `app.*` logger once a migration has run, and every
+  log-assertion test then captures nothing.
+
 ## Never
 
 - Real network calls. Fakes behind the provider interfaces.

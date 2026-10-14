@@ -109,3 +109,28 @@ or clinical text. When an answer is wrong, it must be reconstructable from ids a
 must pass with no network access.** Real-API tests are integration tests, marked and
 skippable. API keys live in the environment only — a committed key is an automatic
 fail and must be rotated.
+
+## Established in Week 4 — follow it
+
+- **Vectors are stored `published = false`; only `mark_published` sets it true**, in
+  the same transaction that sets the service `PUBLISHED`. Search filters on the
+  vector's own flag, so an unfinished publish is never searchable.
+- **Search filters in SQL, before ranking**: `published`, the current `model`, and
+  the threshold as `distance <= 1 - t`. An excluded vector never takes a `top_k`
+  place. Vectors from two models are not comparable.
+- **Re-publish goes `PUBLISHED`/`INACTIVE` → `PUBLISHING` directly**, never via
+  `DRAFT`; `start_publish` unpublishes the old vectors in the same transaction.
+  Publish and unpublish lock the row (`with_for_update`) before checking status —
+  without it 5 of 20 concurrent re-publishes passed the check.
+- **Skip re-embedding by chunk id + model, not by hash.** `chunk_content` keeps a
+  chunk whose `text_hash` is unchanged, so any surviving chunk is unchanged by
+  construction. This only works if the same service always yields the same text:
+  specialties are sorted and de-duplicated.
+- **The threshold is server config only** (`RETRIEVAL_MIN_SIMILARITY`, 0.31 for
+  `all-MiniLM-L6-v2`), chosen by `make eval`. No request field can lower it. Re-run
+  the eval after changing the model. The eval names services, never ids.
+- **Provider errors carry the status code and batch size only** — never the texts
+  or the response body, which can echo a patient's words. Activities re-raise them
+  `from None`: the httpx cause chain exceeded Temporal's failure size limit.
+- **Never log the search query**; log the result ids. A route that embeds is a plain
+  `def`, not `async def`: local embedding is CPU work and would stall the event loop.
