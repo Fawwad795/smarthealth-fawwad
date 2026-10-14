@@ -1540,3 +1540,67 @@ and embed inside the publish workflow.
 - Re-publish for 4.7: PUBLISHED -> PUBLISHING directly, or back through DRAFT?
   Either way the vectors stay unpublished until it finishes.
 - Week 3's two (relay `attempts=1`, uncovered handler branches) still open.
+
+### Day 3 - 2026-10-14
+
+**Goal:** Keep unchanged chunks on re-publish, make re-publish and unpublish
+re-index cleanly, and ship `POST /search`.
+
+**Done**
+
+- 4.9: `chunk_content` keeps a chunk whose hash is unchanged; `embed_chunks`
+  embeds only chunks with no vector from the current model. Live re-publish of
+  the same text: `embedded 0 of 1`.
+- 4.7: publish accepts PUBLISHED and INACTIVE; the old vectors leave search
+  while it runs. New `POST /services/{id}/unpublish`.
+- Publish and unpublish lock the service row; the seed skips PUBLISHED itself.
+- 4.8: `POST /search` with `top_k` (default 5), the threshold, published and
+  model filters in SQL, one result per service, 503 if embedding fails.
+- PHI: the index holds service text only, and the query is never logged; a
+  test for each.
+- 470 -> 526 tests, 98% coverage; 31 mutations caught, two weak tests fixed.
+
+**Decisions**
+
+| Decision | Why |
+|---|---|
+| Re-publish goes PUBLISHED -> PUBLISHING, not via DRAFT | DRAFT checks nothing; old vectors are hidden meanwhile |
+| Skip a chunk that has a vector from this model | Changed chunks are deleted, so survivors are unchanged |
+| Row lock on publish and unpublish | Without it 5 of 20 concurrent re-publishes passed the check |
+| Search filters in the vector query | An excluded vector never takes a `top_k` place |
+| Threshold is server config only | A client could otherwise ask for noise |
+| Search PHI: no patient data indexed, query never logged | Patient scoping starts with Week 5's appointments |
+| `fileConfig(disable_existing_loggers=False)` | Migrations in tests silenced every `app.*` logger |
+
+**Cost time**
+
+- The log test captured nothing: Alembic's `fileConfig` had disabled every app
+  logger in the test process.
+- Two tests passed with their guard removed: `embedded_at` on kept chunks, and
+  the one-result-per-service ranking. Both rewritten.
+- The seed re-run test proved "no second publish" by chunk id, which 4.9 broke;
+  it now checks `published_at`.
+- Live-check script: Windows Python cannot read Git Bash's `/tmp`.
+
+**Explain out loud**
+
+- In one flush SQLAlchemy inserts before it deletes, so `chunk_content` flushes
+  the deletes first or the unique `(source, index)` rejects the new chunk.
+- `<=>` is cosine distance, so a minimum similarity becomes `distance <= 1 - t`.
+- `SELECT ... FOR UPDATE` makes a second publish wait, then read PUBLISHING
+  and get a 409.
+
+**Carrying into Day 4**
+
+- 4.10 eval set. The 0.65 threshold is too strict: right answers scored 0.316
+  to 0.798, a not-offered query 0.277.
+- `make reset` first: 20 crash-demo services are PUBLISHED with no vectors.
+- 4.11 is mostly covered; 4.12 is the docs pass.
+- Regenerate `docs/diagrams/erd-core-domain.svg`.
+
+**Open questions**
+
+- Is a local model acceptable in place of a hosted API for the demo?
+- Is "no patient data in the index" enough PHI scoping for `/search`, or does
+  the mentor expect patient-scoped retrieval this week?
+- Week 3's two (relay `attempts=1`, uncovered handler branches) still open.
