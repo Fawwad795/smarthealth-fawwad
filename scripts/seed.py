@@ -22,6 +22,7 @@ a table that will be built next week would just be thrown away.
 
 import asyncio
 from datetime import date, timedelta
+from typing import NamedTuple
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -75,6 +76,105 @@ SEED_ACCOUNTS = (
     "patient.one@example.com",
     "patient.two@example.com",
     "patient.three@example.com",
+)
+
+
+class SeedService(NamedTuple):
+    """One catalogue entry: the department it belongs to, by name, and the
+    three text fields the publish workflow builds its chunk from."""
+
+    department: str
+    name: str
+    description: str
+    prep: str
+
+
+# The service catalogue, four per department. Twelve rather than three so
+# the retrieval eval (task 4.10) means something: with three services,
+# "the right one is in the top 5" was true of every query. Some pairs are
+# deliberately close -- Knee X-Ray and Knee MRI Scan, Full Skin Check and
+# Mole Mapping, Resting ECG and the 24-hour monitor, and each department's
+# consultation -- because that is where search can actually pick wrong.
+# Operations only: what the service is and how to prepare for it, never a
+# symptom, a diagnosis or a treatment (rule 7).
+SEED_SERVICES = (
+    SeedService(
+        "Cardiology",
+        "Echocardiogram",
+        "Ultrasound imaging of the heart.",
+        "No special preparation required. Arrive 10 minutes early.",
+    ),
+    SeedService(
+        "Cardiology",
+        "Resting ECG",
+        "A recording of the heart's electrical activity while lying still.",
+        "Wear a top that is easy to remove. Do not put body lotion on your chest.",
+    ),
+    SeedService(
+        "Cardiology",
+        "24-Hour Heart Monitor Fitting",
+        "Fitting of a small recorder worn at home for 24 hours and returned "
+        "the next day.",
+        "Shower before the appointment; the recorder must stay dry while you "
+        "wear it.",
+    ),
+    SeedService(
+        "Cardiology",
+        "Cardiology Consultation",
+        "A first appointment with a cardiologist.",
+        "Bring any letters or reports from earlier tests. Arrive 15 minutes "
+        "early to register.",
+    ),
+    SeedService(
+        "Orthopaedics",
+        "Knee X-Ray",
+        "Standard imaging of the knee joint.",
+        "Wear loose clothing; remove any metal jewellery near the knee.",
+    ),
+    SeedService(
+        "Orthopaedics",
+        "Knee MRI Scan",
+        "Detailed magnetic imaging of the knee, about 30 minutes in the scanner.",
+        "Remove all metal items, including watches, hair clips and belts.",
+    ),
+    SeedService(
+        "Orthopaedics",
+        "Physiotherapy Session",
+        "A one-to-one exercise and mobility session with a physiotherapist.",
+        "Wear loose clothing you can move in, and trainers.",
+    ),
+    SeedService(
+        "Orthopaedics",
+        "Orthopaedic Consultation",
+        "A first appointment with an orthopaedic specialist about joints, "
+        "bones or muscles.",
+        "Bring any earlier X-ray or scan reports.",
+    ),
+    SeedService(
+        "Dermatology",
+        "Full Skin Check",
+        "A full-body skin examination.",
+        "Avoid wearing makeup or nail polish to the appointment.",
+    ),
+    SeedService(
+        "Dermatology",
+        "Mole Mapping",
+        "Photographs of moles across the body, kept to compare at later visits.",
+        "Do not use fake tan or body lotion for two days beforehand.",
+    ),
+    SeedService(
+        "Dermatology",
+        "Patch Testing",
+        "Small patches worn on the back for 48 hours, with three short visits "
+        "in one week.",
+        "Wear an old dark top. Keep your back dry until the patches come off.",
+    ),
+    SeedService(
+        "Dermatology",
+        "Dermatology Consultation",
+        "A first appointment with a dermatologist about skin, hair or nails.",
+        "Remove nail polish if the appointment is about your nails.",
+    ),
 )
 
 
@@ -339,40 +439,29 @@ def seed(db: Session) -> list[Service]:
             db, provider.id, today, today + timedelta(days=14)
         )
 
-    knee_xray = _get_or_create_service(
-        db,
-        ortho_dept,
-        "Knee X-Ray",
-        "Standard imaging of the knee joint.",
-        "Wear loose clothing; remove any metal jewellery near the knee.",
-    )
-    echo = _get_or_create_service(
-        db,
-        cardiology_dept,
-        "Echocardiogram",
-        "Ultrasound imaging of the heart.",
-        "No special preparation required. Arrive 10 minutes early.",
-    )
-    skin_check = _get_or_create_service(
-        db,
-        derm_dept,
-        "Full Skin Check",
-        "A full-body skin examination.",
-        "Avoid wearing makeup or nail polish to the appointment.",
-    )
-
-    # These links must exist before the services are published: the
-    # workflow reads each service's specialties through them when it
-    # builds the chunk text, and a service with no link gets none.
-    _get_or_create_provider_service(db, ahmed, knee_xray)
-    _get_or_create_provider_service(db, khan, echo)
-    _get_or_create_provider_service(db, raza, skin_check)
+    # Each department has one provider, who delivers all of its services.
+    departments = {
+        "Cardiology": (cardiology_dept, khan),
+        "Orthopaedics": (ortho_dept, ahmed),
+        "Dermatology": (derm_dept, raza),
+    }
+    services = []
+    for entry in SEED_SERVICES:
+        department, provider = departments[entry.department]
+        service = _get_or_create_service(
+            db, department, entry.name, entry.description, entry.prep
+        )
+        # The link must exist before the service is published: the
+        # workflow reads its specialties through it when it builds the
+        # chunk text, and a service with no link gets none.
+        _get_or_create_provider_service(db, provider, service)
+        services.append(service)
 
     _get_or_create_patient(db, "patient.one@example.com", date(1990, 5, 14))
     _get_or_create_patient(db, "patient.two@example.com", date(1985, 11, 2))
     _get_or_create_patient(db, "patient.three@example.com", date(2000, 1, 30))
 
-    return [knee_xray, echo, skin_check]
+    return services
 
 
 async def publish_services(

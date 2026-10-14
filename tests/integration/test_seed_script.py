@@ -42,7 +42,9 @@ def test_seed_creates_the_expected_entities(db_session: Session) -> None:
     assert _count(db_session, Clinic) == 1
     assert _count(db_session, Department) == 3
     assert _count(db_session, Provider) == 3
-    assert _count(db_session, Service) == 3
+    # Twelve, four per department: a duplicate name in SEED_SERVICES would
+    # be collapsed by the get-or-create and show up here as fewer.
+    assert _count(db_session, Service) == 12
     assert _count(db_session, Patient) == 3
     assert _count(db_session, Slot) > 0
 
@@ -124,18 +126,21 @@ def test_seed_leaves_services_draft_and_linked_to_a_provider(
     PUBLISHED.
 
     Pins the Week 1 shortcut that set PUBLISHED directly: those services
-    had no chunk, so search would have had nothing to find.
+    had no chunk, so search would have had nothing to find. Each service
+    is linked to the provider of its own department, because that link is
+    where its chunk gets its specialty from.
     """
     services = seed(db_session)
 
-    assert len(services) == 3
+    assert len(services) == 12
     for service in services:
         assert service.status == ServiceStatus.DRAFT
         assert _chunks_for(db_session, service) == []
-        links = db_session.scalars(
+        [link] = db_session.scalars(
             select(ProviderService).where(ProviderService.service_id == service.id)
         ).all()
-        assert len(links) == 1
+        provider = db_session.get(Provider, link.provider_id)
+        assert provider.department_id == service.department_id
 
 
 async def test_publish_services_publishes_each_service_with_its_chunk(
