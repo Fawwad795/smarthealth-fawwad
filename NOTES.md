@@ -1671,3 +1671,74 @@ make "the suite runs offline on fake embeddings" enforced rather than assumed.
 - Near misses ("chest x-ray" -> Knee X-Ray) get a weak match, not a refusal.
   Acceptable for search, with the Week 5 assistant saying what is offered?
 - Week 3's two (relay `attempts=1`, uncovered handler branches) still open.
+
+### Day 5 - 2026-10-14
+
+**Goal:** Close out Week 4: check `docs/ai-layer.md` against the code (4.12),
+bring the README, PRD and diagrams up to date, and write the week's conventions
+back to the rules.
+
+**Done**
+
+- 4.12: every checkable claim in `docs/ai-layer.md` compared with the code; 5
+  had drifted and are fixed (`VectorStore` has 4 methods, permanent error
+  statuses, the threshold is chosen).
+- README: status, counts, AI layer in the architecture diagram, analytics
+  endpoints, package layout.
+- PRD: FR-19 split into 19a-e; NFR-2, NFR-4, milestones; three Week 4 gaps in 7.
+- Re-exported `architecture.svg`, `erd-core-domain.svg`, `publish-workflow.svg`.
+- Week 4 conventions in `rules/ai-layer.md`, `testing.md`, `data-model.md`.
+- 548 tests, 98.15% coverage, unchanged; no key-shaped string in git history.
+
+**Decisions**
+
+| Decision | Why |
+|---|---|
+| FR-19 as five rows | One cell of ~40 names could not be checked |
+| Section 1's 0.221 qualified, not re-measured | It explains the idea; section 7 has current scores |
+| Search latency left for Week 5 | Not in the 8.3 DoD; measured with the assistant's |
+| `scheduling-saga.svg` not re-exported | Its labels match the mermaid |
+
+**Cost time**
+
+- README and PRD were last updated at the Week 2 close-out: Week 3 "Not
+  started", 264 tests, no AI layer.
+- `publish-workflow.svg` had no `embed_chunks`; no note had listed it.
+- Windows Python wrote `prd.md` back with CRLF; converted to LF.
+
+**Explain out loud**
+
+- Docs drift where a later day changes what an earlier section described:
+  `search` joined `VectorStore` on Day 3, the threshold on Day 4.
+- Comparing an SVG's label set with a fresh render shows whether an export is
+  stale, without looking at it.
+
+**Carrying into the review**
+
+- Week 4 stack (#17-#21) open for the mentor; demo.
+- `docs/ai-layer.md` cost and latency, with the assistant's (Week 5).
+
+**Open questions**
+
+- Is a local model acceptable in place of a hosted API for the demo?
+- Is "no patient data in the index" enough PHI scoping for `/search`?
+- Near misses ("chest x-ray" -> Knee X-Ray) get a weak match, not a refusal.
+- Week 3's two (relay `attempts=1`, uncovered handler branches) still open.
+
+---
+
+## Weekly self-check
+
+### Week 4 - 2026-10-14
+
+1. **Finished / broken:** 4.1-4.12 complete, and every 8.3 DoD item but the
+   PR and demo. 548 tests, 98.15% coverage. Nothing known broken; three gaps
+   recorded in `docs/prd.md` 7 (near misses, re-publish downtime, PHI by
+   construction).
+2. **Not fully understood yet:** how far 0.31 holds. The gap it sits in is
+   0.034 wide, measured on 34 queries written by the catalogue's author.
+3. **Most time spent:** Day 2's provider switch. Hugging Face's free credits
+   ran out mid-check (402), and the local model meant baking it into the
+   image, blocking the Hub, and rebuilding a 3-week-old test image.
+4. **Carrying into Week 5:** review fixes, then the assistant. Its retrieval
+   reuses `app/ai/retrieval.py` and adds the first per-patient scoping.
