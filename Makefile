@@ -7,7 +7,7 @@
 # .PHONY tells make these are command names, not files to build. Without
 # it, a target would silently do nothing if a file or directory of the
 # same name existed (a `test/` directory would break `make test`).
-.PHONY: help up down logs migrate seed test test-cov lint typecheck fmt shell psql reset
+.PHONY: help up down logs migrate seed eval test test-cov lint typecheck fmt shell psql reset
 
 # The default target when you type plain `make`. Prints every target with
 # its `##` comment, so this list can never drift from the targets below.
@@ -33,6 +33,9 @@ migrate: ## Apply Alembic migrations up to head
 
 seed: ## Populate the synthetic demo dataset (safe to re-run)
 	docker compose exec api python -m scripts.seed
+
+eval: ## Report search hit rates and the threshold sweep (needs a seeded stack)
+	docker compose exec api python -m scripts.eval_retrieval
 
 test: ## Run the test suite from cold — no running API needed
 	docker compose run --rm test
