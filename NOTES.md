@@ -1604,3 +1604,70 @@ re-index cleanly, and ship `POST /search`.
 - Is "no patient data in the index" enough PHI scoping for `/search`, or does
   the mentor expect patient-scoped retrieval this week?
 - Week 3's two (relay `attempts=1`, uncovered handler branches) still open.
+
+### Day 4 - 2026-10-14
+
+**Goal:** Measure search with an eval set, choose the threshold from it, and
+make "the suite runs offline on fake embeddings" enforced rather than assumed.
+
+**Done**
+
+- Seed catalogue 3 -> 12 services, four per department, with close pairs
+  (Knee X-Ray / Knee MRI Scan).
+- `make up` starts the whole stack and `make reset` reuses it; the old recipe
+  crashed the seed on Temporal connect.
+- 4.10: `scripts/eval_retrieval.py` + `make eval`, 34 queries (24 offered, 10
+  not). Top-1 20/24, top-3 22/24, top-5 24/24.
+- `RETRIEVAL_MIN_SIMILARITY` 0.65 -> 0.31: 31 of 34 right, up from 18.
+- 4.11: `fake_embeddings_by_default` and `no_network` autouse fixtures; tests
+  for a client threshold, the 503 log line, and re-index seen from search.
+- `docs/ai-layer.md` sections 7 (eval) and 8 (offline testing); NFR-10.
+- 526 -> 548 tests, 98.15% coverage; 25 mutations, all caught.
+
+**Decisions**
+
+| Decision | Why |
+|---|---|
+| 12 seed services with close pairs | With 3, the top-5 hit rate was always 100% |
+| Eval ranks with no threshold | The threshold is what it chooses |
+| Threshold 0.31 | Gap is 0.298 to 0.332; a false "not offered" blocks booking |
+| Eval names services, not ids | Ids differ between databases |
+| Fake provider forced in every test | The test container reads the developer's `.env` |
+| Guard error is not an `OSError` | httpx would call it "unreachable" and a 503 test would pass |
+
+**Cost time**
+
+- `make` isn't on Git Bash's PATH and MSYS `make` loses `docker compose`; ran
+  the recipe lines by hand.
+- Two test files both named `test_eval_retrieval.py` collided (no
+  `__init__.py`); renamed the integration one.
+- First guarded run: 401 errors. psycopg 3 resolves the Postgres host in
+  Python, so the guard blocked every DB connection.
+
+**Explain out loud**
+
+- A threshold separates unrelated queries, not near misses: "chest x-ray"
+  scores 0.428 on Knee X-Ray, above "physio appointment" on its own service
+  (0.332).
+- The sweep counts an offered query as found only if its service is within
+  `top_k` and at or above the threshold.
+- Python clients look a host up through `socket.getaddrinfo`, so patching it
+  blocks httpx, redis-py and psycopg 3, but not librdkafka or Temporal's Rust
+  core.
+
+**Carrying into Day 5**
+
+- ERD redraw (`docs/diagrams/erd-core-domain.svg`), carried since Day 2.
+- 4.12: read-through of `docs/ai-layer.md`.
+- End of week: README and NFR-2 still say 264 tests, README marks Week 4 "Not
+  started"; weekly self-check; write conventions back to `.claude/rules/`.
+- Week 4 PR and demo.
+
+**Open questions**
+
+- Is a local model acceptable in place of a hosted API for the demo?
+- Is "no patient data in the index" enough PHI scoping for `/search`, or does
+  the mentor expect patient-scoped retrieval this week?
+- Near misses ("chest x-ray" -> Knee X-Ray) get a weak match, not a refusal.
+  Acceptable for search, with the Week 5 assistant saying what is offered?
+- Week 3's two (relay `attempts=1`, uncovered handler branches) still open.
