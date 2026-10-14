@@ -286,6 +286,7 @@ leak `password_hash` and patient data).
 | `docs/events.md` | Every event: envelope, catalogue, topics, the outbox, and how a replay changes nothing |
 | `docs/runbook.md` | Diagnosing a stuck booking, missing reminders, wrong analytics numbers and a silent consumer |
 | `docs/kafka-ui-demo.md` | Driving the event path from Kafka UI: a good event, a replay, three faulty events, and a transient outage |
+| `docs/retrieval-demo.md` | A 15-minute Week 4 demo: search, publish and find a service, re-index, withdraw, an embedding failure, the eval |
 | `docs/ai-layer.md` | Embeddings, chunking, the embedding provider, vector storage, re-indexing, `POST /search` with its threshold and filters, the retrieval eval, offline testing |
 | `docs/prd.md` | Requirements, milestones, and the requirement → implementation → test traceability table |
 | `NOTES.md` | Working log and weekly tracking tables |
