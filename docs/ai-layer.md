@@ -9,7 +9,8 @@ An embedding model turns a piece of text into a vector: a fixed-length list of
 numbers, 384 of them for `all-MiniLM-L6-v2`, the model used here. The model is
 trained on large amounts of text so that passages with similar meaning get
 similar vectors. With it, "I need a scan of my knee" scores 0.614 against the
-Knee X-Ray chunk and no more than 0.221 against any other seeded service. Week
+Knee X-Ray chunk and no more than 0.221 against the two other services seeded
+on Day 1. Week
 1's search matches the query against service names with `ILIKE` and finds
 nothing, because no service name contains that phrase.
 
@@ -28,8 +29,8 @@ re-embedding every service.
 
 Two limits shape the rest of the design. Nearest-neighbour search always returns
 something, even for gibberish, so results below a minimum similarity are dropped
-and an empty result means "we don't offer that". The threshold will be chosen by
-measuring hit rate on the evaluation set (task 4.10).
+and an empty result means "we don't offer that". The threshold, 0.31, was chosen
+by measuring hit rate on the evaluation set (section 7).
 
 The model also only measures how alike two texts are. A question landing near
 the Echocardiogram service means its wording resembles that service's
@@ -130,7 +131,7 @@ retry can fix:
 | Type | Raised for |
 |---|---|
 | `TransientEmbeddingError` | timeouts, refused connections, failed TLS handshakes (one happened on the first day of testing), HTTP 429, and HTTP 5xx, including the 503 sent while a model loads |
-| `PermanentEmbeddingError` | an empty key (at startup), HTTP 400, 401, 403 or 404, and any response other than one 384-number vector per text |
+| `PermanentEmbeddingError` | an empty or non-ASCII key (at startup), any other non-200 status, such as 400, 401, 402 (out of credits), 403 or 404, and any response other than one 384-number vector per text |
 
 Error messages carry the status code and the batch size, and leave out the
 texts and the response body. A search query is the patient's own words, and an
@@ -164,17 +165,19 @@ paraphrase. Both jewellery questions belong to the Knee X-Ray preparation text,
 which says "remove any metal jewellery"; one ranks the skin check first, and the
 other barely separates the two. A question no service covers scores 0.268,
 close to the 0.341 of a genuine skin question, which leaves a single threshold
-a narrow gap. The placeholder `RETRIEVAL_MIN_SIMILARITY` of 0.65 would reject
-even the two clear matches; task 4.10's eval set will choose the value.
+a narrow gap. The Day 1 placeholder `RETRIEVAL_MIN_SIMILARITY` of 0.65 would
+have rejected even the two clear matches; the eval set replaced it with 0.31
+(section 7).
 
 ## 4. Vector storage
 
 Each chunk's vector is one row in `chunk_embeddings`, in the same Postgres as
 everything else. Code never touches the table directly. It goes through
-`VectorStore` in `app/ai/vector_store.py`, which has three methods:
+`VectorStore` in `app/ai/vector_store.py`, which has four methods:
 
 | Method | What it does |
 |---|---|
+| `search(query_embedding, model, top_k, min_similarity)` | The `top_k` published services nearest the query, each scoring at least `min_similarity`, using only vectors from `model`. `POST /search` calls it (section 6) |
 | `embedded_chunk_ids(service_id, model)` | The service's chunks that already have a vector from this model, which `embed_chunks` skips (section 5) |
 | `store_service_vectors(service_id, records, current_chunk_ids)` | Stores each record, replacing any vector its chunk already has, and deletes the service's vectors whose chunk is no longer current. Vectors of current chunks it was not given are kept. Running it twice leaves the same rows as running it once, so a retried Activity cannot duplicate a vector and a re-publish cannot leave a stale one |
 | `set_published(service_id, published)` | Sets the published flag on all of the service's vectors |
