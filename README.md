@@ -11,7 +11,7 @@ assistant refuses to give medical advice by design.
 It is also **API only**. There is no UI; Swagger UI at `/docs`, curl or Postman
 is the interface.
 
-> Status: **Week 2 complete** — Temporal workflows, scheduling and slots. See
+> Status: **Week 4 complete**: chunking, embeddings and semantic search. See
 > [Project status](#project-status) for what works today.
 
 ---
@@ -21,7 +21,7 @@ is the interface.
 | # | Problem | Addressed by |
 |---|---|---|
 | 1 | Bookings are slow, and two patients can hold the same slot | Atomic slot reservation + a Temporal scheduling saga (Week 2) |
-| 2 | Patients can't find the right service | Retrieval-augmented assistant (Weeks 4–5) |
+| 2 | Patients can't find the right service | Semantic search over published services (Week 4), and an assistant built on it (Week 5) |
 | 3 | Dashboards disagree with the tables | Pre-aggregated analytics maintained by an event consumer, plus a reconciliation script (Week 3) |
 | 4 | Peak-window timeouts | Slot reservation, billing and reminders moved out of the HTTP request (Weeks 2–3) |
 | 5 | Background failures are invisible | Structured logs with a correlation ID, `/metrics`, and a dead-letter table (Week 3) |
@@ -34,12 +34,16 @@ is the interface.
 flowchart TD
     Client["curl / Postman"] --> API["FastAPI API"]
 
-    API --> PG[("PostgreSQL<br/>domain + outbox + analytics")]
+    API --> PG[("PostgreSQL + pgvector<br/>domain + outbox + analytics + vectors")]
     API --> Redis[("Redis<br/>cache / broker / idempotency keys")]
     API --> TemporalServer["Temporal server"]
 
     TemporalServer --> TemporalWorker["Temporal worker<br/>workflows + activities"]
     TemporalWorker --> PG
+
+    Model["Embedding model<br/>all-MiniLM-L6-v2, in-process"]
+    API -. "embeds search queries" .-> Model
+    TemporalWorker -. "embeds service chunks on publish" .-> Model
 
     Beat["Celery Beat<br/>every 5s"] --> Redis
     Redis --> Celery["Celery worker<br/>reminders + outbox relay"]
@@ -57,6 +61,10 @@ flowchart TD
 Nothing but the Celery relay talks to Kafka. Events are written to an outbox
 table in the same transaction as the change that caused them, and the relay
 publishes from there — see `docs/events.md`.
+
+The AI layer adds no new service. The embedding model runs inside the API and
+the Temporal worker, and the vectors live in the same Postgres through pgvector,
+so search's published filter is a plain `WHERE` clause. See `docs/ai-layer.md`.
 
 **Division of labour.** Temporal owns the multi-step durable workflows (service
 publishing, the appointment scheduling saga). Celery owns fire-and-forget work
@@ -171,12 +179,14 @@ docker compose run --rm test pytest --cov=app --cov-report=term-missing
 Run `make help` to list every target (`up`, `migrate`, `seed`, `lint`, `fmt`,
 `psql`, `reset`).
 
-Target is ≥25 meaningful tests and ≥80% coverage; the suite stands at 264 tests
-and 98% coverage, no network access required. The hard cases are covered as they
-land: 50 threads racing one slot, a repeated idempotency key producing one
-appointment and one billing row, the saga compensating a billing failure, a failed
-reschedule leaving the original slot untouched, and every illegal jump in the visit
-flow. Idempotent event handling arrives with Week 3.
+Target is ≥25 meaningful tests and ≥80% coverage; the suite stands at 548 tests
+and 98% coverage. It embeds with `FakeEmbeddings`, and a guard fixture fails any
+test that tries to reach the network. The hard cases are covered as they land:
+50 threads racing one slot, a repeated idempotency key producing one appointment
+and one billing row, the saga compensating a billing failure, a failed reschedule
+leaving the original slot untouched, every illegal jump in the visit flow, a
+replayed event changing nothing, an unpublished service never reaching search,
+and a patient's details never being findable through it.
 
 ---
 
@@ -209,9 +219,12 @@ flow. Idempotent event handling arrives with Week 3.
 | POST | `/api/v1/appointments/{id}/visit/check-in` | Start the visit, idempotent | Front desk, provider, admin |
 | POST | `/api/v1/appointments/{id}/visit/start` | Move to `IN_PROGRESS`, idempotent | Front desk, provider, admin |
 | POST | `/api/v1/appointments/{id}/visit/complete` | Complete visit + appointment, idempotent | Front desk, provider, admin |
+| GET | `/api/v1/analytics/summary` | The six operational metrics for a date range, from the aggregates | Front desk, admin |
+| GET | `/api/v1/analytics/appointments` | Appointments booked per day | Front desk, admin |
+| GET | `/api/v1/analytics/reconciliation` | Compare the aggregates with the raw tables and report drift | Admin |
+| GET | `/metrics` | Prometheus scrape page (not in Swagger) | Public |
 
-Cancel/reschedule, the visit lifecycle, analytics and the AI assistant are added
-week by week and documented here as they land.
+The AI assistant (Week 5) is added here when it lands.
 
 ---
 
@@ -246,6 +259,11 @@ app/
   schemas/        Pydantic request/response models
   api/v1/         routers: parse input, call a service, shape the response
   services/       business rules
+  temporal/       publish workflow, scheduling saga, their activities, the worker
+  celery/         reminders and the outbox relay task
+  events/         event envelope and the transactional outbox
+  kafka/          relay, producer, consumer, dedupe, event handlers
+  ai/             chunking, embedding providers, vector store, retrieval
 migrations/       Alembic revisions
 tests/            unit/ and integration/
 docs/             design, events, runbook, ai-layer, prd
@@ -268,10 +286,9 @@ leak `password_hash` and patient data).
 | `docs/events.md` | Every event: envelope, catalogue, topics, the outbox, and how a replay changes nothing |
 | `docs/runbook.md` | Diagnosing a stuck booking, missing reminders, wrong analytics numbers and a silent consumer |
 | `docs/kafka-ui-demo.md` | Driving the event path from Kafka UI: a good event, a replay, three faulty events, and a transient outage |
+| `docs/ai-layer.md` | Embeddings, chunking, the embedding provider, vector storage, re-indexing, `POST /search` with its threshold and filters, the retrieval eval, offline testing |
 | `docs/prd.md` | Requirements, milestones, and the requirement → implementation → test traceability table |
 | `NOTES.md` | Working log and weekly tracking tables |
-
-Planned, not yet written: `docs/ai-layer.md` (Weeks 4–5).
 
 ### `.claude/` — working context
 
@@ -316,22 +333,33 @@ hand-edit them.
 |---|---|---|
 | 1 | Foundation and core domain | Done |
 | 2 | Temporal workflows, scheduling, slots | Done |
-| 3 | Celery, Kafka, observability | Not started |
-| 4 | Chunking, embeddings, retrieval | Not started |
+| 3 | Celery, Kafka, observability | Done |
+| 4 | Chunking, embeddings, retrieval | Done |
 | 5 | AI assistant, streaming, demo | Not started |
 
-**Working today:** everything from Week 1 (auth and roles, department/service/
-provider CRUD, schedules and idempotent slot generation, public service search,
-synthetic seed), plus all of Week 2 — service publishing as a Temporal workflow,
-the concurrency-safe atomic slot reservation, the scheduling saga with
-compensation, booking idempotency, the simulated billing pre-check, cancel and
-reschedule with waitlist promotion, and the visit lifecycle. 264 tests at 98%
-coverage.
+**Working today:**
+
+- **Week 1:** auth and roles, department/service/provider CRUD, schedules and
+  idempotent slot generation, public service search, synthetic seed.
+- **Week 2:** service publishing as a Temporal workflow, the concurrency-safe
+  atomic slot reservation, the scheduling saga with compensation, booking
+  idempotency, the simulated billing pre-check, cancel and reschedule with
+  waitlist promotion, and the visit lifecycle.
+- **Week 3:** Celery reminders with a dead-letter table, the transactional
+  outbox and its relay to Kafka, an idempotent consumer maintaining the
+  analytics aggregates, reconciliation, correlation-id logging and `/metrics`.
+- **Week 4:** one enriched chunk per service, embedded inside the publish
+  workflow with retries; re-indexing on re-publish; `POST /search` with a
+  threshold chosen by an eval set.
+
+548 tests at 98% coverage.
 
 **Known limitations:** the saga's compensation is covered as two halves plus a
 live demonstration rather than one end-to-end test; a booking whose workflow
 fails to start because Temporal is unreachable stays `REQUESTED` with nothing to
 retry it; overlapping provider *schedule* windows are not prevented, only the
-overlapping slots they would generate. See `docs/prd.md` §7.
+overlapping slots they would generate; booking accepts a slot in the past; search
+gives a near miss ("chest x-ray") a weak match instead of "we don't offer that".
+See `docs/prd.md` §7.
 
-**Not built yet:** Celery/Kafka, analytics, and the AI layer — Weeks 3–5.
+**Not built yet:** the AI assistant, streaming and staff generation (Week 5).
