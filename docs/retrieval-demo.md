@@ -29,7 +29,7 @@ Then define the helpers in the main terminal:
 
 ```bash
 B=http://localhost:8000/api/v1
-tok() { curl -s -X POST $B/auth/login -H 'Content-Type: application/json' -d "{\"email\":\"$1\",\"password\":\"ChangeMe123!\"}" | python -c 'import sys,json;print(json.load(sys.stdin)["access_token"])'; }
+tok() { curl -s -X POST $B/auth/login -H 'Content-Type: application/json' -d '{"email":"'"$1"'","password":"ChangeMe123!"}' | python -c 'import sys,json;print(json.load(sys.stdin)["access_token"])'; }
 ADMIN=$(tok admin@medinova.example); PAT=$(tok patient.one@example.com)
 search() { curl -s -X POST $B/search -H "Authorization: Bearer $PAT" -H 'Content-Type: application/json' -d "{\"query\":\"$1\",\"top_k\":3}"; echo; }
 rows() { docker compose exec -T postgres psql -U app -d app -c "SELECT c.id AS chunk, left(c.text, 60) AS text, e.id AS vector, e.published, e.department, e.specialties FROM content_chunks c LEFT JOIN chunk_embeddings e ON e.chunk_id = c.id WHERE c.source_type = 'SERVICE' AND c.source_id = $SID;"; }
