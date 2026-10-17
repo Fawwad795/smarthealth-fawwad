@@ -180,7 +180,7 @@ def update_service(
         {
             status.HTTP_403_FORBIDDEN: "Admin only.",
             status.HTTP_404_NOT_FOUND: "SERVICE_NOT_FOUND.",
-            status.HTTP_409_CONFLICT: "SERVICE_NOT_PUBLISHABLE -- not DRAFT or PUBLISH_FAILED.",
+            status.HTTP_409_CONFLICT: "SERVICE_NOT_PUBLISHABLE -- a publish is already running.",
         }
     ),
 )
@@ -191,9 +191,13 @@ async def publish_service(
 ) -> ServicePublishStatusResponse:
     """Start the publish workflow for a service. ADMIN only.
 
+    Also how an edited PUBLISHED service, or an INACTIVE one, is published
+    again: its old vectors leave search now and its new ones join when
+    the workflow finishes.
+
     202: the workflow has started, not necessarily finished -- poll GET
     publish-status for the outcome. 404 if the service doesn't exist, 409
-    if it isn't DRAFT or PUBLISH_FAILED.
+    if it is PUBLISHING already.
     """
     service, workflow_id = await service_publish.start_publish(db, service_id)
     return ServicePublishStatusResponse(
@@ -202,6 +206,33 @@ async def publish_service(
         published_at=service.published_at,
         workflow_id=workflow_id,
     )
+
+
+@router.post(
+    "/{service_id}/unpublish",
+    response_model=ServiceResponse,
+    summary="Take a published service out of the catalogue",
+    responses=error_responses(
+        {
+            status.HTTP_403_FORBIDDEN: "Admin only.",
+            status.HTTP_404_NOT_FOUND: "SERVICE_NOT_FOUND.",
+            status.HTTP_409_CONFLICT: "SERVICE_NOT_UNPUBLISHABLE -- not PUBLISHED.",
+        }
+    ),
+)
+def unpublish_service(
+    service_id: int,
+    db: Session = Depends(get_db),
+    _current_user=Depends(require_role(UserRole.ADMIN)),
+) -> ServiceResponse:
+    """Move a PUBLISHED service to INACTIVE and remove it from search.
+    ADMIN only.
+
+    200 with the service, done by the time it returns: no workflow is
+    involved. 404 if the service doesn't exist, 409 if it isn't PUBLISHED.
+    """
+    service = service_publish.unpublish_service(db, service_id)
+    return ServiceResponse.model_validate(service)
 
 
 @router.get(
@@ -215,7 +246,7 @@ async def publish_service(
         }
     ),
 )
-def get_publish_status(
+async def get_publish_status(
     service_id: int,
     db: Session = Depends(get_db),
     _current_user=Depends(require_role(*_STAFF_ROLES)),
@@ -223,9 +254,10 @@ def get_publish_status(
     """Report where this service's publish lifecycle currently stands.
     Any staff role. 404 if the service doesn't exist.
 
-    Reads status/published_at straight off the service row -- the
-    workflow's Activities keep both in sync at every step, so this needs
-    no live query into Temporal itself.
+    Status, published_at and publish_error come off the service row, which
+    the workflow's Activities keep current. While the service is
+    PUBLISHING, progress adds the step, attempt and last error from
+    Temporal, which is how a retrying embedding call becomes visible.
     """
     service = service_service.get_service(db, service_id)
     return ServicePublishStatusResponse(
@@ -233,4 +265,6 @@ def get_publish_status(
         status=service.status,
         published_at=service.published_at,
         workflow_id=service_publish.publish_workflow_id(service.id),
+        publish_error=service.publish_error,
+        progress=await service_publish.get_publish_progress(service),
     )

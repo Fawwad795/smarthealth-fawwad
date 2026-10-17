@@ -22,9 +22,9 @@ from datetime import UTC, date, datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.kafka import consumer as consumer_module
 from app.models import AnalyticsDaily, Appointment, ProcessedEvent, Slot, Visit
 from app.models.enums import VisitStatus
-from app.workers import consumer as consumer_module
 from tests.kafka_fakes import FakeConsumer, FakeMessage
 
 VISIT_DAY = date(2026, 6, 15)

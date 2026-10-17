@@ -5,6 +5,9 @@ the single `settings` object below, so there is exactly one place that
 knows how the app is configured.
 """
 
+from typing import Literal
+
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -13,7 +16,7 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_file=".env",
-        # .env holds keys for Weeks 2-5 (Temporal, Kafka, the LLM) that this
+        # .env holds keys for Weeks 4-5 (the LLM, retrieval tuning) that this
         # class does not declare yet. Ignore them instead of crashing.
         extra="ignore",
     )
@@ -79,6 +82,46 @@ class Settings(BaseSettings):
     # compensation path (task 2.9) on demand. Never true outside a demo
     # or a test that deliberately flips it.
     billing_force_fail: bool = False
+
+    # --- Embeddings (Week 4+) ---
+    # Which EmbeddingProvider app/ai/embeddings.py builds. "local" runs the
+    # model in-process from the image: no key, no quota, no network.
+    # "huggingface" calls the hosted API with EMBEDDING_API_KEY. "fake" is the
+    # hashing stand-in the tests use, which knows nothing about meaning.
+    embedding_provider: Literal["local", "huggingface", "fake"] = "local"
+    # Only the huggingface provider uses this. SecretStr so the key prints as
+    # '**********' in any repr or log line; reading it takes an explicit
+    # .get_secret_value().
+    embedding_api_key: SecretStr = SecretStr("")
+    embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    # Fixed by the model, and by the vector column built for it: changing
+    # the model means a migration and re-embedding every service.
+    embedding_dimensions: int = 384
+    # Texts per batch. The brief asks for 32-100: for the hosted API,
+    # per-request overhead and the rate limit are paid once per batch, not
+    # per text; the local model runs each batch as one ONNX call.
+    embedding_batch_size: int = 64
+    # huggingface provider only. Above the ~8s measured for a cold Hugging
+    # Face model, and below the publish Activities' 30s timeout, so the HTTP
+    # call fails and is classified before Temporal abandons the attempt.
+    embedding_timeout_seconds: float = 20.0
+
+    # --- Retrieval (Week 4+) ---
+    # How many services POST /search returns when the request names no
+    # top_k. The brief's default.
+    retrieval_top_k: int = 5
+    # The lowest cosine similarity a service may score and still be
+    # returned. Below it a match is noise, and an empty result is the
+    # "we don't offer that" answer. Read on every search, never sent by the
+    # client: a client that could lower it could ask for noise.
+    # 0.31 comes from the eval set (scripts/eval_retrieval.py, task 4.10):
+    # unrelated queries scored at most 0.298, and every offered query's
+    # service at least 0.332. It holds for all-MiniLM-L6-v2 only; a new
+    # model needs `make eval` run again.
+    retrieval_min_similarity: float = 0.31
+    # The longest search query, in characters. Shared with the Week 5
+    # assistant's question limit.
+    ai_max_question_chars: int = 1000
 
 
 # Imported everywhere as: from app.core.config import settings

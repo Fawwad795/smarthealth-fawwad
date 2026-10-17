@@ -39,6 +39,7 @@ async def run_worker() -> None:
                 activities.validate_service,
                 activities.structure_content,
                 activities.chunk_content,
+                activities.embed_chunks,
                 activities.mark_published,
                 activities.mark_publish_failed,
                 scheduling_activities.validate_eligibility,

@@ -32,6 +32,7 @@ from app.api.v1.departments import router as departments_router
 from app.api.v1.services import router as services_router
 from app.api.v1.providers import router as providers_router
 from app.api.v1.provider_schedules import router as provider_schedules_router
+from app.api.v1.search import router as search_router
 from app.api.v1.visits import router as visits_router
 from app.api.v1.waitlist import router as waitlist_router
 
@@ -64,6 +65,13 @@ def create_app() -> FastAPI:
                 "description": (
                     "The service catalogue. Everything is created DRAFT; "
                     "/services/search is the one public route."
+                ),
+            },
+            {
+                "name": "search",
+                "description": (
+                    "Semantic search: published services ranked by meaning, "
+                    "with similarity scores. Any signed-in user."
                 ),
             },
             {"name": "providers", "description": "Clinician profiles."},
@@ -165,6 +173,7 @@ def create_app() -> FastAPI:
     app.include_router(services_router, prefix="/api/v1")
     app.include_router(providers_router, prefix="/api/v1")
     app.include_router(provider_schedules_router, prefix="/api/v1")
+    app.include_router(search_router, prefix="/api/v1")
     app.include_router(appointments_router, prefix="/api/v1")
     app.include_router(waitlist_router, prefix="/api/v1")
     app.include_router(visits_router, prefix="/api/v1")

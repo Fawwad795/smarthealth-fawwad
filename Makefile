@@ -7,7 +7,7 @@
 # .PHONY tells make these are command names, not files to build. Without
 # it, a target would silently do nothing if a file or directory of the
 # same name existed (a `test/` directory would break `make test`).
-.PHONY: help up down logs migrate seed test test-cov lint typecheck fmt shell psql reset
+.PHONY: help up down logs migrate seed eval test test-cov lint typecheck fmt shell psql reset
 
 # The default target when you type plain `make`. Prints every target with
 # its `##` comment, so this list can never drift from the targets below.
@@ -15,8 +15,11 @@ help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 		| awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
 
-up: ## Start Postgres, Redis and the API (detached), then migrate
-	docker compose up -d postgres redis api
+# The whole stack, not just Postgres, Redis and the API: since Week 4 the
+# seed publishes every service through Temporal, so `make seed` after an
+# `up` that left Temporal and its worker stopped crashed on connect.
+up: ## Start the whole stack (detached), then migrate
+	docker compose up -d
 	$(MAKE) migrate
 
 down: ## Stop everything, keeping database volumes
@@ -30,6 +33,9 @@ migrate: ## Apply Alembic migrations up to head
 
 seed: ## Populate the synthetic demo dataset (safe to re-run)
 	docker compose exec api python -m scripts.seed
+
+eval: ## Report search hit rates and the threshold sweep (needs a seeded stack)
+	docker compose exec api python -m scripts.eval_retrieval
 
 test: ## Run the test suite from cold — no running API needed
 	docker compose run --rm test
@@ -56,6 +62,5 @@ psql: ## Open a psql session against the dev database
 
 reset: ## Destroy all data, rebuild the schema, reseed. Irreversible.
 	docker compose down -v
-	docker compose up -d postgres redis api
-	$(MAKE) migrate
+	$(MAKE) up
 	$(MAKE) seed

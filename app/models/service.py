@@ -68,6 +68,12 @@ class Service(Base, TimestampMixin):
         DateTime(timezone=True), nullable=True
     )
 
+    # Why the last publish ended in PUBLISH_FAILED: validation's list of
+    # missing fields, or the embedding provider's error. Cleared when the
+    # next publish starts. Kept on the row, not only in Temporal's history,
+    # so GET publish-status can say why without Temporal being reachable.
+    publish_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     department: Mapped["Department"] = relationship(back_populates="services")
     provider_services: Mapped[list["ProviderService"]] = relationship(
         back_populates="service"

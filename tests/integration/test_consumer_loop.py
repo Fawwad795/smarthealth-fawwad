@@ -16,8 +16,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.logging import get_correlation_id
+from app.kafka import consumer as consumer_module
 from app.models import FailedJob, ProcessedEvent
-from app.workers import consumer as consumer_module
 from tests.kafka_fakes import FakeConsumer, FakeMessage
 
 ENVELOPE = {
@@ -135,7 +135,7 @@ def test_a_malformed_message_is_dead_lettered_then_committed(
     assert fake.seeks == []
 
     failure = db_session.execute(
-        select(FailedJob).where(FailedJob.job_type == "app.workers.consumer")
+        select(FailedJob).where(FailedJob.job_type == "app.kafka.consumer")
     ).scalar_one()
     assert failure.payload == {"topic": "app.visits", "partition": 0, "offset": 11}
     assert "not valid JSON" in failure.error
@@ -156,7 +156,7 @@ def test_the_dead_letter_row_records_no_message_body(
     _run([FakeMessage(secret, offset=11)])
 
     failure = db_session.execute(
-        select(FailedJob).where(FailedJob.job_type == "app.workers.consumer")
+        select(FailedJob).where(FailedJob.job_type == "app.kafka.consumer")
     ).scalar_one()
     stored = json.dumps({"payload": failure.payload, "error": failure.error})
     assert "Jane Doe" not in stored

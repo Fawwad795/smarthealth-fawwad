@@ -27,6 +27,7 @@ from app.models.analytics_daily import AnalyticsDaily
 from app.models.appointment import Appointment
 from app.models.appointment_status_history import AppointmentStatusHistory
 from app.models.billing import Billing
+from app.models.chunk_embedding import ChunkEmbedding
 from app.models.clinic import Clinic
 from app.models.content_chunk import ContentChunk
 from app.models.department import Department
@@ -51,6 +52,7 @@ __all__ = [
     "Appointment",
     "AppointmentStatusHistory",
     "Billing",
+    "ChunkEmbedding",
     "Clinic",
     "ContentChunk",
     "Department",

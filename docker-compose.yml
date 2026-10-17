@@ -194,7 +194,7 @@ services:
   # OUR services.
   #
   # Still to be added in later weeks (same image, different command):
-  #   consumer         (Week 3)  python -m app.events.consumer
+  #   consumer         (Week 3)  python -m app.kafka.consumer
   # ---------------------------------------------------------------------------
 
   # The FastAPI application.
@@ -244,7 +244,7 @@ services:
   celery-worker:
     build: .
     container_name: app-celery-worker
-    command: celery -A app.workers.celery_app worker --loglevel=info
+    command: celery -A app.celery.celery_app worker --loglevel=info
     env_file: [.env]
     volumes:
       - ".:/app"
@@ -259,7 +259,7 @@ services:
   celery-beat:
     build: .
     container_name: app-celery-beat
-    command: celery -A app.workers.celery_app beat --loglevel=info
+    command: celery -A app.celery.celery_app beat --loglevel=info
     env_file: [.env]
     volumes:
       - ".:/app"
@@ -276,7 +276,7 @@ services:
   consumer:
     build: .
     container_name: app-consumer
-    command: python -m app.workers.consumer
+    command: python -m app.kafka.consumer
     ports:
       - "8002:8002"
     env_file: [.env]

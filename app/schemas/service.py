@@ -68,18 +68,38 @@ class ServiceListResponse(BaseModel):
     offset: int
 
 
+class PublishProgress(BaseModel):
+    """The Activity a running publish is on, read live from Temporal."""
+
+    step: str = Field(description="The Activity's name, e.g. embed_chunks.")
+    attempt: int = Field(
+        description="1 on the first try; higher means it is being retried."
+    )
+    last_error: str | None = Field(
+        description="Why the previous attempt failed; null on the first try."
+    )
+
+
 class ServicePublishStatusResponse(BaseModel):
     """Where a service's publish lifecycle currently stands. Returned by
     both POST /services/{id}/publish (right after starting) and GET
     /services/{id}/publish-status (any time after) -- same shape, since
     both answer the same question.
 
-    Built from status/published_at plus a computed workflow_id, not
-    model_validate(service): service_id isn't service.id, and workflow_id
-    isn't a column at all.
+    Built from the row's columns plus a computed workflow_id and live
+    progress, not model_validate(service): service_id isn't service.id, and
+    neither workflow_id nor progress is a column at all.
     """
 
     service_id: int
     status: ServiceStatus
     published_at: datetime | None
     workflow_id: str
+    publish_error: str | None = Field(
+        default=None,
+        description="Why the last publish failed; set only in PUBLISH_FAILED.",
+    )
+    progress: PublishProgress | None = Field(
+        default=None,
+        description="The running publish's current step; set only in PUBLISHING.",
+    )

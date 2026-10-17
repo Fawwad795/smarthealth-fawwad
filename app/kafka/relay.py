@@ -1,7 +1,7 @@
 """Draining the outbox: the courier half of the pattern.
 
 Reads events queued by app/events/outbox.py, publishes them, and stamps
-published_at. Nothing else in the application talks to Kafka.
+published_at. The only writer of the published_at column.
 """
 
 import logging
@@ -10,8 +10,8 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.events.envelope import build_envelope, topic_for
-from app.events.producer import publish
+from app.events.envelope import build_envelope, key_for, topic_for
+from app.kafka.producer import publish
 from app.models import OutboxEvent
 
 logger = logging.getLogger(__name__)
@@ -54,7 +54,11 @@ def publish_pending_events(db: Session, limit: int = BATCH_SIZE) -> int:
     )
 
     for row in rows:
-        publish(topic_for(row.event_type), str(row.aggregate_id), build_envelope(row))
+        publish(
+            topic_for(row.event_type),
+            key_for(row.event_type, row.aggregate_id),
+            build_envelope(row),
+        )
         row.published_at = datetime.now(UTC)
 
     db.commit()

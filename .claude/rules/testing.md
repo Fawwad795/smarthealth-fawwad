@@ -55,6 +55,34 @@ behaviour, not "at the end".
   different constraint than intended, the other assumed slots were service-scoped when
   the model deliberately makes them provider-scoped.
 
+## Established in Week 3 — follow it
+
+- **A new guard is only evidence once it has been seen failing.** Break the code
+  on purpose (revert the fix, re-wire the old path) and confirm the test fails,
+  then restore. Week 3 found two tests that passed with their fix reverted.
+- **The test database starts fresh each run, so every id sequence starts at 1.**
+  An assertion comparing two ids (`aggregate_id == billing.id`) passes by
+  coincidence when run alone. Force them apart with `setval` in the test.
+- `pytest-timeout` is 120s: an Activity raising a non-`ApplicationError` retries
+  forever and would otherwise hang the suite instead of failing it.
+- Workers do not hot-reload. Restart `consumer` / `celery-worker` before any live
+  check, or it proves the old code.
+
+## Established in Week 4 — follow it
+
+- **Two autouse fixtures guard every test**: `fake_embeddings_by_default` (the test
+  container reads the developer's `.env`) and `no_network` (`tests/network_guard.py`
+  blocks lookups of any host outside the compose stack). Real-API tests are marked
+  `live` and skip unless `RUN_LIVE_TESTS=1`.
+- **The guard's error is deliberately not an `OSError`.** httpx would turn one into a
+  connection error, and a test expecting a 503 would pass while actually trying to
+  reach the internet.
+- **Test file basenames must be unique across `unit/` and `integration/`** — there is
+  no `__init__.py`, so two `test_x.py` files collide at collection.
+- **`migrations/env.py` calls `fileConfig(..., disable_existing_loggers=False)`.**
+  The default silences every `app.*` logger once a migration has run, and every
+  log-assertion test then captures nothing.
+
 ## Never
 
 - Real network calls. Fakes behind the provider interfaces.

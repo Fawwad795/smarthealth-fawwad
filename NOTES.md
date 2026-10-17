@@ -13,7 +13,7 @@ Kept as I go, not written up at the end of the week.
 |---|---|---|---|
 | 1 | Foundation & core domain | Auth + roles + patient-data protection, providers/services/slots CRUD, migrations, seed, 80% coverage | ☑ 142 tests, 98% - PR #1 approved, deliberately left unmerged |
 | 2 | Temporal, scheduling & slots | No double-booking, no duplicate booking, publish workflow + scheduling saga with compensation, chunks produced, 80% coverage | ☑ 264 tests, 98% - 2.1-2.13 complete |
-| 3 | Async, events, observability | Celery reminders/rollup with DLQ, events consumed idempotently, accurate analytics, correlation IDs (no PHI), `/metrics`, 80% coverage | ☐ |
+| 3 | Async, events, observability | Celery reminders/rollup with DLQ, events consumed idempotently, accurate analytics, correlation IDs (no PHI), `/metrics`, 80% coverage | ☑ 397 tests, 97.66% - 3.1-3.13 complete, review fixes in PR #16 |
 
 ### Part B (Weeks 4-5)
 
@@ -1278,6 +1278,52 @@ architecture diagram), 3.13 (crash-recovery demo).
 
 ---
 
+### Day 6 - 2026-09-13
+
+**Goal:** Make the outbox/Kafka boundary visible in the tree, and prepare a
+Kafka UI demo for the mentor.
+
+**Done**
+
+- `app/events/` keeps envelope + outbox; new `app/kafka/` holds producer,
+  relay, consumer, dedupe, handlers, errors; `app/workers/` -> `app/celery/`.
+- Imports, the consumer's `job_type`, compose commands and rule-file globs
+  moved with it. 393 tests, unchanged.
+- `docs/kafka-ui-demo.md`: good event, replay, faulty events, transient outage.
+- `mentor-rehearsal` reworked (topic mode, MCQs, tiered hints), renamed `revision`.
+
+**Decisions**
+
+| Decision | Why |
+|---|---|
+| `envelope.py` stays in `app/events/` | `topic_for()` derives from `EventType`; moving it means re-exporting |
+| `app/celery`, not `app/workers` | Three other kinds of worker process exist |
+| Stale `celerybeat-schedule` deleted | Beat's shelve held the old task name |
+| Demo on `appointment.booked`, not `visit.completed` | `visits` is empty in dev data |
+
+**Cost time**
+
+- Docker down mid-refactor; verified offline first (535 imports, 26 string
+  paths) before the suite could run.
+- Demo cleanup `LIKE '%999999%'` matched nothing -- only variant 3c emits it.
+
+**Explain out loud**
+
+- A partition is the unit of ordering and of consumer ownership; the key picks
+  it as `murmur2(key) % partitions`.
+- `commit()` moves the group's bookmark in `__consumer_offsets`; the record
+  itself never moves.
+
+**Carrying into the review**
+
+- Week 3 stack (#10-#16) open for the mentor.
+
+**Open questions**
+
+- Pipeline 4's relay dead-lettered at `attempts=1` despite `max_retries=5`.
+
+---
+
 ## Weekly self-check
 
 ### Week 3 - 2026-09-10
@@ -1297,3 +1343,412 @@ architecture diagram), 3.13 (crash-recovery demo).
    After that the demo was decisive rather than suggestive.
 4. **Carrying into Week 4:** the handler fix above, and re-exporting the
    architecture diagram. Nothing from the 3.x task list.
+
+---
+
+## Week 3 review fixes - 2026-09-27
+
+Post-review work on PR #16: 1 mentor point, plus the deferred Day 5 bug.
+
+**Done**
+
+- Kafka keys named for their aggregate (`appointment-51`, not `51`) via
+  `key_for()` beside `topic_for()`.
+- `billing.updated` carries the billing's own id, so `billing-7` means billing 7.
+- `appointments_booked` driven by `appointment.confirmed`; `appointment.booked`
+  drives nothing.
+- The handler tells a missing row from an empty `booked_at` in its dead-letter.
+- Day 5's scenario re-run live: `booked` ignored while the saga was frozen,
+  `confirmed` counted it, reconcile clean with no `--repair`.
+- Week 3 conventions written back to `events-observability.md` and `testing.md`.
+- 393 -> 397 tests, 97.66% coverage.
+
+**Decisions**
+
+| Decision | Why |
+|---|---|
+| `appointment-51`, not the mentor's `booked-51` | Keyed by event, one appointment's events split across partitions |
+| `key_for()` in `envelope.py`, not the relay | Topic and key derive from one `aggregate_of()` |
+| Billing's own id at the emit site | "aggregate_id is the topic's aggregate" with no special case |
+| Both anomalies stay permanent | Neither resolves on retry; transient would stall on REJECTED |
+| Verification appointment 52 left in place | Deleting it would create the drift it proved absent |
+
+**Cost time**
+
+- The billing test passed with the fix reverted: fresh test DB, both ids 1.
+  Found only by the mutation check; fixed with `setval`.
+- 7-day retention had already deleted every demo record -- `app.appointments`
+  now starts at offset 87.
+- Consumer and Celery worker don't hot-reload; restart before a live check.
+- A Claude trailer reached a pushed commit; amended and force-pushed.
+
+**Explain out loud**
+
+- A key must be stable across an aggregate's events or ordering is lost --
+  invisibly, while each topic has one partition.
+- A test is evidence only once it has been seen failing; order-dependent ids
+  can make it pass by coincidence.
+- Kafka is the transport here, not the record: the outbox keeps every event,
+  the broker keeps a week.
+
+**Carrying into Week 4**
+
+- Merge the Week 3 stack (#10-#16) before Week 4 Day 1 branches off it.
+- Known gaps recorded in `docs/prd.md` 7: booking accepts a past slot; a
+  consumer down >7 days skips events.
+- UTC bucket limitation, unchanged.
+- `docs/diagrams/architecture.svg` still needs re-exporting from the mermaid.
+
+**Open questions**
+
+- Why does the relay dead-letter at `attempts=1` when its decorator allows
+  5 retries, while the reminder task correctly reaches 6?
+- 3 uncovered permanent-error branches (cancelled, visit handlers) -- worth
+  tests before Week 4?
+
+---
+
+## Week 4 - Chunking, Embeddings & Retrieval
+
+### Day 1 - 2026-10-06
+
+**Goal:** Lay the retrieval groundwork: explain embeddings, get pgvector into
+Python, enrich the chunk text, and build the embedding provider.
+
+**Done**
+
+- `docs/ai-layer.md` started: embeddings and similarity, chunk format,
+  embedding provider with measured similarities.
+- `pgvector==0.5.0`; live check: five distances match hand-worked values,
+  mismatched sizes rejected.
+- `app/ai/chunking.py`: specialties via `provider_services`, sorted, listed
+  once, department repeats dropped.
+- `app/ai/embeddings.py`: `EmbeddingProvider` ABC, `HuggingFaceEmbeddings`
+  (64 per request, transient/permanent errors), `FakeEmbeddings`.
+- One live HF test, marked `live`, skipped unless `RUN_LIVE_TESTS=1`.
+- 397 -> 427 tests, 97.75% coverage; 11 mutations, all caught.
+
+**Decisions**
+
+| Decision | Why |
+|---|---|
+| pgvector over Qdrant/Chroma | Filters stay `WHERE` clauses; re-index is one transaction |
+| HF `all-MiniLM-L6-v2`, 384 dims | `.env.example` asks for free keys; real failures exercise retries |
+| `ABC`, not `Protocol` | mypy only checks `app/models`; ABC fails at construction |
+| `hashlib` in the fake, not `hash()` | `hash()` is salted per process |
+| Errors carry status and count only | An error body can echo a patient's query |
+| Specialty repeating the department dropped | "Cardiology · Cardiology" adds nothing |
+
+**Cost time**
+
+- Local Day 6 branch went stale after the Week 3 merges; `git pull` opened a
+  merge editor. Aborted and reset to origin.
+- Docker engine dropped mid-build and restarted itself.
+- Section 1's "rings" example scored 0.098 on the real model; replaced with a
+  measured one.
+- Mutation script missed its anchor: `activities.py` is CRLF in the working
+  tree, which Git Bash's `grep` hid.
+
+**Explain out loud**
+
+- Cosine similarity compares direction and ignores length; `<=>` is
+  `1 - similarity`.
+- A text hash only skips re-embedding if a service always yields the same
+  text, hence sorted specialties.
+- Retry what can change (timeouts, 429, 5xx); a bad key never will.
+
+**Carrying into Day 2**
+
+- Seeded services were set PUBLISHED directly and have no chunks; fix before
+  4.5 embeds anything.
+- `RETRIEVAL_MIN_SIMILARITY=0.65` is a placeholder; clear matches scored 0.614
+  and 0.643.
+- 4.6 vector storage (`vector(384)` migration), then 4.5 embedding Activity.
+- Push the branch; PR targets `week-3-events-day-6`.
+
+**Open questions**
+
+- Is the free HF tier reliable enough for the demo, or will the mentor's
+  budget cover OpenAI?
+- Re-publish for 4.7: PUBLISHED -> PUBLISHING directly, or back through DRAFT?
+- Week 3's two (relay `attempts=1`, uncovered handler branches) still open.
+
+### Day 2 - 2026-10-13
+
+**Goal:** Fix the seed's publish shortcut, store vectors with their metadata,
+and embed inside the publish workflow.
+
+**Done**
+
+- Seed: services start DRAFT and publish through `start_publish` and the real
+  workflow; providers linked first, so chunks carry specialties.
+- 4.6: `chunk_embeddings` (`vector(384)`, model, metadata, `published`) behind
+  `VectorStore`.
+- 4.5: `embed_chunks` Activity; 5 attempts 2/4/8/16 s apart, then
+  `PUBLISH_FAILED` with `services.publish_error`.
+- `publish-status` shows step, attempt and last error from Temporal while
+  publishing.
+- `LocalEmbeddings` (fastembed) is the default; model baked into the image,
+  `HF_HUB_OFFLINE=1`.
+- 427 -> 470 tests, 98.02% coverage; 25 mutations caught, one weak test
+  rewritten. PR #18.
+
+**Decisions**
+
+| Decision | Why |
+|---|---|
+| `published` stored on the vector | Part B MUST; a swapped-in store can't join `services` |
+| Vectors stored unpublished; `mark_published` flips them | Search never sees an unfinished publish |
+| `ON DELETE CASCADE` chunk -> vector | `chunk_content` deletes chunks on every publish |
+| No HNSW index | Exact scan is small; HNSW filters after its scan |
+| Bounded embed retries, then `PUBLISH_FAILED` | Temporal's default retries forever |
+| Provider errors raised `from None` | The httpx chain hit Temporal's failure size limit |
+| Local model over hosted HF | Free credits ran out (402); same scores to 3 dp |
+
+**Cost time**
+
+- Test image was 3 weeks old and had no `pgvector`; rebuilt.
+- Worker and API held an old `.env` comment as the API key: `restart` never
+  re-reads `.env`.
+- HF free credits ran out mid-check (HTTP 402).
+- `publish-status` showed "Failure exceeds size limit." during retries.
+- Build context was ~1 GB from `.tmp/`; added to `.dockerignore`.
+- API crashed on reload: its old image had no `fastembed`.
+
+**Explain out loud**
+
+- A pending Activity's `attempt` is the one running or waiting to run;
+  `last_error` is why the one before it failed.
+- `raise ... from None` drops the cause chain Temporal would send with a stack
+  trace per link.
+- `up -d --force-recreate` re-reads `.env`; `restart` keeps the old environment.
+
+**Carrying into Day 3**
+
+- 4.7 re-index on re-publish; needs the re-publish path and an unpublish
+  endpoint.
+- 4.9: `chunk_content` must keep unchanged chunks, or the cascade deletes
+  their vectors.
+- 4.8 `POST /search`; 4.10 eval set will set `RETRIEVAL_MIN_SIMILARITY`.
+- 20 crash-demo services are PUBLISHED with no vectors; `make reset` before
+  4.10.
+- Regenerate `docs/diagrams/erd-core-domain.svg`.
+
+**Open questions**
+
+- Is a local model acceptable in place of a hosted API for the demo?
+- Re-publish for 4.7: PUBLISHED -> PUBLISHING directly, or back through DRAFT?
+  Either way the vectors stay unpublished until it finishes.
+- Week 3's two (relay `attempts=1`, uncovered handler branches) still open.
+
+### Day 3 - 2026-10-14
+
+**Goal:** Keep unchanged chunks on re-publish, make re-publish and unpublish
+re-index cleanly, and ship `POST /search`.
+
+**Done**
+
+- 4.9: `chunk_content` keeps a chunk whose hash is unchanged; `embed_chunks`
+  embeds only chunks with no vector from the current model. Live re-publish of
+  the same text: `embedded 0 of 1`.
+- 4.7: publish accepts PUBLISHED and INACTIVE; the old vectors leave search
+  while it runs. New `POST /services/{id}/unpublish`.
+- Publish and unpublish lock the service row; the seed skips PUBLISHED itself.
+- 4.8: `POST /search` with `top_k` (default 5), the threshold, published and
+  model filters in SQL, one result per service, 503 if embedding fails.
+- PHI: the index holds service text only, and the query is never logged; a
+  test for each.
+- 470 -> 526 tests, 98% coverage; 31 mutations caught, two weak tests fixed.
+
+**Decisions**
+
+| Decision | Why |
+|---|---|
+| Re-publish goes PUBLISHED -> PUBLISHING, not via DRAFT | DRAFT checks nothing; old vectors are hidden meanwhile |
+| Skip a chunk that has a vector from this model | Changed chunks are deleted, so survivors are unchanged |
+| Row lock on publish and unpublish | Without it 5 of 20 concurrent re-publishes passed the check |
+| Search filters in the vector query | An excluded vector never takes a `top_k` place |
+| Threshold is server config only | A client could otherwise ask for noise |
+| Search PHI: no patient data indexed, query never logged | Patient scoping starts with Week 5's appointments |
+| `fileConfig(disable_existing_loggers=False)` | Migrations in tests silenced every `app.*` logger |
+
+**Cost time**
+
+- The log test captured nothing: Alembic's `fileConfig` had disabled every app
+  logger in the test process.
+- Two tests passed with their guard removed: `embedded_at` on kept chunks, and
+  the one-result-per-service ranking. Both rewritten.
+- The seed re-run test proved "no second publish" by chunk id, which 4.9 broke;
+  it now checks `published_at`.
+- Live-check script: Windows Python cannot read Git Bash's `/tmp`.
+
+**Explain out loud**
+
+- In one flush SQLAlchemy inserts before it deletes, so `chunk_content` flushes
+  the deletes first or the unique `(source, index)` rejects the new chunk.
+- `<=>` is cosine distance, so a minimum similarity becomes `distance <= 1 - t`.
+- `SELECT ... FOR UPDATE` makes a second publish wait, then read PUBLISHING
+  and get a 409.
+
+**Carrying into Day 4**
+
+- 4.10 eval set. The 0.65 threshold is too strict: right answers scored 0.316
+  to 0.798, a not-offered query 0.277.
+- `make reset` first: 20 crash-demo services are PUBLISHED with no vectors.
+- 4.11 is mostly covered; 4.12 is the docs pass.
+- Regenerate `docs/diagrams/erd-core-domain.svg`.
+
+**Open questions**
+
+- Is a local model acceptable in place of a hosted API for the demo?
+- Is "no patient data in the index" enough PHI scoping for `/search`, or does
+  the mentor expect patient-scoped retrieval this week?
+- Week 3's two (relay `attempts=1`, uncovered handler branches) still open.
+
+### Day 4 - 2026-10-14
+
+**Goal:** Measure search with an eval set, choose the threshold from it, and
+make "the suite runs offline on fake embeddings" enforced rather than assumed.
+
+**Done**
+
+- Seed catalogue 3 -> 12 services, four per department, with close pairs
+  (Knee X-Ray / Knee MRI Scan).
+- `make up` starts the whole stack and `make reset` reuses it; the old recipe
+  crashed the seed on Temporal connect.
+- 4.10: `scripts/eval_retrieval.py` + `make eval`, 34 queries (24 offered, 10
+  not). Top-1 20/24, top-3 22/24, top-5 24/24.
+- `RETRIEVAL_MIN_SIMILARITY` 0.65 -> 0.31: 31 of 34 right, up from 18.
+- 4.11: `fake_embeddings_by_default` and `no_network` autouse fixtures; tests
+  for a client threshold, the 503 log line, and re-index seen from search.
+- `docs/ai-layer.md` sections 7 (eval) and 8 (offline testing); NFR-10.
+- 526 -> 548 tests, 98.15% coverage; 25 mutations, all caught.
+
+**Decisions**
+
+| Decision | Why |
+|---|---|
+| 12 seed services with close pairs | With 3, the top-5 hit rate was always 100% |
+| Eval ranks with no threshold | The threshold is what it chooses |
+| Threshold 0.31 | Gap is 0.298 to 0.332; a false "not offered" blocks booking |
+| Eval names services, not ids | Ids differ between databases |
+| Fake provider forced in every test | The test container reads the developer's `.env` |
+| Guard error is not an `OSError` | httpx would call it "unreachable" and a 503 test would pass |
+
+**Cost time**
+
+- `make` isn't on Git Bash's PATH and MSYS `make` loses `docker compose`; ran
+  the recipe lines by hand.
+- Two test files both named `test_eval_retrieval.py` collided (no
+  `__init__.py`); renamed the integration one.
+- First guarded run: 401 errors. psycopg 3 resolves the Postgres host in
+  Python, so the guard blocked every DB connection.
+
+**Explain out loud**
+
+- A threshold separates unrelated queries, not near misses: "chest x-ray"
+  scores 0.428 on Knee X-Ray, above "physio appointment" on its own service
+  (0.332).
+- The sweep counts an offered query as found only if its service is within
+  `top_k` and at or above the threshold.
+- Python clients look a host up through `socket.getaddrinfo`, so patching it
+  blocks httpx, redis-py and psycopg 3, but not librdkafka or Temporal's Rust
+  core.
+
+**Carrying into Day 5**
+
+- ERD redraw (`docs/diagrams/erd-core-domain.svg`), carried since Day 2.
+- 4.12: read-through of `docs/ai-layer.md`.
+- End of week: README and NFR-2 still say 264 tests, README marks Week 4 "Not
+  started"; weekly self-check; write conventions back to `.claude/rules/`.
+- Week 4 PR and demo.
+
+**Open questions**
+
+- Is a local model acceptable in place of a hosted API for the demo?
+- Is "no patient data in the index" enough PHI scoping for `/search`, or does
+  the mentor expect patient-scoped retrieval this week?
+- Near misses ("chest x-ray" -> Knee X-Ray) get a weak match, not a refusal.
+  Acceptable for search, with the Week 5 assistant saying what is offered?
+- Week 3's two (relay `attempts=1`, uncovered handler branches) still open.
+
+### Day 5 - 2026-10-14
+
+**Goal:** Close out Week 4: check `docs/ai-layer.md` against the code (4.12),
+bring the README, PRD and diagrams up to date, and write the week's conventions
+back to the rules.
+
+**Done**
+
+- 4.12: every checkable claim in `docs/ai-layer.md` compared with the code; 5
+  had drifted and are fixed (`VectorStore` has 4 methods, permanent error
+  statuses, the threshold is chosen).
+- README: status, counts, AI layer in the architecture diagram, analytics
+  endpoints, package layout.
+- PRD: FR-19 split into 19a-e; NFR-2, NFR-4, milestones; three Week 4 gaps in 7.
+- Re-exported `architecture.svg`, `erd-core-domain.svg`, `publish-workflow.svg`.
+- Week 4 conventions in `rules/ai-layer.md`, `testing.md`, `data-model.md`.
+- 548 tests, 98.15% coverage, unchanged; no key-shaped string in git history.
+
+**Decisions**
+
+| Decision | Why |
+|---|---|
+| FR-19 as five rows | One cell of ~40 names could not be checked |
+| Section 1's 0.221 qualified, not re-measured | It explains the idea; section 7 has current scores |
+| Search latency left for Week 5 | Not in the 8.3 DoD; measured with the assistant's |
+| `scheduling-saga.svg` not re-exported | Its labels match the mermaid |
+
+**Cost time**
+
+- README and PRD were last updated at the Week 2 close-out: Week 3 "Not
+  started", 264 tests, no AI layer.
+- `publish-workflow.svg` had no `embed_chunks`; no note had listed it.
+- Windows Python wrote `prd.md` back with CRLF; converted to LF.
+
+**Explain out loud**
+
+- Docs drift where a later day changes what an earlier section described:
+  `search` joined `VectorStore` on Day 3, the threshold on Day 4.
+- Comparing an SVG's label set with a fresh render shows whether an export is
+  stale, without looking at it.
+
+**Carrying into the review**
+
+- Week 4 stack (#17-#21) open for the mentor; demo.
+- `docs/ai-layer.md` cost and latency, with the assistant's (Week 5).
+
+**Open questions**
+
+- Is a local model acceptable in place of a hosted API for the demo?
+- Is "no patient data in the index" enough PHI scoping for `/search`?
+- Near misses ("chest x-ray" -> Knee X-Ray) get a weak match, not a refusal.
+- Week 3's two (relay `attempts=1`, uncovered handler branches) still open.
+
+---
+
+## Weekly self-check
+
+### Week 4 - 2026-10-14
+
+1. **Finished / broken:** 4.1-4.12 complete, and every 8.3 DoD item but the
+   PR and demo. 548 tests, 98.15% coverage. Nothing known broken; three gaps
+   recorded in `docs/prd.md` 7 (near misses, re-publish downtime, PHI by
+   construction).
+2. **Not fully understood yet:** how far 0.31 holds. The gap it sits in is
+   0.034 wide, measured on 34 queries written by the catalogue's author.
+3. **Most time spent:** Day 2's provider switch. Hugging Face's free credits
+   ran out mid-check (402), and the local model meant baking it into the
+   image, blocking the Hub, and rebuilding a 3-week-old test image.
+4. **Carrying into Week 5:** review fixes, then the assistant. Its retrieval
+   reuses `app/ai/retrieval.py` and adds the first per-patient scoping.
+
+---
+
+## Week 4 review - 2026-10-16
+
+- Demo given from `docs/retrieval-demo.md`; mentor approved, no changes
+  requested. No review fixes carried into Week 5.
+- No ruling on the three open questions (local model, `/search` PHI scoping,
+  near misses); the current approach stands. Demo service 16 unpublished and
+  renamed after; 12 seed services published, eval unchanged.

@@ -14,10 +14,10 @@ How SmartHealth is put together, and why. Updated as work lands.
 
 ## 1. Data model
 
-### 1.1 ERD — core domain through Week 2
+### 1.1 ERD — core domain and chunk vectors
 
-Seventeen entities. The ten Week 1 shapes plus everything the scheduling saga and
-visit lifecycle attach to them.
+Eighteen entities. The ten Week 1 shapes, everything the scheduling saga and
+visit lifecycle attach to them, and Week 4's chunk vectors.
 
 ```mermaid
 erDiagram
@@ -43,6 +43,8 @@ erDiagram
     APPOINTMENT ||--o| VISIT : "becomes"
     PROVIDER ||--o{ WAITLIST : "queued for"
     PATIENT ||--o{ WAITLIST : "waits on"
+    CONTENT_CHUNK ||--o| CHUNK_EMBEDDING : "embedded as"
+    SERVICE ||--o{ CHUNK_EMBEDDING : "described by"
 
     CLINIC {
         bigint id PK
@@ -213,6 +215,19 @@ erDiagram
         timestamptz created_at
         timestamptz updated_at
     }
+
+    CHUNK_EMBEDDING {
+        bigint id PK
+        bigint chunk_id FK "UNIQUE, ON DELETE CASCADE"
+        vector embedding "vector(384)"
+        text model
+        bigint service_id FK "NOT NULL, indexed"
+        text department "copied for search"
+        text_array specialties "copied for search"
+        boolean published "copied for search"
+        timestamptz created_at
+        timestamptz updated_at
+    }
 ```
 
 Exported copies of this and every other diagram here live in `docs/diagrams/`.
@@ -222,7 +237,8 @@ Exported copies of this and every other diagram here live in `docs/diagrams/`.
 datetime. Every foreign key is `ON DELETE RESTRICT`: in healthcare operations you
 deactivate, you never delete, and a cascade that quietly removed a department's
 services would take their history with it. Status is always an enum, never a
-boolean flag. Indexes on anything filtered or joined: `slots.provider_id`,
+boolean flag. `chunk_embeddings` breaks both rules once each, for derived data
+rather than records (see the Week 4 decisions). Indexes on anything filtered or joined: `slots.provider_id`,
 `slots.status`, `services.status`, `services.department_id`,
 `providers.department_id`.
 
@@ -381,6 +397,7 @@ Publishing a service is a Temporal Workflow, not a boolean flip:
 ```
 DRAFT ──publish──> PUBLISHING ──success──> PUBLISHED ──unpublish──> INACTIVE
                         └──failure──> PUBLISH_FAILED ──retry──> PUBLISHING
+PUBLISHED or INACTIVE ──publish again──> PUBLISHING   (Week 4)
 ```
 
 The workflow validates the service is complete, structures its operational
@@ -466,6 +483,29 @@ migrating rows that had already been created without it.
 | A missing `analytics_daily` row is compared as zeros, not skipped | A consumer that died before ever writing a day would otherwise look healthy | A genuinely quiet day is recomputed to prove it is quiet |
 | The wait-time recompute counts only COMPLETED visits | `handle_visit_completed` is its only writer and runs on `visit.completed`, so a visit still in progress has contributed nothing yet | Found on Day 5; the recompute previously counted every visit checked in that day, so a clinic mid-visit saw phantom drift for most of the working day |
 
+### Week 4
+
+| Decision | Why | Tradeoff |
+|---|---|---|
+| Vectors live in the existing Postgres through pgvector, rather than in a separate vector database such as Qdrant or Chroma | Retrieval has to keep only published services and scope any patient data to the caller, so both filters must be part of the search query itself. With pgvector they are plain `WHERE` clauses in the same statement that orders by distance. A service's chunks and vectors can also be replaced in one transaction, so a re-publish cannot leave stale vectors behind (task 4.7). The `pgvector/pgvector` image and the `CREATE EXTENSION` migration have been in place since Week 1, so there is no new container to run or back up | With no vector index, each search compares the query against every stored vector. A single clinic has few enough services for that scan to stay small; a much larger catalogue would need an approximate index (HNSW) that skips most of those comparisons. Such an index applies `WHERE` filters after its scan, so with the published filter it can return fewer than k results, which is a second reason not to add one at this size. Search is also tied to Postgres, so moving to a dedicated store later goes through `VectorStore` in `app/ai/vector_store.py` (task 4.6) |
+| Embeddings come from Hugging Face's hosted `all-MiniLM-L6-v2` (384 numbers per text), rather than OpenAI's `text-embedding-3-small` or a model run inside the container with `fastembed` | `.env.example` asks for free keys the developer provisions, which rules out paid OpenAI. A hosted call fails for real (a TLS handshake timed out on the first day of testing), so task 4.5's retries are exercised by genuine failures; a local model would need a forced-failure switch to show them, and would make the image larger | The first request after an idle period took 8 s against 0.9 s warm, and the free tier is rate-limited, both risks on demo day. The model is small and ranks paraphrases poorly (`docs/ai-layer.md` section 3). Switching is one class and one setting behind `EmbeddingProvider`, plus re-embedding every service, because vectors from different models cannot be compared. Replaced as the default on Day 2; see the next row |
+| Day 2: the same model runs inside the containers (`LocalEmbeddings`, using `fastembed`), which is now the default; the hosted provider stays as an option | The free Hugging Face account ran out of inference credits after about a day of testing, and every call returned HTTP 402. A demo that depends on an outside quota can be stopped by it. Run locally, the model gave the same scores as the hosted API to three decimals on all six Day 1 queries, so search results do not change | The image is about 290 MB larger (200 MB of packages, 87 MB of model downloaded at build time), and each process holds the model in memory and loads it once, in about 0.6 s. A real network failure no longer exercises the retry path by default; tests cover it, and the hosted provider is one setting away. Changing the model needs an image rebuild as well as a migration |
+| Each vector is a row in its own `chunk_embeddings` table, one per chunk, and deleting a chunk deletes its vector (`ON DELETE CASCADE`), the schema's only cascade | A vector is computed from its chunk's text and means nothing without it, and `chunk_content` deletes a service's chunks on every publish. With `RESTRICT`, the second publish of any embedded service would fail on that delete. With the cascade, Postgres removes the old vector in the same statement, so no orphan can survive a re-publish | Deleting a chunk now removes its vector without a trace, the one place a delete is not refused. Since task 4.9, `chunk_content` keeps a chunk whose text is unchanged, so the cascade fires only when the text really changed and the vector is stale anyway |
+| Each vector carries copies of its service's department, specialties and a `published` flag, as Part B §3.1 requires, not only `service_id` | The store sits behind `VectorStore` so it can be swapped, and a store such as Qdrant cannot join to `services` at search time, so the metadata has to travel with the vector. Specialties are a list because a service can be delivered by providers of several specialties | A copy can disagree with its source. The flag only changes in the same transaction as the service's status, and department and specialties are rewritten on every publish, so they describe what was embedded. A department renamed without a re-publish keeps its old name on the vector until the next one |
+| Embedding gets its own retry policy, five attempts 2, 4, 8 and 16 s apart, after which the publish ends in `PUBLISH_FAILED` | Temporal's default policy retries forever, so a provider outage would leave the service in `PUBLISHING` with nothing saying why. Five attempts ride out a model loading (Hugging Face's 503) or a short rate limit | A provider outage longer than about 30 s fails the publish, and someone has to publish the service again |
+| Why a publish failed is saved on the row, `services.publish_error`, as well as in Temporal's history | `publish-status` can say why without Temporal being reachable. A validation failure used to end in `PUBLISH_FAILED` with no reason anywhere outside Temporal | One more column, cleared each time a publish starts |
+| `publish-status` asks Temporal for the pending Activity's attempt number and last error while a service is `PUBLISHING` | The row only says `PUBLISHING`. Temporal already tracks each pending Activity's attempt and last failure, which is what makes a retrying embedding call visible | That part of the endpoint now depends on Temporal; when Temporal is unreachable it returns the row without `progress` instead of failing |
+| `embed_chunks` re-raises provider errors as `ApplicationError` `from None` | Temporal sends an exception's whole cause chain, with a stack trace per link, and stores a retrying Activity's last failure only up to a size limit. A timeout's httpx chain measured 3.7 KB, and `publish-status` showed "Failure exceeds size limit." until the chain was dropped | The worker log loses the httpx traceback; the message keeps the underlying exception's name, such as `ConnectTimeout` |
+| Every vector is stored with `published = false`; only `mark_published` sets it true, in the same transaction as the service's status | Embedding runs while the service is still `PUBLISHING`. Writing the flag true at that point would make the service searchable before its publish finished, and a publish that then failed would leave it searchable | A re-publish hides the service from search from the moment its vectors are replaced until the workflow finishes. Whether that is acceptable is part of the open re-publish question (task 4.7) |
+| Publishing again goes straight from `PUBLISHED` or `INACTIVE` to `PUBLISHING`, not back through `DRAFT` (task 4.7) | It is how an edited service's chunk and vector catch up with its text. A trip through `DRAFT` would add a step that checks nothing | While the workflow runs, a second or two, the service is out of search and booking rejects it; a failed re-publish keeps it out until a publish succeeds |
+| `start_publish` and unpublish lock the service row (`SELECT ... FOR UPDATE`) before checking its status | Once `PUBLISHED` could be published, two clicks both read `PUBLISHED` and both passed; Temporal refused the second workflow, and its rollback marked the service `PUBLISHED` while the first workflow was still running. Without the lock, 5 of 20 concurrent requests got past the check | A second request waits for the first to commit, then gets a 409 |
+| Unpublish is a transaction, not a workflow, and keeps the chunks and vectors | One status and one flag change together, with nothing to retry or resume; kept vectors mean publishing again re-embeds nothing unchanged | No `service.unpublished` event: no consumer needs one yet |
+| `POST /search` filters in the vector query itself: the vector's `published` flag, the query's model, and the threshold as a maximum cosine distance (task 4.8) | A filter applied after ranking would let an unpublished or weak match take one of the `top_k` places; in the query, Postgres drops them first. The brief requires the published filter in the query, not the prompt | The vector store has to carry `published` itself, which section 4's flag already does |
+| The similarity threshold is server configuration (`RETRIEVAL_MIN_SIMILARITY`); `top_k` is a request field | A client able to lower the threshold could ask for noise, which is what the threshold exists to hide | Tuning it needs a config change and restart, not a request |
+| Alembic's `fileConfig` runs with `disable_existing_loggers=False` | The suite runs migrations in-process after importing the app, and the default switched off every `app.*` logger for the whole run, so no test could check a log line. Found when the test that search never logs the query captured nothing | Alembic's own logging config can no longer silence an app logger, which nothing relied on |
+| The seed catalogue has 12 services, four per department, including close pairs such as Knee X-Ray and Knee MRI Scan (task 4.10) | With 3 services, every query's right answer was in the top 5, so the eval's top-5 hit rate could only read 100%. The close pairs are where search can pick the wrong service | `make reset` publishes 12 services one at a time: about 50 s |
+| `RETRIEVAL_MIN_SIMILARITY` is 0.31, chosen from the eval set (task 4.10) | Unrelated not-offered queries scored at most 0.298 and every offered query's service at least 0.332, so any value between gets 31 of the 34 queries right. 0.31 leans towards finding, because a patient told a real service is not offered cannot book it | Three not-offered queries that ask for a kind of service the clinic offers, such as "chest x-ray", score above it and get a weak match instead of "we don't offer that". The value holds for `all-MiniLM-L6-v2` only |
+
 **Enum member names and values are kept identical** (`AVAILABLE = "AVAILABLE"`).
 SQLAlchemy persists a Python enum's `.name`, while a `str`-based enum serialises
 its `.value` through Pydantic — so if the two differ, the database holds one
@@ -533,12 +573,12 @@ is in neither the Week 3 task list nor the Definition of Done. Slots already
 store UTC and clinics already own a timezone, so the conversion point exists —
 this is a change of which timezone the aggregates use, not new machinery.
 
-**Known bug (Week 3): a worker outage loses booking counts.**
+**Resolved in the Week 3 review: a worker outage lost booking counts.**
 `appointment.booked` is queued when the appointment is still `REQUESTED`, but
 `booked_at` is written later, by the saga's `confirm` Activity.
-`handle_appointment_booked` reads `booked_at` with `scalar_one_or_none()`, so a
-missing row and an unconfirmed one are indistinguishable — both look like "does
-not exist", which the handler treats as permanent and dead-letters.
+The old `handle_appointment_booked` read `booked_at` with `scalar_one_or_none()`,
+so a missing row and an unconfirmed one were indistinguishable — both looked like
+"does not exist", which the handler treated as permanent and dead-lettered.
 
 Normally invisible: the relay runs every 5s and a saga finishes in ~200ms, so
 `booked_at` is always set by the time the event ships. Day 5's crash-recovery
@@ -546,12 +586,21 @@ demo held the sagas frozen for ~40s while the relay kept publishing, and all 27
 booking events were dead-lettered — the aggregate silently under-counted until
 `--repair` was run.
 
-The fix is two lines: maintain `appointments_booked` from `appointment.confirmed`
-instead, which guarantees `booked_at` exists and matches what the reconciliation
-already counts. Deferred rather than rushed at the end of the week, because it
-changes which event drives a graded metric. Making the unconfirmed case
-*transient* instead is the wrong fix: a REJECTED appointment never gets a
-`booked_at`, so the consumer would retry forever and stall the partition.
+The fix: `appointments_booked` is maintained from `appointment.confirmed`,
+which is recorded in the same transaction that sets `booked_at`, so the column
+is guaranteed to exist and matches what the reconciliation already counts.
+`appointment.booked` is still published and now drives nothing. The handler
+also reads the row with `one_or_none()` rather than `scalar_one_or_none()`, so a
+missing row and an empty `booked_at` dead-letter with different messages.
+
+Making the unconfirmed case *transient* was the tempting wrong fix: a REJECTED
+appointment never gets a `booked_at`, so the consumer would retry forever and
+stall the partition.
+
+Verified live against Day 5's own scenario: with the Temporal worker stopped,
+the `booked` event arrived while `booked_at` was NULL and was ignored, not
+dead-lettered; on restart the `confirmed` event counted it, and the
+reconciliation was clean with no `--repair`.
 
 ---
 
@@ -600,19 +649,31 @@ factory is how a test points them at the test database.
 ```mermaid
 flowchart LR
     D([DRAFT]) -->|POST /publish| P([PUBLISHING])
-    P --> V[validate_service] --> S[structure_content] --> C[chunk_content] --> M[mark_published]
+    P --> V[validate_service] --> S[structure_content] --> C[chunk_content] --> E[embed_chunks] --> M[mark_published]
     M --> PUB([PUBLISHED])
     V -->|SERVICE_INCOMPLETE| F([PUBLISH_FAILED])
+    E -->|permanent error, or 5 attempts used| F
     F -->|retry| P
-    PUB -->|unpublish| I([INACTIVE])
+    PUB -->|POST /unpublish| I([INACTIVE])
+    PUB -->|POST /publish again| P
+    I -->|POST /publish again| P
 ```
 
 `validate_service` returns every missing field at once and is **non-retryable** —
 a missing description is still missing on the next attempt. That failure is
 expected, so the Workflow catches it and ends cleanly in `PUBLISH_FAILED`;
-anything else is left to Temporal's retry policy. `chunk_content` deletes and
-re-inserts in one transaction, which is simultaneously how re-publishing replaces
-chunks atomically and how a retried attempt stays idempotent.
+anything else is left to Temporal's retry policy. `chunk_content` keeps a chunk
+whose text hash is unchanged and replaces any other, in one transaction. That is
+how re-publishing replaces chunks atomically, how a retried attempt stays
+idempotent (the second run finds nothing changed), and how an unchanged chunk
+keeps its vector instead of being embedded again.
+
+`embed_chunks` calls an outside service, so it has its own retry policy: five
+attempts, 2, 4, 8 and 16 s apart. A permanent error (a rejected key, a vector of
+the wrong size) is non-retryable and fails at once. Either way the Workflow then
+ends in `PUBLISH_FAILED` and saves the error in `services.publish_error`, which
+`GET /services/{id}/publish-status` returns. The details are in
+`docs/ai-layer.md` section 5.
 
 ### 6.2 Appointment scheduling saga
 
@@ -658,7 +719,9 @@ How each Activity survives a retry:
 
 `GET /appointments/{id}` and `GET /services/{id}/publish-status` read the status
 column rather than querying Temporal: the Activities keep it in sync at every
-step. The cost is that a workflow lost before its first Activity leaves a row
+step. Since Week 4, publish-status also asks Temporal for the pending Activity's
+attempt and last error while a service is `PUBLISHING`, and answers without them
+if Temporal is unreachable. The cost is that a workflow lost before its first Activity leaves a row
 claiming `REQUESTED` forever — see the known gaps in [3](#3-decisions-and-tradeoffs).
 
 ## 7. Slot concurrency

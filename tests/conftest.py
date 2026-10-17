@@ -20,8 +20,13 @@ from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.orm import Session
 from fastapi.testclient import TestClient
 
+from app.celery.celery_app import celery_app
 from app.core.config import settings
 from app.core.logging import correlation_id_var
+from app.core.redis import get_redis
+from app.core.security import create_access_token
+from app.db.session import get_db
+from app.main import app
 from app.models import (
     Appointment,
     AppointmentStatusHistory,
@@ -36,11 +41,7 @@ from app.models import (
     User,
 )
 from app.models.enums import AppointmentStatus, UserRole
-from app.core.redis import get_redis
-from app.core.security import create_access_token
-from app.db.session import get_db
-from app.main import app
-from app.workers.celery_app import celery_app
+from tests.network_guard import block_outside_hosts
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -195,6 +196,32 @@ def isolate_correlation_id() -> Generator[None, None, None]:
         yield
     finally:
         correlation_id_var.reset(token)
+
+
+@pytest.fixture(autouse=True)
+def no_network(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail any test that looks up a host outside the compose stack, such
+    as the hosted embedding API (tests/network_guard.py).
+
+    Tests marked `live` are left alone: reaching a real API is their whole
+    point, and they skip themselves unless RUN_LIVE_TESTS=1.
+    """
+    if request.node.get_closest_marker("live") is None:
+        block_outside_hosts(monkeypatch)
+
+
+@pytest.fixture(autouse=True)
+def fake_embeddings_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every test embeds with FakeEmbeddings unless it asks for another
+    provider.
+
+    The test container reads the developer's .env, so without this the
+    provider a test got depended on who ran it: the in-image model here,
+    or the hosted API on a machine whose .env asks for that. A test that
+    needs another provider sets embedding_provider itself, which runs after
+    this.
+    """
+    monkeypatch.setattr(settings, "embedding_provider", "fake")
 
 
 # --- Domain fixtures -------------------------------------------------------

@@ -366,7 +366,7 @@ def test_schedule_reminders_passes_the_correlation_id_to_celery(
         seen.append(get_correlation_id())
 
     monkeypatch.setattr(
-        "app.workers.tasks.reminders.notification_service.send_appointment_reminder",
+        "app.celery.tasks.reminders.notification_service.send_appointment_reminder",
         spy,
     )
 

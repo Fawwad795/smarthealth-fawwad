@@ -1,7 +1,10 @@
 # Runbook
 
-Diagnosing the four things most likely to go wrong. Every command here has
+Diagnosing the five things most likely to go wrong. Every command here has
 been run against this stack.
+
+To *cause* these conditions deliberately — for a demo, or to re-verify the
+consumer's two error branches — see `docs/kafka-ui-demo.md`.
 
 **Start here.** Is anything actually down?
 
@@ -112,16 +115,18 @@ event — the aggregate silently under-counts until repaired:
 
 ```bash
 docker compose exec postgres psql -U app -d app -c \
-  "SELECT error, payload FROM failed_jobs WHERE job_type='app.workers.consumer'
+  "SELECT error, payload FROM failed_jobs WHERE job_type='app.kafka.consumer'
    ORDER BY id DESC LIMIT 10;"
 ```
 
-> **Known issue.** A Temporal worker outage makes `appointment.booked` events
-> arrive before the saga has set `booked_at`, and the handler treats that as
-> permanent and dead-letters them. Booking counts are then lost until you run
-> `--repair`. Fix is to drive the aggregate from `appointment.confirmed`
-> instead — see `NOTES.md`. **When demoing, show the analytics before any
-> crash-recovery scenario.**
+Reading a booking dead-letter. `appointment N does not exist` means the row
+is missing; `appointment N is confirmed but has no booked_at` means it exists
+but was never stamped. Neither can resolve on a retry, which is why both are
+permanent -- and neither should occur, since `confirm` writes `booked_at` in
+the same transaction as the event.
+
+A Temporal worker outage no longer loses booking counts: `appointment.booked`
+drives nothing, and `appointment.confirmed` only exists once `booked_at` does.
 
 ---
 
@@ -148,9 +153,27 @@ Look for `duplicate event skipped` (normal — that is idempotency working) vers
 Kafka UI: **http://localhost:8080** — consumer group `app-analytics`. A growing
 lag with a live consumer means it is stuck on one message.
 
-**A consumer that just started sees nothing for up to 5 minutes** if its topics
-did not exist when it subscribed; librdkafka refreshes topic metadata on that
-interval. It looks exactly like a dead consumer.
+**A consumer that just started sees nothing for up to 10 seconds** if its topics
+did not exist when it subscribed. librdkafka only notices new topics when it
+refreshes metadata -- every 5 minutes by default, lowered to 10s by
+`topic.metadata.refresh.interval.ms` in `consumer_config()`. It looks exactly
+like a dead consumer.
+
+**A consumer down for longer than 7 days loses events silently.** Retention
+(`log.retention.hours=168`) deletes older records. If the group's committed
+offset falls below the log start, `auto.offset.reset=earliest` jumps to the
+oldest surviving record and nothing errors. Compare the two:
+
+```bash
+# CURRENT-OFFSET per topic for the consumer group
+docker compose exec kafka /opt/kafka/bin/kafka-consumer-groups.sh   --bootstrap-server localhost:9092 --describe --group app-analytics
+# earliest surviving offset per topic
+docker compose exec kafka /opt/kafka/bin/kafka-get-offsets.sh   --bootstrap-server localhost:9092 --time -2
+```
+
+`CURRENT-OFFSET` below the earliest offset means records were skipped. The
+events are still in `outbox_events`, so the numbers are recoverable: reconcile
+the affected days, then `--repair` (section 3).
 
 ---
 
@@ -170,3 +193,40 @@ sum by (endpoint, status) (rate(http_requests_total[5m]))
 
 `prometheus_client` appends `_total` to counter names, so the metric is
 `appointments_booked_total` even though the code says `appointments_booked`.
+
+---
+
+## 5. A publish failed, or sits in PUBLISHING
+
+**Symptom:** a service never reaches `PUBLISHED`.
+
+```bash
+# why did it fail, and is anything retrying right now? (any staff token)
+curl -s localhost:8000/api/v1/services/<id>/publish-status \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+`PUBLISH_FAILED` comes with `publish_error`. `PUBLISHING` comes with `progress`:
+the step, the attempt, and the last attempt's error. The same history is in the
+Temporal UI, **http://localhost:8233**, under workflow id `publish-service-<id>`.
+
+| `publish_error` or `last_error` | Cause | Fix |
+|---|---|---|
+| `description is required` (or `prep_instructions`) | Validation | Fill the field, publish again |
+| `EMBEDDING_API_KEY is empty` or `... non-ASCII character ...` | The key the worker loaded | Check `.env`, then recreate the worker (below) |
+| `could not load <model> (...)` | `EMBEDDING_PROVIDER=local`, and the model is not in the image (an old image, or a changed `EMBEDDING_MODEL`) | `docker compose build`, then recreate the containers (below) |
+| `Hugging Face returned HTTP 402 for 1 texts` | `EMBEDDING_PROVIDER=huggingface`, and the account is out of inference credits | Add credits, or set `EMBEDDING_PROVIDER=local`; retrying will not help |
+| `Hugging Face unreachable (...)`, `HTTP 429`, `HTTP 5xx` | Provider down or rate-limited | Retried 5 times automatically; publish again once it recovers |
+
+**`docker compose restart` does not re-read `.env`.** A container keeps the
+environment it was created with, so after editing `.env`:
+
+```bash
+docker compose up -d --force-recreate temporal-worker api
+```
+
+Found on Week 4 Day 2: both containers still held a comment from an old `.env`
+line as the API key, six hours after the key was added.
+
+`progress` is `null` while `PUBLISHING` when nothing is pending: between two
+steps, or when no worker is running. Check `docker compose ps temporal-worker`.

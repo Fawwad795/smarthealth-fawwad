@@ -24,8 +24,15 @@ config.set_main_option("sqlalchemy.url", url)
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
+#
+# disable_existing_loggers=False: fileConfig's default switches off every
+# logger that already exists. The test suite runs these migrations inside
+# its own process (tests/conftest.py), after the app's modules are
+# imported, so the default silenced every app.* logger for the whole run
+# and no test could check what the app logs -- found when task 4.8's test
+# that search never logs the query captured nothing at all.
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # add your model's MetaData object here
 # for 'autogenerate' support

@@ -1,6 +1,6 @@
 """Notification business logic: what actually happens when something is sent.
 
-Thin Celery tasks in app/workers/tasks/ call into here -- the same
+Thin Celery tasks in app/celery/tasks/ call into here -- the same
 router-vs-service split FastAPI endpoints use, just with a task decorator
 instead of a route decorator on the thin side.
 """

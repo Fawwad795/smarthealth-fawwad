@@ -79,3 +79,17 @@ differences are fine, but each one must be justified in `docs/design.md`.
   working `downgrade()`. Round-trip it.
 - pgvector is enabled by a migration (`CREATE EXTENSION IF NOT EXISTS vector`), never
   by hand.
+
+## Established in Week 4 — follow it
+
+- **`chunk_embeddings` is the one justified exception to the rules above**, because
+  it is derived data, not a record. Its `chunk_id` FK is `ON DELETE CASCADE`
+  (`chunk_content` deletes changed chunks, and a stale vector must go with them), and
+  it stores copies of `department`, `specialties` and `published` (a swapped-in
+  vector store could not join `services`). Do not extend either exception to a
+  record table.
+- **`vector(384)` is tied to the embedding model.** A model with another size needs
+  a migration as well as an image rebuild; the column rejects a mismatched vector.
+- **No HNSW index on the vectors.** HNSW applies `WHERE` filters after its scan, so
+  with the published filter it can return fewer than `top_k`. An exact scan of one
+  clinic's catalogue is small.

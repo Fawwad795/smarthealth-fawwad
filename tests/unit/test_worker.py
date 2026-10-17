@@ -57,6 +57,7 @@ async def test_run_worker_registers_both_workflows_and_every_activity(
         "validate_service",
         "structure_content",
         "chunk_content",
+        "embed_chunks",
         "mark_published",
         "mark_publish_failed",
         "validate_eligibility",

@@ -13,14 +13,14 @@ from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
+from app.celery.celery_app import celery_app
+from app.celery.tasks.events import publish_outbox_events
+from app.celery.tasks.reminders import send_appointment_reminder
 from app.core.logging import correlation_id_var, get_correlation_id
-from app.events import relay
 from app.events.envelope import EventType
 from app.events.outbox import record_event
+from app.kafka import relay
 from app.models import FailedJob, OutboxEvent
-from app.workers.celery_app import celery_app
-from app.workers.tasks.events import publish_outbox_events
-from app.workers.tasks.reminders import send_appointment_reminder
 
 
 def test_reminder_task_dead_letters_a_permanent_failure(
@@ -46,7 +46,7 @@ def test_reminder_task_dead_letters_a_permanent_failure(
 
     assert result.failed()
     failed = db_session.execute(select(FailedJob)).scalar_one()
-    assert failed.job_type == "app.workers.tasks.reminders.send_appointment_reminder"
+    assert failed.job_type == "app.celery.tasks.reminders.send_appointment_reminder"
     assert failed.attempts == 1
     assert "999999999" in failed.error
 
@@ -78,7 +78,7 @@ def test_a_transient_failure_retries_with_backoff_then_dead_letters(
         _always_unavailable()
 
     monkeypatch.setattr(
-        "app.workers.tasks.reminders.notification_service.send_appointment_reminder",
+        "app.celery.tasks.reminders.notification_service.send_appointment_reminder",
         failing,
     )
 
@@ -129,7 +129,7 @@ def test_a_transient_failure_that_clears_is_not_dead_lettered(
             _always_unavailable()
 
     monkeypatch.setattr(
-        "app.workers.tasks.reminders.notification_service.send_appointment_reminder",
+        "app.celery.tasks.reminders.notification_service.send_appointment_reminder",
         unavailable_until_the_third_attempt,
     )
 
@@ -149,7 +149,7 @@ def _spy_on_reminder(monkeypatch: pytest.MonkeyPatch, seen: list[str | None]) ->
         seen.append(get_correlation_id())
 
     monkeypatch.setattr(
-        "app.workers.tasks.reminders.notification_service.send_appointment_reminder",
+        "app.celery.tasks.reminders.notification_service.send_appointment_reminder",
         spy,
     )
 
@@ -218,7 +218,7 @@ def test_a_beat_scheduled_task_mints_its_own_correlation_id(
         seen.append(get_correlation_id())
         return 0
 
-    monkeypatch.setattr("app.workers.tasks.events.relay.publish_pending_events", spy)
+    monkeypatch.setattr("app.celery.tasks.events.relay.publish_pending_events", spy)
     token = correlation_id_var.set("req-leftover-from-something-else")
     try:
         publish_outbox_events.delay()

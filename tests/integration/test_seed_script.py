@@ -3,14 +3,33 @@
 Not exercised via subprocess -- scripts/seed.py's seed() function is
 imported directly and run against the test database, the same way every
 other integration test in this suite calls into a service module.
+
+publish_services() is tested against Temporal's test server, with a
+worker running the real publish Activities on this test's db_session, so
+the chunk it writes can be read back here.
 """
 
+import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
+from temporalio.client import Client
 
 from app.core.security import hash_password, verify_password
-from app.models import Clinic, Department, Patient, Provider, Service, Slot, User
-from scripts.seed import SEED_ACCOUNTS, SEED_PASSWORD, seed
+from app.models import (
+    ChunkEmbedding,
+    Clinic,
+    ContentChunk,
+    Department,
+    Patient,
+    Provider,
+    ProviderService,
+    Service,
+    Slot,
+    User,
+)
+from app.models.enums import ServiceStatus
+from scripts.seed import SEED_ACCOUNTS, SEED_PASSWORD, publish_services, seed
+from tests.temporal_env import start_test_env, use_test_client
 
 
 def _count(db: Session, model) -> int:
@@ -23,7 +42,9 @@ def test_seed_creates_the_expected_entities(db_session: Session) -> None:
     assert _count(db_session, Clinic) == 1
     assert _count(db_session, Department) == 3
     assert _count(db_session, Provider) == 3
-    assert _count(db_session, Service) == 3
+    # Twelve, four per department: a duplicate name in SEED_SERVICES would
+    # be collapsed by the get-or-create and show up here as fewer.
+    assert _count(db_session, Service) == 12
     assert _count(db_session, Patient) == 3
     assert _count(db_session, Slot) > 0
 
@@ -90,3 +111,97 @@ def test_seed_repairs_an_unparseable_password_hash(db_session: Session) -> None:
     seed(db_session)
 
     assert verify_password(SEED_PASSWORD, user.password_hash)
+
+
+def _chunks_for(db: Session, service: Service) -> list[ContentChunk]:
+    return list(
+        db.scalars(select(ContentChunk).where(ContentChunk.source_id == service.id))
+    )
+
+
+def test_seed_leaves_services_draft_and_linked_to_a_provider(
+    db_session: Session,
+) -> None:
+    """seed() itself publishes nothing; the workflow is the only path to
+    PUBLISHED.
+
+    Pins the Week 1 shortcut that set PUBLISHED directly: those services
+    had no chunk, so search would have had nothing to find. Each service
+    is linked to the provider of its own department, because that link is
+    where its chunk gets its specialty from.
+    """
+    services = seed(db_session)
+
+    assert len(services) == 12
+    for service in services:
+        assert service.status == ServiceStatus.DRAFT
+        assert _chunks_for(db_session, service) == []
+        [link] = db_session.scalars(
+            select(ProviderService).where(ProviderService.service_id == service.id)
+        ).all()
+        provider = db_session.get(Provider, link.provider_id)
+        assert provider.department_id == service.department_id
+
+
+async def test_publish_services_publishes_each_service_with_its_chunk(
+    db_session: Session, publishing_client: Client
+) -> None:
+    services = seed(db_session)
+
+    await publish_services(db_session, services, publishing_client)
+
+    for service in services:
+        assert service.status == ServiceStatus.PUBLISHED
+        assert service.published_at is not None
+        assert len(_chunks_for(db_session, service)) == 1
+        [vector] = db_session.scalars(
+            select(ChunkEmbedding).where(ChunkEmbedding.service_id == service.id)
+        ).all()
+        assert vector.published is True
+
+    # The provider links existed before publishing, so the chunk carries the
+    # linked provider's specialty. Knee X-Ray is the seeded service whose
+    # specialty ("Orthopedics") is not dropped as a repeat of its department
+    # ("Orthopaedics").
+    knee_xray = next(s for s in services if s.name == "Knee X-Ray")
+    [knee_chunk] = _chunks_for(db_session, knee_xray)
+    assert knee_chunk.text.startswith("Orthopaedics · Orthopedics: Knee X-Ray.")
+
+
+async def test_publish_services_leaves_published_services_alone_on_a_rerun(
+    db_session: Session, publishing_client: Client
+) -> None:
+    """A second seed run must not publish again.
+
+    mark_published stamps published_at on every run of the workflow, so an
+    unchanged published_at proves no second workflow ran. (The chunk id
+    would not: chunk_content keeps the row of unchanged text, task 4.9.)
+    """
+    services = seed(db_session)
+    await publish_services(db_session, services, publishing_client)
+    db_session.expire_all()
+    first_published_at = {s.id: s.published_at for s in services}
+
+    await publish_services(db_session, seed(db_session), publishing_client)
+
+    db_session.expire_all()
+    for service in services:
+        assert service.status == ServiceStatus.PUBLISHED
+        assert service.published_at == first_published_at[service.id]
+
+
+async def test_publish_services_stops_with_a_message_when_no_worker_runs(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no worker the workflow is accepted but never runs, so waiting
+    on it would hang the seed forever. It must stop and say why.
+    """
+    services = seed(db_session)
+    monkeypatch.setattr("scripts.seed.PUBLISH_TIMEOUT_SECONDS", 0.5)
+    async with await start_test_env() as env:
+        use_test_client(monkeypatch, env.client)
+
+        with pytest.raises(SystemExit, match="Is temporal-worker running"):
+            await publish_services(db_session, services, env.client)
+
+    assert services[0].status == ServiceStatus.PUBLISHING

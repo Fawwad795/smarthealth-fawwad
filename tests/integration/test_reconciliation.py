@@ -10,7 +10,7 @@ from datetime import UTC, date, datetime, timedelta
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from app.events.handlers import handle_appointment_booked, handle_visit_completed
+from app.kafka.handlers import handle_appointment_confirmed, handle_visit_completed
 from app.models import AnalyticsDaily, Appointment, Slot, Visit
 from app.models.enums import VisitStatus
 from app.services import analytics as analytics_service
@@ -152,7 +152,9 @@ def test_handled_events_leave_the_aggregates_agreeing_with_the_raw_tables(
     db_session.add(visit)
     db_session.flush()
 
-    handle_appointment_booked(db_session, {"data": {"appointment_id": appointment.id}})
+    handle_appointment_confirmed(
+        db_session, {"data": {"appointment_id": appointment.id}}
+    )
     handle_visit_completed(db_session, {"data": {"visit_id": visit.id}})
     db_session.flush()
 
@@ -183,7 +185,9 @@ def test_a_visit_still_in_progress_is_not_reported_as_drift(
     )
     db_session.flush()
 
-    handle_appointment_booked(db_session, {"data": {"appointment_id": appointment.id}})
+    handle_appointment_confirmed(
+        db_session, {"data": {"appointment_id": appointment.id}}
+    )
     db_session.flush()
 
     assert analytics_service.reconcile_date(db_session, DAY) == {}

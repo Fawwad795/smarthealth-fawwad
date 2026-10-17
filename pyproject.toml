@@ -70,3 +70,7 @@ asyncio_default_fixture_loop_scope = "function"
 # here to tell *finite* from *infinite*, and a hung test hangs forever,
 # not for 90 seconds.
 timeout = 120
+# `live` tests call a real external API and skip themselves unless
+# RUN_LIVE_TESTS=1, so the default run needs no network. Registered here so
+# pytest does not warn that the mark is unknown.
+markers = ["live: calls a real external API; skipped unless RUN_LIVE_TESTS=1"]
