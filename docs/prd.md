@@ -69,7 +69,7 @@ assistant. API only — no UI. No clinical data anywhere.
 | NFR-7 | Workflows deterministic; Activities idempotent | Met |
 | NFR-8 | Crash mid-workflow resumes without duplicate side effects | Demonstrated live (Weeks 2–3) |
 | NFR-9 | One command to run; tests runnable from cold | Met |
-| NFR-10 | The suite passes with no network access; tests embed with `FakeEmbeddings` unless they ask otherwise | Met — enforced by the `no_network` and `fake_embeddings_by_default` fixtures (`tests/network_guard.py`, `test_offline_guards.py`) |
+| NFR-10 | The suite passes with no network access; tests embed with `FakeEmbeddings` and answer with `FakeLLM` unless they ask otherwise | Met — enforced by the `no_network`, `fake_embeddings_by_default` and `fake_llm_by_default` fixtures (`tests/network_guard.py`, `test_offline_guards.py`) |
 
 ## 5. Milestones
 

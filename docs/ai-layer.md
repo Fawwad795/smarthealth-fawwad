@@ -618,3 +618,110 @@ reaching the network or depending on `.env`'s provider.
 Each guarantee was also broken on purpose on Week 4 Day 4, one at a time: 14
 breaks, including turning off each fixture above, and every one failed at
 least one test.
+
+## 9. LLM provider
+
+Everything that needs a reply from the model calls `LLMProvider` in
+`app/ai/llm.py`. It has two methods. `complete()` returns the whole reply, for
+callers that need all of it before acting: the safety check, and a report that
+must be parsed as JSON. `stream()` yields the reply in pieces as the model
+writes it, for `POST /assistant/ask`. Both report the token counts, which
+`ai_interactions` stores beside each answer.
+
+`LLM_PROVIDER` picks one of two implementations:
+
+| Provider | Used by | How it works |
+|---|---|---|
+| `OpenAICompatibleLLM` | the running app: `groq` (the default) or `openai` | Posts to `/chat/completions` with httpx. Groq takes OpenAI's request format, so one class serves both, and only the address and key differ |
+| `FakeLLM` | the test suite | Returns a fixed reply, streamed a word at a time, and records the messages of every call so a test can check what the prompt held. It counts tokens as words |
+
+The client is a thin httpx class rather than a vendor SDK or LangChain. httpx
+was already a dependency, and the embedding provider's error handling and
+`MockTransport` tests carry over unchanged. The cost is parsing the stream
+format by hand: keep-alive comments, an error sent as an event after the 200
+status, and the token counts.
+
+The interface is async, unlike `EmbeddingProvider`. A model call spends seconds
+waiting on the network and almost no CPU, and awaiting it lets the event loop
+serve other requests, bookings included. Local embedding is the opposite, CPU
+work, which is why `POST /search` is a plain `def`.
+
+Every request is sent at temperature 0, so the same question gets the same
+answer and a refusal test that passes once keeps passing.
+
+### Choosing the model
+
+On Week 5 Day 1 Groq no longer served `llama-3.1-8b-instant`, the model
+`.env.example` named; it returned 404 `model_not_found`. Each chat model it did
+serve was sent the same one-sentence navigation question at temperature 0,
+once, whole and streamed:
+
+| Model | Whole reply | First streamed text | Completion tokens | Of which reasoning |
+|---|---|---|---|---|
+| `qwen/qwen3.8-27b` | 0.20 s | 0.09 s | 13 | none |
+| `allam-2-7b` | 0.19 s | 0.08 s | 35 | none |
+| `openai/gpt-oss-20b` | 0.58 s | 0.47 s | 142 | 113 |
+| `openai/gpt-oss-120b` | 0.70 s | 0.51 s | 73 | 50 |
+
+`qwen/qwen3.8-27b` is the default. It answered in the one short sentence asked
+for, and spends no tokens reasoning. The gpt-oss models reason before they
+answer, and those tokens count against `max_completion_tokens` and the free
+quota, so a low cap, such as the live test's 10, can run out before the answer
+starts.
+
+Switching model is a config change. A reasoning model streams its working in a
+`reasoning` field beside `content`. The client reads `content` only, so that
+working, which could hold exactly the clinical speculation the assistant
+refuses to give, never reaches the patient; a unit test holds it to that.
+
+### Token counts in a stream
+
+A streamed reply carries token counts only when the request sets
+`stream_options.include_usage`. Groq then sends them twice: on the event that
+ends the answer, and again on a last event with no text. The client holds them
+until the stream ends and yields them once, as the last chunk; passed on twice,
+a caller adding up tokens would count them twice. A stream the patient
+abandons never gets them.
+
+### Failures and retries
+
+| Type | Raised for |
+|---|---|
+| `TransientLLMError` | timeouts, refused or dropped connections, HTTP 429, HTTP 5xx, and an error event mid-stream |
+| `PermanentLLMError` | an empty or non-ASCII key, or one containing a space (at startup), any other non-200 status, such as 400, 401 or 404, and a reply in any other format |
+
+A transient failure is retried once, after a second. A second failure in a row
+looks like an outage, and the patient is waiting. A stream is retried only
+until its first piece reaches the caller: after that, the start of the answer
+may already be on the patient's screen, and a retry would send it twice.
+
+`AI_REQUEST_TIMEOUT_SECONDS` (60) limits each step of a call, connecting or
+waiting for more of the reply, not the call as a whole, so a long reply that
+keeps arriving is never cut off.
+
+When the caller stops reading a stream, as `/assistant/ask` will when a patient
+disconnects, the connection to the provider closes at once, and the model stops
+writing a reply nobody will read.
+
+Error messages carry the status code only. They leave out the messages sent
+and the response body, for the same reason as the embedding provider's.
+
+The key check for a space comes from Week 5 Day 1. With `LLM_API_KEY=` followed
+only by a comment, Docker Compose passed the comment's text as the key, and
+every call returned 401. A real key never contains a space.
+
+### Testing
+
+The unit tests answer requests in-process with `httpx.MockTransport`.
+`fake_llm_by_default` in `tests/conftest.py` sets `LLM_PROVIDER` to `fake` for
+every test, as `fake_embeddings_by_default` does for embeddings, and
+`no_network` stops the real client before it reaches Groq. One test calls Groq
+for real; it is marked `live` and runs only with `RUN_LIVE_TESTS=1`.
+
+### Known limitations
+
+- Each call opens its own connection, which costs a TLS handshake per call. A
+  shared client would avoid that, but would have to be closed at shutdown and
+  cannot be shared between event loops, and every test runs in its own.
+- Anthropic is not offered. Its API has a different request format and would
+  need a second client.
