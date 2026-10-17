@@ -1742,3 +1742,13 @@ back to the rules.
    image, blocking the Hub, and rebuilding a 3-week-old test image.
 4. **Carrying into Week 5:** review fixes, then the assistant. Its retrieval
    reuses `app/ai/retrieval.py` and adds the first per-patient scoping.
+
+---
+
+## Week 4 review - 2026-10-16
+
+- Demo given from `docs/retrieval-demo.md`; mentor approved, no changes
+  requested. No review fixes carried into Week 5.
+- No ruling on the three open questions (local model, `/search` PHI scoping,
+  near misses); the current approach stands. Demo service 16 unpublished and
+  renamed after; 12 seed services published, eval unchanged.
