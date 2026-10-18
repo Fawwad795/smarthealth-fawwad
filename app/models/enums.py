@@ -196,6 +196,26 @@ class NotificationStatus(StrEnum):
     SENT = "SENT"
 
 
+class AssistantIntent(StrEnum):
+    """What a question to the patient assistant asks for, as its safety
+    check sorts it (tasks 5.2 and 5.4).
+
+    MEDICAL_ADVICE is refused before any answer is written. The next three
+    are the brief's three intents, and OTHER is anything outside them. The
+    order is the order the safety prompt tries them in: refusal first, so a
+    question that is partly a request for medical advice is refused, and
+    the specific intents before NAVIGATION, the broadest. Stored on
+    ai_interactions so the AI analytics (task 5.11) can break questions
+    down by intent.
+    """
+
+    MEDICAL_ADVICE = "MEDICAL_ADVICE"  # diagnosis, symptoms, treatment, medication
+    PREPARATION = "PREPARATION"  # how to prepare, what happens on the day
+    AVAILABILITY = "AVAILABILITY"  # when, and how to book, cancel or move
+    NAVIGATION = "NAVIGATION"  # which service fits, what the clinic offers
+    OTHER = "OTHER"
+
+
 def enum_column(enum_cls: type[StrEnum], name: str) -> SAEnum:
     """Build the column type for an enum: VARCHAR + CHECK, never a native type.
 

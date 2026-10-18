@@ -12,7 +12,7 @@ and the API returns another), and StrEnum formatting, so a log line renders
 AVAILABLE rather than SlotStatus.AVAILABLE.
 """
 
-from app.models.enums import ServiceStatus, SlotStatus, UserRole
+from app.models.enums import AssistantIntent, ServiceStatus, SlotStatus, UserRole
 
 
 def test_slot_status_members() -> None:
@@ -56,6 +56,19 @@ def test_user_role_members() -> None:
     ]
 
 
+def test_assistant_intent_members() -> None:
+    """The safety prompt's labels, in its order: refusal first, so a
+    question that partly asks for medical advice is refused, and NAVIGATION,
+    the broadest, after the specific two."""
+    assert [m.value for m in AssistantIntent] == [
+        "MEDICAL_ADVICE",
+        "PREPARATION",
+        "AVAILABILITY",
+        "NAVIGATION",
+        "OTHER",
+    ]
+
+
 def test_member_names_equal_their_values() -> None:
     """SQLAlchemy persists .name; Pydantic serialises .value.
 
@@ -63,7 +76,7 @@ def test_member_names_equal_their_values() -> None:
     returns another, and a hand-written query in docs/runbook.md silently
     matches nothing.
     """
-    for enum_cls in (SlotStatus, ServiceStatus, UserRole):
+    for enum_cls in (SlotStatus, ServiceStatus, UserRole, AssistantIntent):
         for member in enum_cls:
             assert member.name == member.value, enum_cls.__name__
 
