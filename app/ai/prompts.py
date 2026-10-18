@@ -32,6 +32,14 @@ from app.models.enums import AssistantIntent
 # The brief's wording, word for word. The caller ends every reply with it.
 DISCLAIMER = "This is not medical advice — please consult a professional."
 
+# The intents PROMPT_SAFETY_V1 offers as labels, in its order. Every intent
+# but STAFF_GENERATION, which the code sets and the model never may.
+SAFETY_INTENTS = tuple(
+    intent
+    for intent in AssistantIntent
+    if intent is not AssistantIntent.STAFF_GENERATION
+)
+
 
 @dataclass(frozen=True)
 class Template:
@@ -230,14 +238,16 @@ def parse_intent(reply: str) -> AssistantIntent | None:
 
     Lenient only about what a model may wrap around the label (spaces,
     quotes, a full stop, capitals), strict about the label itself: a
-    sentence, or a word not in the list, gives None. The caller decides
+    sentence, or a word not in the list, gives None. So does
+    "staff_generation", which the prompt does not offer. The caller decides
     what None means, and refusing is the safe reading (task 5.4).
     """
     label = reply.strip().strip("`'\".").strip().upper()
     try:
-        return AssistantIntent(label)
+        intent = AssistantIntent(label)
     except ValueError:
         return None
+    return intent if intent in SAFETY_INTENTS else None
 
 
 def refusal_reply(services: list[RetrievedService]) -> FixedReply:

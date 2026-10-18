@@ -21,6 +21,7 @@ from app.ai.prompts import (
     PROMPT_SAFETY_V1,
     REFUSAL_NO_SERVICE_V1,
     REFUSAL_V1,
+    SAFETY_INTENTS,
     AppointmentContext,
     ServiceContext,
     Template,
@@ -110,16 +111,18 @@ def test_the_disclaimer_is_the_briefs_wording() -> None:
 # --- the safety prompt ----------------------------------------------------
 
 
-def test_the_safety_prompt_offers_every_intent_in_the_enums_order() -> None:
-    """parse_intent accepts exactly the AssistantIntent values, so the
-    prompt must offer each one as a label. The order matters too: the model
-    takes the first label that fits, so it is the priority."""
+def test_the_safety_prompt_offers_every_safety_intent_in_the_enums_order() -> None:
+    """parse_intent accepts exactly SAFETY_INTENTS, so the prompt must offer
+    each one as a label. The order matters too: the model takes the first
+    label that fits, so it is the priority."""
     positions = [
         PROMPT_SAFETY_V1.text.index(f"\n{intent.value.lower()}: ")
-        for intent in AssistantIntent
+        for intent in SAFETY_INTENTS
     ]
 
     assert positions == sorted(positions)
+    assert AssistantIntent.STAFF_GENERATION not in SAFETY_INTENTS
+    assert "staff_generation" not in PROMPT_SAFETY_V1.text
 
 
 def test_the_safety_prompt_puts_the_question_in_its_own_tagged_message() -> None:
@@ -152,7 +155,16 @@ def test_parse_intent_reads_a_label_with_wrapping_around_it(
 
 @pytest.mark.parametrize(
     "reply",
-    ["", "The label is navigation", "navigation, preparation", "diagnosis", "nav"],
+    [
+        "",
+        "The label is navigation",
+        "navigation, preparation",
+        "diagnosis",
+        "nav",
+        # A real intent, but only the code may set it: a question that talked
+        # the model into it must not be logged as staff work.
+        "staff_generation",
+    ],
 )
 def test_parse_intent_gives_none_for_anything_but_one_label(reply: str) -> None:
     """None, not a guess: the caller treats it as a refusal (task 5.4)."""

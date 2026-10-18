@@ -399,3 +399,32 @@ def test_a_second_consumer_may_process_an_event_the_first_handled(
         .all()
     )
     assert {row.consumer for row in stored} == {"app-analytics", "app-reporting"}
+
+
+def test_an_ai_interaction_outcome_must_be_one_the_enum_knows(
+    db_session: Session, patient_user: User
+) -> None:
+    """The CHECK constraint, not the Python enum, is what stops a psql
+    session or a later script writing an outcome the analytics never
+    count."""
+    with pytest.raises(IntegrityError, match="ck_ai_interactions_outcome"):
+        db_session.execute(
+            text(
+                "INSERT INTO ai_interactions (user_id, outcome, latency_ms) "
+                "VALUES (:user_id, 'MAYBE', 1)"
+            ),
+            {"user_id": patient_user.id},
+        )
+
+
+def test_an_ai_interaction_intent_must_be_one_the_enum_knows(
+    db_session: Session, patient_user: User
+) -> None:
+    with pytest.raises(IntegrityError, match="ck_ai_interactions_intent"):
+        db_session.execute(
+            text(
+                "INSERT INTO ai_interactions (user_id, intent, outcome, latency_ms) "
+                "VALUES (:user_id, 'DIAGNOSIS', 'REFUSED', 1)"
+            ),
+            {"user_id": patient_user.id},
+        )
