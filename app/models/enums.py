@@ -196,6 +196,45 @@ class NotificationStatus(StrEnum):
     SENT = "SENT"
 
 
+class AssistantIntent(StrEnum):
+    """What an AI interaction was for (tasks 5.2, 5.4 and 5.7).
+
+    The first five are the labels the safety check sorts a patient's
+    question into. MEDICAL_ADVICE is refused before any answer is written,
+    the next three are the brief's three intents, and OTHER is anything
+    outside them. Their order is the order the safety prompt tries them in:
+    refusal first, so a question that is partly a request for medical advice
+    is refused, and the specific intents before NAVIGATION, the broadest.
+
+    STAFF_GENERATION is never a label: the code sets it on the interactions
+    staff generation records (task 5.9), because the brief's AI analytics
+    break interactions down by intent and list it beside the other three.
+    """
+
+    MEDICAL_ADVICE = "MEDICAL_ADVICE"  # diagnosis, symptoms, treatment, medication
+    PREPARATION = "PREPARATION"  # how to prepare, what happens on the day
+    AVAILABILITY = "AVAILABILITY"  # when, and how to book, cancel or move
+    NAVIGATION = "NAVIGATION"  # which service fits, what the clinic offers
+    OTHER = "OTHER"
+    STAFF_GENERATION = "STAFF_GENERATION"  # set by the code, never by the model
+
+
+class InteractionOutcome(StrEnum):
+    """How one AI interaction ended (task 5.7).
+
+    One status rather than the brief's refused flag: an interaction ends
+    exactly one way, and separate flags could say two at once, refused and
+    failed. The brief's "refused" is REFUSED here, and the analytics'
+    "answered vs. refused" (task 5.11) is a count per outcome.
+    """
+
+    ANSWERED = "ANSWERED"  # the model's answer reached the caller in full
+    REFUSED = "REFUSED"  # medical advice asked for: the fixed refusal was given
+    NOT_OFFERED = "NOT_OFFERED"  # nothing offered matched: "we don't offer that"
+    INTERRUPTED = "INTERRUPTED"  # the caller disconnected mid-answer
+    FAILED = "FAILED"  # the model provider failed, so no answer was given
+
+
 def enum_column(enum_cls: type[StrEnum], name: str) -> SAEnum:
     """Build the column type for an enum: VARCHAR + CHECK, never a native type.
 

@@ -506,6 +506,19 @@ migrating rows that had already been created without it.
 | The seed catalogue has 12 services, four per department, including close pairs such as Knee X-Ray and Knee MRI Scan (task 4.10) | With 3 services, every query's right answer was in the top 5, so the eval's top-5 hit rate could only read 100%. The close pairs are where search can pick the wrong service | `make reset` publishes 12 services one at a time: about 50 s |
 | `RETRIEVAL_MIN_SIMILARITY` is 0.31, chosen from the eval set (task 4.10) | Unrelated not-offered queries scored at most 0.298 and every offered query's service at least 0.332, so any value between gets 31 of the 34 queries right. 0.31 leans towards finding, because a patient told a real service is not offered cannot book it | Three not-offered queries that ask for a kind of service the clinic offers, such as "chest x-ray", score above it and get a weak match instead of "we don't offer that". The value holds for `all-MiniLM-L6-v2` only |
 
+### Week 5
+
+| Decision | Why | Tradeoff |
+|---|---|---|
+| A thin httpx client for the model, rather than a vendor SDK or LangChain (task 5.1) | httpx was already a dependency. Groq takes OpenAI's request format, so one class serves both, and the embedding provider's error split and `MockTransport` tests carry over | The stream is parsed by hand. No Anthropic: its format differs |
+| Default model `qwen/qwen3.8-27b` (task 5.1) | `llama-3.1-8b-instant` was gone. Of Groq's four chat models, qwen was fastest to its first words (0.09 s) and spends no tokens reasoning (`docs/ai-layer.md` section 9) | Chosen from one question, run once per model |
+| The refusal and "we don't offer that" are fixed text, and the code adds the disclaimer to every reply (task 5.2) | The behaviour the brief weights highest never depends on a model's wording, and the disclaimer is never missing or doubled | A refusal cannot adapt to the question, and routes only to what retrieval found |
+| Prompt versions are frozen, held by a hash test and a docs-quote test (task 5.2) | Each answer's row names its version, which must keep meaning the same words | Rewording a prompt means a new version and a new hash |
+| `ai_interactions` stores no question or answer text (task 5.7) | The brief says no PHI and "Store ids, not patient text". The question is the patient's own words; the answer can repeat them and holds appointment times | A wrong answer can be explained from the row's ids, versions and model, but not replayed |
+| An `outcome` enum in place of Appendix B's `refused` boolean (task 5.7) | An interaction ends one way, and flags could say two; status enums over booleans is the Week 1 rule | Analytics read `outcome = 'REFUSED'` |
+| `correlation_id`, `safety_prompt_version` and `answer_chars` added to Appendix B's columns (task 5.7) | The brief requires the correlation ID; a question passes two prompts; `answer_chars` shows how far an interrupted answer got | Three more columns |
+| `STAFF_GENERATION` is an intent but never a safety label (task 5.7) | The brief's analytics list it beside the other intents, so the column accepts it now rather than through a constraint migration in task 5.9 | One enum mixes the model's labels with a code-only value; `parse_intent()` rejects it |
+
 **Enum member names and values are kept identical** (`AVAILABLE = "AVAILABLE"`).
 SQLAlchemy persists a Python enum's `.name`, while a `str`-based enum serialises
 its `.value` through Pydantic — so if the two differ, the database holds one

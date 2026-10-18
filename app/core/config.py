@@ -123,6 +123,24 @@ class Settings(BaseSettings):
     # assistant's question limit.
     ai_max_question_chars: int = 1000
 
+    # --- LLM (Week 5) ---
+    # Which LLMProvider app/ai/llm.py builds. "groq" and "openai" take the
+    # same request format at different addresses. "fake" is the tests'
+    # stand-in and makes no call. Anthropic is not offered: its API has a
+    # different shape and would need a second client.
+    llm_provider: Literal["groq", "openai", "fake"] = "groq"
+    # SecretStr for the same reason as embedding_api_key.
+    llm_api_key: SecretStr = SecretStr("")
+    # Chosen on Week 5 Day 1 from the chat models Groq offers, once
+    # llama-3.1-8b-instant had gone. It answers without a hidden reasoning
+    # pass, so every token of max_completion_tokens goes to the answer
+    # (docs/ai-layer.md section 9).
+    llm_model: str = "qwen/qwen3.8-27b"
+    # Seconds httpx waits on any one step of a model call: connecting, or
+    # the gap between two pieces of a reply. A per-step limit rather than a
+    # total, so a long reply that keeps arriving is never cut off.
+    ai_request_timeout_seconds: float = 60.0
+
 
 # Imported everywhere as: from app.core.config import settings
 settings = Settings()
