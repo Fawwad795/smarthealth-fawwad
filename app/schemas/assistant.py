@@ -1,6 +1,7 @@
-"""POST /assistant/ask: the patient assistant's request (task 5.6).
+"""POST /assistant/ask: the patient assistant's request and reply (tasks
+5.3 and 5.6).
 
-The checks run here, in the request schema, before any AI work, so a
+The request's checks run here, in the schema, before any AI work, so a
 question that can never get a useful answer is a 422 that costs no
 embedding and no model call.
 """
@@ -9,6 +10,7 @@ from typing import Annotated
 
 from pydantic import AfterValidator, BaseModel, Field
 
+from app.models.enums import AssistantIntent, InteractionOutcome
 from app.schemas.search import SearchQuery
 
 
@@ -39,4 +41,37 @@ class AskRequest(BaseModel):
     question: AssistantQuestion = Field(
         description="The patient's question, in their own words.",
         examples=["Do you offer knee scans?"],
+    )
+
+
+class Citation(BaseModel):
+    """One offered service the reply was built from. Service fields only."""
+
+    service_id: int
+    name: str
+    department: str
+    similarity: float = Field(
+        description="Cosine similarity to the question, from 0 to 1, rounded to 3 places."
+    )
+
+
+class AskResponse(BaseModel):
+    """The assistant's reply, how the question ended, and what it drew on.
+
+    No field repeats the question: the patient sent it, and echoing it back
+    only adds another place their words appear.
+    """
+
+    answer: str = Field(description="The reply. It always ends with the disclaimer.")
+    intent: AssistantIntent | None = Field(
+        description="The safety check's label. Null when it gave none, which is refused."
+    )
+    outcome: InteractionOutcome = Field(
+        description="ANSWERED, REFUSED (medical advice) or NOT_OFFERED (nothing matched)."
+    )
+    citations: list[Citation] = Field(
+        description="The offered services the reply was built from, most similar first."
+    )
+    interaction_id: int = Field(
+        description="The ai_interactions row recording this question, for tracing an answer."
     )
