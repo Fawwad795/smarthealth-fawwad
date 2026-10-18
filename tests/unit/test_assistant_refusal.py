@@ -80,7 +80,7 @@ async def test_the_safety_check_sends_the_safety_prompt_with_the_question_tagged
 async def test_a_failed_safety_check_raises_instead_of_letting_the_question_through() -> (
     None
 ):
-    llm = FakeLLM(error=PermanentLLMError("LLM provider returned HTTP 401"))
+    llm = FakeLLM(PermanentLLMError("LLM provider returned HTTP 401"))
 
     with pytest.raises(PermanentLLMError):
         await check_safety("Do you offer knee scans?", llm)
