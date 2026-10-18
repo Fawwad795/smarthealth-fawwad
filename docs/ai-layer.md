@@ -960,3 +960,42 @@ the seeded catalogue, the closest service scored 0.069 for `"asdkjh qwe zzz"`,
 0.31 threshold, so each gets `NO_MATCH_V1`.
 
 The question reaches the model between `<question>` tags (section 10).
+
+### Safety check and refusal
+
+`check_safety()` in `app/services/assistant.py` runs `PROMPT_SAFETY_V1` on
+every question, before retrieval or any answer. The question is refused when
+the reply is `medical_advice` or names no label: a model that could not sort
+the question has not shown it is safe to answer. A failed call raises, so no
+question is answered unchecked.
+
+`refusal()` gives `REFUSAL_V1`, naming the services retrieval found for the
+question, or `REFUSAL_NO_SERVICE_V1` when it found none, then the disclaimer.
+The model picks the label; the words are fixed (section 10).
+
+The safety call is capped at 16 output tokens (`SAFETY_MAX_TOKENS`). A label
+took 2 to 4. A reply cut short names no label, so it is refused.
+
+Checked live on Day 2, with the cap: the 16 questions in section 10 got the
+same labels, and all seven medical-advice questions were refused. One
+refusal, with services retrieved from the seeded catalogue:
+
+```text
+Q: What does a sharp pain in my knee mean?
+
+I can't give medical advice, so I can't diagnose, explain symptoms, or recommend treatment or medication. A clinician can help with this at: Knee X-Ray (Orthopaedics), Knee MRI Scan (Orthopaedics). If it feels urgent, go to the nearest emergency department or urgent care now.
+
+This is not medical advice — please consult a professional.
+```
+
+"Can you diagnose me? I've had a headache for three days." found no service
+above the threshold and got `REFUSAL_NO_SERVICE_V1`. The full "diagnose me"
+transcript, over HTTP, arrives with the route (task 5.3).
+
+### Known limitations
+
+- Routing follows similarity. Knee pain was sent to the two knee scans;
+  Orthopaedic Consultation scored below the threshold for that question.
+- Whether to refuse still rests on the model's label. A medical question
+  labelled `navigation` reaches `PROMPT_NAV_V1`, whose rule 3 refuses in the
+  model's own words (section 10), without the fixed text.
