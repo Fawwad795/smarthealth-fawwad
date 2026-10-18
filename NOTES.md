@@ -1752,3 +1752,64 @@ back to the rules.
 - No ruling on the three open questions (local model, `/search` PHI scoping,
   near misses); the current approach stands. Demo service 16 unpublished and
   renamed after; 12 seed services published, eval unchanged.
+
+---
+
+## Week 5 - AI Assistant, Streaming & Demo
+
+### Day 1 - 2026-10-18
+
+**Goal:** Build what `/assistant/ask` needs: the LLM provider (5.1), versioned
+prompts (5.2) and `ai_interactions` (5.7).
+
+**Done**
+
+- 5.1: `LLMProvider` (`complete()`, `stream()`), an httpx client for Groq or
+  OpenAI, `FakeLLM`, and the `fake_llm_by_default` fixture.
+- Default model `qwen/qwen3.8-27b`; Groq had dropped `llama-3.1-8b-instant`.
+- 5.2: safety, navigation and preparation prompts, fixed refusal and "we
+  don't offer that" replies; versions frozen by a hash test.
+- Live on Groq: 16/16 synthetic questions labelled right, both injections
+  included. "Chest x-ray" now gets "does not offer".
+- 5.7: `ai_interactions` (ids, labels, counts), migration round-tripped,
+  `record_interaction()`.
+- `docs/ai-layer.md` sections 9-11; Week 5 decisions in `design.md`.
+- 548 -> 625 tests (2 live, skipped), 98.30% coverage.
+
+**Decisions**
+
+| Decision | Why |
+|---|---|
+| httpx client, not an SDK | Already a dependency; one class for Groq and OpenAI |
+| Refusal is fixed text; code adds the disclaimer | Never depends on model wording |
+| No question or answer text in `ai_interactions` | "Store ids, not patient text" |
+| `outcome` enum, not a `refused` flag | An interaction ends one way |
+| `STAFF_GENERATION` intent added now | Avoids a constraint migration in 5.9 |
+
+**Cost time**
+
+- `.env` had no Groq key: Compose passed the comment after `LLM_API_KEY=` as
+  the key, so every call got 401.
+- Groq sends a stream's token counts twice; only the live test showed it.
+- The docs test failed on its first run: `NO_MATCH_V1` was quoted, never named.
+
+**Explain out loud**
+
+- A stream retries only before its first piece: after that, a retry sends the
+  start of the answer twice.
+- `aclosing()` closes Groq's connection the moment the patient disconnects,
+  not when the garbage collector gets to it.
+
+**Carrying into Day 2**
+
+- 5.6 input checks, 5.4 refusal (a `None` label refuses), 5.3 `/ask` without
+  streaming.
+- `/ask` embeds (CPU) and calls the model (async): embed in
+  `asyncio.to_thread`.
+- Restart `api` so it loads the new key and model.
+
+**Open questions**
+
+- `ai_interactions` stores no question or answer text, though the task names
+  both. Acceptable?
+- Week 3's two (relay `attempts=1`, uncovered handler branches) still open.
