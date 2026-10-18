@@ -934,3 +934,29 @@ ai interaction 12: outcome=REFUSED intent=MEDICAL_ADVICE services=[3, 7] appoint
 - `retrieved_ids` point at rows as they are now: a service edited since shows
   its new text.
 - An interrupted answer's tokens are never reported, so totals undercount.
+
+## 12. The assistant: `POST /assistant/ask`
+
+Task 5.3 builds the endpoint; this section grows with it.
+
+### Input checks
+
+`AskRequest` in `app/schemas/assistant.py` checks the question before any AI
+work, so a bad one is a 422 `VALIDATION_ERROR` that costs no embedding and no
+model call. Spaces are stripped first.
+
+| Question | Result |
+|---|---|
+| Missing, empty or only spaces | 422 |
+| Over `AI_MAX_QUESTION_CHARS` (1000), the limit `POST /search` uses | 422 |
+| No letter, in any alphabet: `"!!!!"`, `"12345"` | 422, "the question must contain at least one letter" |
+| One word: `"MRI"` | accepted |
+| Gibberish shaped like words: `"asdkjh qwe zzz"` | accepted |
+
+No simple rule tells gibberish from a real word it has never seen, such as a
+service's name, so retrieval handles it. Measured with the local model against
+the seeded catalogue, the closest service scored 0.069 for `"asdkjh qwe zzz"`,
+0.138 for `"qwerty uiop"` and 0.121 for `"blorp fnarg"`. All fall below the
+0.31 threshold, so each gets `NO_MATCH_V1`.
+
+The question reaches the model between `<question>` tags (section 10).
