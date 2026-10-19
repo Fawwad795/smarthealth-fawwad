@@ -71,7 +71,8 @@ class AIInteraction(Base, TimestampMixin):
     )
 
     # The ids of what the model was shown, by kind:
-    # {"services": [3, 7], "appointments": [51]}. Ids only, never text.
+    # {"services": [3, 7], "appointments": [51], "slots": [273, 274]}.
+    # Ids only, never text. JSONB, so adding a kind needs no migration.
     retrieved_ids: Mapped[dict[str, Any]] = mapped_column(
         JSONB,
         nullable=False,

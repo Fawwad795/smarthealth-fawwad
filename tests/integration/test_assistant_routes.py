@@ -10,6 +10,7 @@ tests.
 
 import logging
 from collections.abc import Callable
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -26,12 +27,22 @@ from app.ai.llm import (
     LLMResult,
     TransientLLMError,
 )
-from app.ai.prompts import DISCLAIMER, NO_MATCH_V1, PROMPT_NAV_V1
+from app.ai.prompts import DISCLAIMER, NO_MATCH_V1, PROMPT_NAV_V1, PROMPT_PREP_V2
 from app.ai.retrieval import get_query_embeddings
 from app.core.config import settings
 from app.main import app
-from app.models import AIInteraction, Department, Service, User
-from app.models.enums import ServiceStatus
+from app.models import (
+    AIInteraction,
+    Appointment,
+    Department,
+    Patient,
+    Provider,
+    ProviderService,
+    Service,
+    Slot,
+    User,
+)
+from app.models.enums import AppointmentStatus, ServiceStatus, SlotStatus, UserRole
 from app.services.assistant import get_assistant_llm
 from tests.indexing import index_service
 
@@ -228,7 +239,11 @@ def test_ask_records_the_interaction_with_ids_and_tokens(
     assert row.user_id == patient_user.id
     assert row.outcome == "ANSWERED"
     assert row.intent == "NAVIGATION"
-    assert row.retrieved_ids == {"services": [knee.id], "appointments": []}
+    assert row.retrieved_ids == {
+        "services": [knee.id],
+        "appointments": [],
+        "slots": [],
+    }
     assert row.model == "fake-llm-v1"
     assert row.safety_prompt_version == "PROMPT_SAFETY_V1"
     assert row.prompt_version == "PROMPT_NAV_V1"
@@ -305,7 +320,7 @@ def test_a_question_nothing_offered_matches_gets_we_dont_offer_that(
     assert len(llm.calls) == 1
     row = _interaction(db_session)
     assert row.prompt_version == "NO_MATCH_V1"
-    assert row.retrieved_ids == {"services": [], "appointments": []}
+    assert row.retrieved_ids == {"services": [], "appointments": [], "slots": []}
 
 
 # --- bad requests and access -------------------------------------------------
@@ -505,3 +520,296 @@ def test_ask_never_logs_the_question(
 
     assert f"services=[{knee.id}]" in caplog.text
     assert "Zebulon" not in caplog.text
+
+
+# --- preparation and availability (task 5.5) ---------------------------------
+#
+# These questions are answered from the caller's own upcoming appointments
+# and the services found, each with its next open times. Times are fixed and
+# far ahead, so the formatted dates never depend on today: 04:00 UTC is 09:00
+# in the clinic fixture's Asia/Karachi.
+
+MONDAY_9AM = datetime(2030, 1, 7, 4, 0, tzinfo=UTC)
+
+
+@pytest.fixture()
+def other_patient(db_session: Session) -> Patient:
+    """A second synthetic patient, whose appointments the caller must never
+    see."""
+    user = User(
+        email="other.patient@example.com",
+        password_hash="not-a-real-hash",
+        role=UserRole.PATIENT,
+    )
+    db_session.add(user)
+    db_session.flush()
+    other = Patient(user_id=user.id, dob=date(1985, 5, 5))
+    db_session.add(other)
+    db_session.flush()
+    return other
+
+
+def _slot(
+    db: Session,
+    provider: Provider,
+    starts_at: datetime,
+    status: SlotStatus = SlotStatus.AVAILABLE,
+) -> Slot:
+    """A 30-minute slot of `provider`'s time."""
+    slot = Slot(
+        provider_id=provider.id,
+        start_time=starts_at,
+        end_time=starts_at + timedelta(minutes=30),
+        status=status,
+    )
+    db.add(slot)
+    db.flush()
+    return slot
+
+
+def _book(
+    db: Session,
+    patient: Patient,
+    provider: Provider,
+    service: Service,
+    starts_at: datetime,
+    status: AppointmentStatus = AppointmentStatus.CONFIRMED,
+) -> Appointment:
+    """An appointment on a new, booked slot, as the saga leaves one."""
+    slot = _slot(db, provider, starts_at, SlotStatus.BOOKED)
+    appointment = Appointment(
+        patient_id=patient.id,
+        provider_id=provider.id,
+        slot_id=slot.id,
+        service_id=service.id,
+        status=status,
+        idempotency_key=f"assistant-test-{slot.id}",
+    )
+    db.add(appointment)
+    db.flush()
+    return appointment
+
+
+def _appointments_block(user_message: str) -> str:
+    """The <appointments> block of a preparation prompt's user message."""
+    return user_message.split("</appointments>")[0]
+
+
+def test_a_preparation_question_is_answered_from_the_callers_own_appointments(
+    client: TestClient,
+    db_session: Session,
+    patient: Patient,
+    other_patient: Patient,
+    provider: Provider,
+    knee: Service,
+    service: Service,
+    department: Department,
+    patient_auth_headers: dict,
+    use_llm: Callable[[FakeLLM], FakeLLM],
+) -> None:
+    """The other patient's Echocardiogram appears nowhere in what the model
+    is sent."""
+    own = _book(db_session, patient, provider, knee, MONDAY_9AM)
+    _book(db_session, other_patient, provider, service, MONDAY_9AM + timedelta(hours=1))
+    llm = use_llm(FakeLLM("preparation", "Wear loose clothing to your Knee X-Ray."))
+
+    body = _ask(client, patient_auth_headers, "knee x-ray").json()
+
+    assert body["outcome"] == "ANSWERED"
+    assert body["intent"] == "PREPARATION"
+    _, (system, user) = llm.calls
+    assert system.content == PROMPT_PREP_V2.text.format(
+        clinic=settings.assistant_clinic_name
+    )
+    assert _appointments_block(user.content) == (
+        "<appointments>\n"
+        f"- Knee X-Ray ({department.name})\n"
+        "  When: Monday 07 January 2030, 09:00\n"
+        "  Status: CONFIRMED\n"
+        "  Preparation: Wear loose clothing.\n"
+    )
+    assert "Echocardiogram" not in user.content
+    row = _interaction(db_session)
+    assert row.prompt_version == "PROMPT_PREP_V2"
+    assert row.retrieved_ids["appointments"] == [own.id]
+
+
+def test_another_patients_appointment_for_the_same_service_is_never_shown(
+    client: TestClient,
+    db_session: Session,
+    other_patient: Patient,
+    provider: Provider,
+    knee: Service,
+    patient_auth_headers: dict,
+    use_llm: Callable[[FakeLLM], FakeLLM],
+) -> None:
+    """The caller has no appointments. The other patient's Knee X-Ray
+    matches the question exactly, and is still not shown: the query is
+    scoped to the caller by the token, whatever the question says."""
+    _book(db_session, other_patient, provider, knee, MONDAY_9AM)
+    llm = use_llm(FakeLLM("availability", "You have no upcoming appointments."))
+
+    _ask(client, patient_auth_headers, "when is my knee x-ray")
+
+    user = llm.calls[1][1].content
+    assert _appointments_block(user) == "<appointments>\n(none)\n"
+    assert "CONFIRMED" not in user
+    assert _interaction(db_session).retrieved_ids["appointments"] == []
+
+
+def test_past_cancelled_and_finished_appointments_are_left_out(
+    client: TestClient,
+    db_session: Session,
+    patient: Patient,
+    provider: Provider,
+    knee: Service,
+    patient_auth_headers: dict,
+    use_llm: Callable[[FakeLLM], FakeLLM],
+) -> None:
+    yesterday = datetime.now(UTC) - timedelta(days=1)
+    _book(db_session, patient, provider, knee, yesterday)
+    for hours, status in [
+        (1, AppointmentStatus.CANCELLED),
+        (2, AppointmentStatus.REJECTED),
+        (3, AppointmentStatus.COMPLETED),
+    ]:
+        _book(
+            db_session,
+            patient,
+            provider,
+            knee,
+            MONDAY_9AM + timedelta(hours=hours),
+            status,
+        )
+    upcoming = _book(
+        db_session, patient, provider, knee, MONDAY_9AM, AppointmentStatus.REQUESTED
+    )
+    llm = use_llm(FakeLLM("preparation", "Wear loose clothing."))
+
+    _ask(client, patient_auth_headers, "knee x-ray")
+
+    block = _appointments_block(llm.calls[1][1].content)
+    assert block.count("- Knee X-Ray") == 1
+    assert "Status: REQUESTED" in block
+    assert _interaction(db_session).retrieved_ids["appointments"] == [upcoming.id]
+
+
+def test_an_availability_question_shows_each_services_next_three_open_times(
+    client: TestClient,
+    db_session: Session,
+    provider: Provider,
+    knee: Service,
+    patient_auth_headers: dict,
+    use_llm: Callable[[FakeLLM], FakeLLM],
+) -> None:
+    """Only free, future slots of a provider who offers the service, in the
+    clinic's timezone, earliest first."""
+    db_session.add(ProviderService(provider_id=provider.id, service_id=knee.id))
+    _slot(db_session, provider, MONDAY_9AM - timedelta(minutes=30), SlotStatus.RESERVED)
+    _slot(db_session, provider, datetime.now(UTC) - timedelta(days=1))
+    shown = [
+        _slot(db_session, provider, MONDAY_9AM + timedelta(minutes=30 * n))
+        for n in range(3)
+    ]
+    _slot(db_session, provider, MONDAY_9AM + timedelta(minutes=90))
+    llm = use_llm(FakeLLM("availability", "The next open time is 09:00."))
+
+    _ask(client, patient_auth_headers, "when can I book a knee x-ray")
+
+    assert (
+        "  Open times: Monday 07 January 2030, 09:00; Monday 07 January 2030, 09:30; "
+        "Monday 07 January 2030, 10:00\n</services>"
+    ) in llm.calls[1][1].content
+    assert _interaction(db_session).retrieved_ids["slots"] == [s.id for s in shown]
+
+
+def test_a_slot_shared_by_two_services_is_recorded_once(
+    client: TestClient,
+    db_session: Session,
+    department: Department,
+    provider: Provider,
+    knee: Service,
+    patient_auth_headers: dict,
+    use_llm: Callable[[FakeLLM], FakeLLM],
+) -> None:
+    """A slot is the provider's time, so it is open for every service that
+    provider offers. Both services list it; the row names it once. Found
+    live: a dermatologist's slots were recorded once per dermatology
+    service."""
+    mri = index_service(
+        db_session,
+        department,
+        "Knee MRI Scan",
+        "Orthopaedics: Knee MRI Scan. Imaging of the knee joint.",
+    )
+    for service in (knee, mri):
+        db_session.add(ProviderService(provider_id=provider.id, service_id=service.id))
+    slots = [
+        _slot(db_session, provider, MONDAY_9AM + timedelta(minutes=30 * n))
+        for n in range(3)
+    ]
+    llm = use_llm(FakeLLM("availability", "The next open time is 09:00."))
+
+    _ask(client, patient_auth_headers, "imaging of the knee joint")
+
+    services_block = llm.calls[1][1].content.split("<services>")[1]
+    assert services_block.count("Open times: Monday 07 January 2030, 09:00;") == 2
+    assert _interaction(db_session).retrieved_ids["slots"] == [s.id for s in slots]
+
+
+def test_a_navigation_question_never_loads_appointments(
+    client: TestClient,
+    db_session: Session,
+    patient: Patient,
+    provider: Provider,
+    knee: Service,
+    patient_auth_headers: dict,
+    use_llm: Callable[[FakeLLM], FakeLLM],
+) -> None:
+    """The patient's own data is read only for a question about their
+    bookings."""
+    _book(db_session, patient, provider, knee, MONDAY_9AM)
+    llm = use_llm(FakeLLM("navigation", "Knee X-Ray fits."))
+
+    _ask(client, patient_auth_headers, "knee x-ray")
+
+    assert "<appointments>" not in llm.calls[1][1].content
+    assert _interaction(db_session).retrieved_ids["appointments"] == []
+
+
+def test_a_booking_question_with_nothing_found_still_gets_an_answer(
+    client: TestClient,
+    db_session: Session,
+    patient_auth_headers: dict,
+    use_llm: Callable[[FakeLLM], FakeLLM],
+) -> None:
+    """A patient account with no patient record and nothing retrieved:
+    the model is told so, rather than the patient being told the clinic
+    does not offer "my appointment"."""
+    llm = use_llm(FakeLLM("availability", "You have no upcoming appointments."))
+
+    body = _ask(client, patient_auth_headers, "hair transplant").json()
+
+    assert body["outcome"] == "ANSWERED"
+    assert llm.calls[1][1].content.startswith(
+        "<appointments>\n(none)\n</appointments>\n\n<services>\n(none)\n</services>"
+    )
+
+
+def test_no_transaction_is_held_open_while_the_model_answers_a_booking_question(
+    client: TestClient,
+    db_session: Session,
+    patient: Patient,
+    provider: Provider,
+    knee: Service,
+    patient_auth_headers: dict,
+    use_llm: Callable[[FakeLLM], FakeLLM],
+) -> None:
+    """The appointments and open times are read after the safety check, so
+    that second read must end its transaction too."""
+    _book(db_session, patient, provider, knee, MONDAY_9AM)
+    spy = use_llm(_TransactionSpy(db_session, "preparation", "Wear loose clothing."))
+
+    _ask(client, patient_auth_headers, "knee x-ray")
+
+    assert spy.open == [False, False]

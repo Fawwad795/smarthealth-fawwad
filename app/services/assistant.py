@@ -1,21 +1,29 @@
-"""The patient assistant: POST /assistant/ask (tasks 5.3 and 5.4).
+"""The patient assistant: POST /assistant/ask (tasks 5.3, 5.4 and 5.5).
 
 ask() answers one question in this order:
 
 1. Retrieval finds the offered services closest to the question, above the
-   threshold (app/ai/retrieval.py), and loads what the answer prompt shows
+   threshold (app/ai/retrieval.py), and loads what the answer prompts show
    of each. Every path needs them: an answer is grounded in them, and a
    refusal names them so the patient knows where to go.
 2. check_safety() labels the question. medical_advice, or no label, gets
    the fixed refusal.
-3. Nothing found: the fixed "we don't offer that".
-4. Otherwise the model answers from PROMPT_NAV_V1, shown only those services.
+3. preparation or availability: the model answers from PROMPT_PREP_V2,
+   shown the caller's own upcoming appointments and the services found,
+   each with its next open times.
+4. Anything else with nothing found: the fixed "we don't offer that".
+5. Otherwise the model answers from PROMPT_NAV_V1, shown only the services
+   found.
 
 Retrieval runs before the safety check, not after as the brief lists them,
-so all the database work is done before the first model call. The safety
-check still runs before any answer is written. PREPARATION, AVAILABILITY
-and OTHER questions are answered from the services too, until task 5.5
-adds the patient's own appointments.
+so its database work is done before the first model call. The safety check
+still runs before any answer is written.
+
+The caller's appointments are read only for a preparation or availability
+question, and only the caller's: the query is scoped by the user id from
+their token, never by anything in the question. Such a question goes to the
+model even when nothing was found, because "What should I bring tomorrow?"
+names no service and its answer is in the patient's own appointments.
 
 Refusals and "we don't offer that" are fixed text from app/ai/prompts.py,
 never the model's words. Every reply ends with the disclaimer, and every
@@ -31,19 +39,24 @@ included, the whole time.
 import asyncio
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 from fastapi import status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.ai.embeddings import EmbeddingProvider
 from app.ai.llm import LLMError, LLMProvider, LLMUsage, get_llm_provider
 from app.ai.prompts import (
     DISCLAIMER,
+    AppointmentContext,
+    BuiltPrompt,
     FixedReply,
     ServiceContext,
     build_navigation_prompt,
+    build_preparation_prompt,
     build_safety_prompt,
     no_match_reply,
     parse_intent,
@@ -52,8 +65,22 @@ from app.ai.prompts import (
 from app.ai.retrieval import RetrievedService, search_services
 from app.core.config import settings
 from app.core.exceptions import AppError
-from app.models import AIInteraction, Service
-from app.models.enums import AssistantIntent, InteractionOutcome
+from app.models import (
+    AIInteraction,
+    Appointment,
+    Clinic,
+    Department,
+    Patient,
+    ProviderService,
+    Service,
+    Slot,
+)
+from app.models.enums import (
+    AppointmentStatus,
+    AssistantIntent,
+    InteractionOutcome,
+    SlotStatus,
+)
 from app.services.ai_interaction import record_interaction
 
 logger = logging.getLogger(__name__)
@@ -66,6 +93,23 @@ SAFETY_MAX_TOKENS = 16
 # Shown to the model for a service with no description or preparation
 # notes, so it says they are missing instead of filling the gap itself.
 NONE_LISTED = "None listed."
+
+# The questions answered from the patient's own appointments and the
+# services' open times, with PROMPT_PREP_V2.
+BOOKING_INTENTS = (AssistantIntent.PREPARATION, AssistantIntent.AVAILABILITY)
+
+# An appointment still going ahead: the saga has not ended it.
+UPCOMING_STATUSES = (
+    AppointmentStatus.REQUESTED,
+    AppointmentStatus.SLOT_RESERVED,
+    AppointmentStatus.CONFIRMED,
+)
+
+# How many of the patient's appointments, and of each service's free
+# slots, the model is shown. Enough to answer "when" without sending a
+# whole calendar to the model provider.
+APPOINTMENTS_SHOWN = 5
+OPEN_TIMES_SHOWN = 3
 
 
 @dataclass(frozen=True)
@@ -109,6 +153,8 @@ class _Progress:
 
     started: float
     services: list[RetrievedService] = field(default_factory=list)
+    appointment_ids: list[int] = field(default_factory=list)
+    slot_ids: list[int] = field(default_factory=list)
     model: str | None = None
     intent: AssistantIntent | None = None
     safety_prompt_version: str | None = None
@@ -145,7 +191,7 @@ async def ask(
     """
     progress = _Progress(started=time.monotonic())
     try:
-        text, outcome = await _reply(db, question, llm, embeddings, progress)
+        text, outcome = await _reply(db, user_id, question, llm, embeddings, progress)
     except LLMError as err:
         await _record(db, user_id, progress, InteractionOutcome.FAILED)
         raise _assistant_unavailable(err) from None
@@ -204,6 +250,7 @@ def with_disclaimer(text: str) -> str:
 
 async def _reply(
     db: Session,
+    user_id: int,
     question: str,
     llm: LLMProvider,
     embeddings: EmbeddingProvider,
@@ -224,6 +271,29 @@ async def _reply(
         fixed = refusal(progress.services)
         progress.prompt_version = fixed.version
         return fixed.text, InteractionOutcome.REFUSED
+
+    if check.intent in BOOKING_INTENTS:
+        appointments, open_slots = await asyncio.to_thread(
+            _find_bookings, db, user_id, progress.services
+        )
+        progress.appointment_ids = [
+            appointment_id for appointment_id, _ in appointments
+        ]
+        # A slot is the provider's time, so it comes back once for each
+        # service found that the provider offers. Recorded once.
+        progress.slot_ids = list(dict.fromkeys(slot_id for slot_id, _, _ in open_slots))
+        services = [
+            replace(context, open_times=_times_of(service.service_id, open_slots))
+            for service, context in found
+        ]
+        prompt = build_preparation_prompt(
+            question,
+            [context for _, context in appointments],
+            services,
+            clinic=settings.assistant_clinic_name,
+        )
+        return await _answer(prompt, llm, progress)
+
     if not found:
         fixed = not_offered()
         progress.prompt_version = fixed.version
@@ -234,6 +304,13 @@ async def _reply(
         [context for _, context in found],
         clinic=settings.assistant_clinic_name,
     )
+    return await _answer(prompt, llm, progress)
+
+
+async def _answer(
+    prompt: BuiltPrompt, llm: LLMProvider, progress: _Progress
+) -> tuple[str, InteractionOutcome]:
+    """The model's answer to `prompt`, with the disclaimer after it."""
     progress.prompt_version = prompt.version
     result = await llm.complete(prompt.messages)
     progress.usages.append(result.usage)
@@ -283,6 +360,149 @@ def _find_services(
     ]
 
 
+def _find_bookings(
+    db: Session, user_id: int, services: list[RetrievedService]
+) -> tuple[list[tuple[int, AppointmentContext]], list[tuple[int, int, datetime]]]:
+    """The caller's upcoming appointments, and the next free slots of
+    `services`, for a preparation or availability question.
+
+    Runs in a worker thread and ends the transaction before returning, for
+    the same reason as _find_services: the answer's model call comes next.
+    """
+    now = datetime.now(UTC)
+    appointments = _upcoming_appointments(db, user_id, now)
+    open_slots = _open_slots(db, [service.service_id for service in services], now)
+    db.commit()
+    return appointments, open_slots
+
+
+def _upcoming_appointments(
+    db: Session, user_id: int, now: datetime
+) -> list[tuple[int, AppointmentContext]]:
+    """The caller's next appointments still going ahead, earliest first,
+    each with its id.
+
+    The PHI access control: the query is scoped to the patient record of
+    `user_id`, the id from the caller's token, so nothing in the question
+    can reach another patient's appointments. PROMPT_PREP_V2's "the
+    patient's own appointments" only describes this; it enforces nothing.
+    Only the fields AppointmentContext names are read: no name, contact
+    details or notes ever reach the model provider.
+    """
+    rows = db.execute(
+        select(
+            Appointment.id,
+            Service.name,
+            Department.name,
+            Slot.start_time,
+            Appointment.status,
+            Service.prep_instructions,
+            Clinic.timezone,
+        )
+        .select_from(Appointment)
+        .join(Patient, Patient.id == Appointment.patient_id)
+        .join(Slot, Slot.id == Appointment.slot_id)
+        .join(Service, Service.id == Appointment.service_id)
+        .join(Department, Department.id == Service.department_id)
+        .join(Clinic, Clinic.id == Department.clinic_id)
+        .where(
+            Patient.user_id == user_id,
+            Appointment.status.in_(UPCOMING_STATUSES),
+            Slot.start_time > now,
+        )
+        .order_by(Slot.start_time)
+        .limit(APPOINTMENTS_SHOWN)
+    )
+    return [
+        (
+            appointment_id,
+            AppointmentContext(
+                service_name=service,
+                department=department,
+                starts_at=starts_at.astimezone(ZoneInfo(timezone)),
+                status=appointment_status,
+                preparation=preparation or NONE_LISTED,
+            ),
+        )
+        for (
+            appointment_id,
+            service,
+            department,
+            starts_at,
+            appointment_status,
+            preparation,
+            timezone,
+        ) in rows
+    ]
+
+
+def _open_slots(
+    db: Session, service_ids: list[int], now: datetime
+) -> list[tuple[int, int, datetime]]:
+    """The next OPEN_TIMES_SHOWN free slots of each service, as (slot id,
+    service id, start in the clinic's timezone), earliest first.
+
+    A service's slots are those of the providers who offer it
+    (provider_services). row_number() numbers each service's free slots by
+    start time, so one query keeps the first few of every service. Slots
+    are not patient data, so nothing here is scoped to the caller.
+    """
+    if not service_ids:
+        return []
+    ranked = (
+        select(
+            Slot.id.label("slot_id"),
+            ProviderService.service_id,
+            Slot.start_time,
+            Clinic.timezone,
+            func.row_number()
+            .over(
+                partition_by=ProviderService.service_id,
+                order_by=(Slot.start_time, Slot.id),
+            )
+            .label("position"),
+        )
+        .select_from(Slot)
+        .join(ProviderService, ProviderService.provider_id == Slot.provider_id)
+        .join(Service, Service.id == ProviderService.service_id)
+        .join(Department, Department.id == Service.department_id)
+        .join(Clinic, Clinic.id == Department.clinic_id)
+        .where(
+            ProviderService.service_id.in_(service_ids),
+            Slot.status == SlotStatus.AVAILABLE,
+            Slot.start_time > now,
+        )
+        .subquery()
+    )
+    rows = db.execute(
+        select(
+            ranked.c.slot_id,
+            ranked.c.service_id,
+            ranked.c.start_time,
+            ranked.c.timezone,
+        )
+        .where(ranked.c.position <= OPEN_TIMES_SHOWN)
+        .order_by(ranked.c.service_id, ranked.c.start_time, ranked.c.slot_id)
+    )
+    return [
+        (slot_id, service_id, starts_at.astimezone(ZoneInfo(timezone)))
+        for slot_id, service_id, starts_at, timezone in rows
+    ]
+
+
+def _times_of(
+    service_id: int, open_slots: list[tuple[int, int, datetime]]
+) -> tuple[datetime, ...]:
+    """The open times of one service. Two providers free at the same time
+    are one time to the patient, so each time is listed once."""
+    times = [
+        starts_at
+        for _, slot_service, starts_at in open_slots
+        if slot_service == service_id
+    ]
+    return tuple(dict.fromkeys(times))
+
+
 async def _record(
     db: Session,
     user_id: int,
@@ -301,6 +521,8 @@ async def _record(
         latency_ms=round((time.monotonic() - progress.started) * 1000),
         intent=progress.intent,
         service_ids=[service.service_id for service in progress.services],
+        appointment_ids=progress.appointment_ids,
+        slot_ids=progress.slot_ids,
         model=progress.model,
         safety_prompt_version=progress.safety_prompt_version,
         prompt_version=progress.prompt_version,
