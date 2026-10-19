@@ -364,6 +364,6 @@ overlapping slots they would generate; booking accepts a slot in the past; searc
 gives a near miss ("chest x-ray") a weak match instead of "we don't offer that".
 See `docs/prd.md` §7.
 
-**Week 5 so far:** `POST /assistant/ask`, which refuses medical advice with fixed text and answers navigation questions from the published services with citations.
+**Week 5 so far:** `POST /assistant/ask`, which refuses medical advice with fixed text, answers navigation questions from the published services with citations, and answers preparation and availability questions from the caller's own appointments and real open slots.
 
-**Not built yet:** streaming, answers from a patient's own appointments, and staff generation (Week 5).
+**Not built yet:** streaming and staff generation (Week 5).
