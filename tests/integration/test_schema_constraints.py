@@ -428,3 +428,64 @@ def test_an_ai_interaction_intent_must_be_one_the_enum_knows(
             ),
             {"user_id": patient_user.id},
         )
+
+
+def _interaction_id(db: Session, user_id: int) -> int:
+    """A new ai_interactions row's id, for a generated_content row to point at."""
+    return db.execute(
+        text(
+            "INSERT INTO ai_interactions (user_id, outcome, latency_ms) "
+            "VALUES (:user_id, 'ANSWERED', 1) RETURNING id"
+        ),
+        {"user_id": user_id},
+    ).scalar_one()
+
+
+@pytest.mark.parametrize(
+    ("kind", "with_appointment", "report_start", "report_end"),
+    [
+        ("SUMMARY", False, None, None),
+        ("FOLLOWUP", True, "2030-01-01", "2030-01-31"),
+        ("UTILISATION_REPORT", True, "2030-01-01", "2030-01-31"),
+        ("UTILISATION_REPORT", False, "2030-01-31", "2030-01-01"),
+        ("UTILISATION_REPORT", False, "2030-01-01", None),
+    ],
+    ids=[
+        "summary-without-appointment",
+        "followup-with-dates",
+        "report-with-appointment",
+        "report-ending-before-it-starts",
+        "report-without-an-end",
+    ],
+)
+def test_generated_content_must_match_its_kinds_scope(
+    db_session: Session,
+    patient_user: User,
+    appointment: Appointment,
+    kind: str,
+    with_appointment: bool,
+    report_start: str | None,
+    report_end: str | None,
+) -> None:
+    """A summary or follow-up names an appointment and no dates; a report
+    has a date range and no appointment. "report-without-an-end" is the
+    case a bare `report_end >= report_start` lets through: with a null end
+    it is null, and a CHECK passes on null."""
+    with pytest.raises(IntegrityError, match="ck_generated_content_scope"):
+        db_session.execute(
+            text(
+                "INSERT INTO generated_content (kind, appointment_id, report_start, "
+                "report_end, content, model, prompt_version, created_by, "
+                "interaction_id) VALUES (:kind, :appointment_id, :report_start, "
+                ":report_end, '{}', 'fake-llm-v1', 'PROMPT_SUMMARY_V1', :user_id, "
+                ":interaction_id)"
+            ),
+            {
+                "kind": kind,
+                "appointment_id": appointment.id if with_appointment else None,
+                "report_start": report_start,
+                "report_end": report_end,
+                "user_id": patient_user.id,
+                "interaction_id": _interaction_id(db_session, patient_user.id),
+            },
+        )
