@@ -30,6 +30,7 @@ from app.api.v1.appointments import router as appointments_router
 from app.api.v1.analytics import router as analytics_router
 from app.api.v1.auth import router as auth_router
 from app.api.v1.departments import router as departments_router
+from app.api.v1.generation import router as generation_router
 from app.api.v1.services import router as services_router
 from app.api.v1.providers import router as providers_router
 from app.api.v1.provider_schedules import router as provider_schedules_router
@@ -176,6 +177,7 @@ def create_app() -> FastAPI:
     app.include_router(provider_schedules_router, prefix="/api/v1")
     app.include_router(search_router, prefix="/api/v1")
     app.include_router(assistant_router, prefix="/api/v1")
+    app.include_router(generation_router, prefix="/api/v1")
     app.include_router(appointments_router, prefix="/api/v1")
     app.include_router(waitlist_router, prefix="/api/v1")
     app.include_router(visits_router, prefix="/api/v1")
