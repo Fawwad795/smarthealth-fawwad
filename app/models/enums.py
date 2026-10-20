@@ -235,6 +235,18 @@ class InteractionOutcome(StrEnum):
     FAILED = "FAILED"  # the model provider failed, so no answer was given
 
 
+class GenerationKind(StrEnum):
+    """What a staff generation produced (tasks 5.9 and 5.10).
+
+    The first two are about one appointment; the report covers a date
+    range. generated_content's scope check holds each kind to its scope.
+    """
+
+    SUMMARY = "SUMMARY"  # a patient-facing summary of one appointment
+    FOLLOWUP = "FOLLOWUP"  # a follow-up message draft about one appointment
+    UTILISATION_REPORT = "UTILISATION_REPORT"  # the clinic's use over a date range
+
+
 def enum_column(enum_cls: type[StrEnum], name: str) -> SAEnum:
     """Build the column type for an enum: VARCHAR + CHECK, never a native type.
 

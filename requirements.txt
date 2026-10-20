@@ -4,6 +4,7 @@
 # --- Web framework -----------------------------------------------------
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
+anyio==4.15.1                 # Starlette's async layer; the assistant stream shields its last write with it
 
 # --- Database ----------------------------------------------------------
 sqlalchemy==2.0.36

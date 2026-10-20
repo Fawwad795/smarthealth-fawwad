@@ -1,5 +1,5 @@
 """POST /assistant/ask: the patient assistant's request and reply (tasks
-5.3 and 5.6).
+5.3 and 5.6), and the events of its streamed form (task 5.8).
 
 The request's checks run here, in the schema, before any AI work, so a
 question that can never get a useful answer is a 422 that costs no
@@ -75,3 +75,33 @@ class AskResponse(BaseModel):
     interaction_id: int = Field(
         description="The ai_interactions row recording this question, for tracing an answer."
     )
+
+
+# --- POST /assistant/ask/stream (task 5.8) -----------------------------------
+#
+# Each model below is the data of one server-sent event. A stream is
+# `token` events, then `citations` (or `error` if the model failed part-way),
+# then `done`, always last.
+
+
+class StreamToken(BaseModel):
+    """A `token` event: the next piece of the reply, as the model wrote it.
+    Joined in order, the pieces are the whole reply, disclaimer included."""
+
+    text: str
+
+
+class StreamCitations(BaseModel):
+    """The `citations` event, sent once the reply is complete."""
+
+    citations: list[Citation]
+
+
+class StreamDone(BaseModel):
+    """The `done` event, always the last: how the question ended."""
+
+    intent: AssistantIntent | None
+    outcome: InteractionOutcome = Field(
+        description="ANSWERED, REFUSED, NOT_OFFERED, or FAILED after an error event."
+    )
+    interaction_id: int

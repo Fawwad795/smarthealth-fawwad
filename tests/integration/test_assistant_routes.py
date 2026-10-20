@@ -1,4 +1,5 @@
-"""POST /assistant/ask through the real FastAPI routing layer (task 5.3).
+"""POST /assistant/ask and /assistant/ask/stream through the real FastAPI
+routing layer (tasks 5.3 and 5.8).
 
 The model is a FakeLLM scripted per test through app.dependency_overrides:
 its first reply is the safety label, its second the answer. Retrieval runs
@@ -9,9 +10,10 @@ tests.
 """
 
 import logging
-from collections.abc import Callable
+from collections.abc import AsyncGenerator, Callable
 from datetime import UTC, date, datetime, timedelta
 
+import anyio
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
@@ -43,8 +45,19 @@ from app.models import (
     User,
 )
 from app.models.enums import AppointmentStatus, ServiceStatus, SlotStatus, UserRole
-from app.services.assistant import get_assistant_llm
+from app.services import assistant as assistant_service
+from app.services.assistant import (
+    UNAVAILABLE_MESSAGE,
+    AssistantAnswer,
+    get_assistant_llm,
+)
 from tests.indexing import index_service
+from tests.streaming import (
+    BreaksMidStream,
+    StallsMidStream,
+    read_events,
+    streamed_text,
+)
 
 THRESHOLD = 0.3
 
@@ -813,3 +826,286 @@ def test_no_transaction_is_held_open_while_the_model_answers_a_booking_question(
     _ask(client, patient_auth_headers, "knee x-ray")
 
     assert spy.open == [False, False]
+
+
+# --- streaming (task 5.8) ----------------------------------------------------
+#
+# TestClient reads the whole stream before returning it, so these tests check
+# the events and their order, not their timing. The disconnect tests call
+# ask_stream() directly: TestClient cannot hang up part-way.
+
+STREAM_URL = "/api/v1/assistant/ask/stream"
+
+
+def _stream(client: TestClient, headers: dict, question: str) -> list[tuple[str, dict]]:
+    """POST /assistant/ask/stream and return its events in order, as
+    (name, data) pairs."""
+    return read_events(
+        client.post(STREAM_URL, headers=headers, json={"question": question})
+    )
+
+
+def test_the_stream_sends_the_answer_piece_by_piece_then_citations_then_done(
+    client: TestClient,
+    db_session: Session,
+    patient_auth_headers: dict,
+    use_llm: Callable[[FakeLLM], FakeLLM],
+    department: Department,
+    knee: Service,
+) -> None:
+    use_llm(FakeLLM("navigation", "Knee X-Ray fits. Wear loose clothing."))
+
+    events = _stream(client, patient_auth_headers, "knee x-ray")
+
+    assert [name for name, _ in events] == ["token"] * 7 + ["citations", "done"]
+    # One event per piece the provider streamed (FakeLLM streams a word at
+    # a time), then the disclaimer.
+    assert [data["text"] for _, data in events[:7]] == [
+        "Knee ",
+        "X-Ray ",
+        "fits. ",
+        "Wear ",
+        "loose ",
+        "clothing.",
+        f"\n\n{DISCLAIMER}",
+    ]
+    assert events[7][1] == {
+        "citations": [
+            {
+                "service_id": knee.id,
+                "name": "Knee X-Ray",
+                "department": department.name,
+                "similarity": 0.696,
+            }
+        ]
+    }
+    assert events[8][1] == {
+        "intent": "NAVIGATION",
+        "outcome": "ANSWERED",
+        "interaction_id": _interaction(db_session).id,
+    }
+
+
+def test_the_streamed_reply_matches_the_one_ask_returns(
+    client: TestClient,
+    patient_auth_headers: dict,
+    use_llm: Callable[[FakeLLM], FakeLLM],
+    knee: Service,
+) -> None:
+    use_llm(FakeLLM("navigation", "Knee X-Ray fits.", "navigation", "Knee X-Ray fits."))
+
+    streamed = streamed_text(_stream(client, patient_auth_headers, "knee x-ray"))
+    asked = _ask(client, patient_auth_headers, "knee x-ray").json()["answer"]
+
+    assert streamed == asked
+
+
+def test_the_stream_records_the_interaction_with_ids_tokens_and_length(
+    client: TestClient,
+    db_session: Session,
+    patient_auth_headers: dict,
+    use_llm: Callable[[FakeLLM], FakeLLM],
+    knee: Service,
+) -> None:
+    llm = use_llm(FakeLLM("navigation", "Knee X-Ray fits. Wear loose clothing."))
+
+    events = _stream(client, patient_auth_headers, "knee x-ray")
+
+    row = _interaction(db_session)
+    assert row.outcome == "ANSWERED"
+    assert row.intent == "NAVIGATION"
+    assert row.prompt_version == "PROMPT_NAV_V1"
+    assert row.retrieved_ids["services"] == [knee.id]
+    assert row.input_tokens == _words(llm.calls)
+    assert row.output_tokens == 1 + 6
+    assert row.answer_chars == len(streamed_text(events))
+
+
+def test_a_refusal_is_streamed_as_one_piece_with_the_disclaimer(
+    client: TestClient,
+    db_session: Session,
+    patient_auth_headers: dict,
+    use_llm: Callable[[FakeLLM], FakeLLM],
+    knee: Service,
+) -> None:
+    """Fixed text, not generated, so there is nothing to stream."""
+    llm = use_llm(FakeLLM("medical_advice", "An answer that must never be asked for."))
+
+    events = _stream(client, patient_auth_headers, "diagnose my knee x-ray")
+
+    assert [name for name, _ in events] == ["token", "citations", "done"]
+    assert events[0][1]["text"].startswith("I can't give medical advice")
+    assert events[0][1]["text"].endswith(DISCLAIMER)
+    assert [c["service_id"] for c in events[1][1]["citations"]] == [knee.id]
+    assert events[2][1]["outcome"] == "REFUSED"
+    assert len(llm.calls) == 1
+    assert _interaction(db_session).outcome == "REFUSED"
+
+
+def test_we_dont_offer_that_is_streamed_with_no_citations(
+    client: TestClient,
+    db_session: Session,
+    patient_auth_headers: dict,
+    use_llm: Callable[[FakeLLM], FakeLLM],
+    knee: Service,
+) -> None:
+    use_llm(FakeLLM("navigation", "An answer that must never be asked for."))
+
+    events = _stream(client, patient_auth_headers, "hair transplant")
+
+    no_match = NO_MATCH_V1.text.format(clinic=settings.assistant_clinic_name)
+    assert events == [
+        ("token", {"text": f"{no_match}\n\n{DISCLAIMER}"}),
+        ("citations", {"citations": []}),
+        (
+            "done",
+            {
+                "intent": "NAVIGATION",
+                "outcome": "NOT_OFFERED",
+                "interaction_id": _interaction(db_session).id,
+            },
+        ),
+    ]
+
+
+def test_a_provider_failure_mid_answer_ends_the_stream_with_an_error_event(
+    client: TestClient,
+    db_session: Session,
+    patient_auth_headers: dict,
+    use_llm: Callable[[FakeLLM], FakeLLM],
+    knee: Service,
+) -> None:
+    """The 200 and the first piece have already gone, so the failure can
+    only be reported in the stream."""
+    use_llm(BreaksMidStream("navigation"))
+
+    events = _stream(client, patient_auth_headers, "knee x-ray")
+
+    row = _interaction(db_session)
+    assert events == [
+        ("token", {"text": "Knee "}),
+        (
+            "error",
+            {
+                "error": {
+                    "code": "ASSISTANT_UNAVAILABLE",
+                    "message": UNAVAILABLE_MESSAGE,
+                }
+            },
+        ),
+        (
+            "done",
+            {"intent": "NAVIGATION", "outcome": "FAILED", "interaction_id": row.id},
+        ),
+    ]
+    assert row.outcome == "FAILED"
+    assert row.answer_chars == len("Knee ")
+
+
+def test_the_stream_is_a_json_503_when_the_safety_check_fails(
+    client: TestClient,
+    db_session: Session,
+    patient_auth_headers: dict,
+    use_llm: Callable[[FakeLLM], FakeLLM],
+    knee: Service,
+) -> None:
+    """Nothing has been sent yet, so the failure is an ordinary error."""
+    use_llm(FakeLLM(TransientLLMError("LLM provider returned HTTP 503")))
+
+    response = client.post(
+        STREAM_URL, headers=patient_auth_headers, json={"question": "knee x-ray"}
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "ASSISTANT_UNAVAILABLE"
+    assert _interaction(db_session).outcome == "FAILED"
+
+
+def test_a_bad_question_to_the_stream_is_422_before_any_ai_work(
+    client: TestClient,
+    db_session: Session,
+    patient_auth_headers: dict,
+    use_llm: Callable[[FakeLLM], FakeLLM],
+) -> None:
+    llm = use_llm(FakeLLM("navigation"))
+
+    response = client.post(
+        STREAM_URL, headers=patient_auth_headers, json={"question": "!!!!"}
+    )
+
+    assert response.status_code == 422
+    assert llm.calls == []
+    assert db_session.scalars(select(AIInteraction)).all() == []
+
+
+@pytest.mark.parametrize(
+    ("headers", "expected"),
+    [(None, 401), ("front_desk_auth_headers", 403)],
+    ids=["signed-out", "staff"],
+)
+def test_the_stream_is_for_signed_in_patients_only(
+    client: TestClient,
+    use_llm: Callable[[FakeLLM], FakeLLM],
+    request: pytest.FixtureRequest,
+    headers: str | None,
+    expected: int,
+) -> None:
+    llm = use_llm(FakeLLM("navigation"))
+
+    response = client.post(
+        STREAM_URL,
+        headers=request.getfixturevalue(headers) if headers else {},
+        json={"question": "knee x-ray"},
+    )
+
+    assert response.status_code == expected
+    assert llm.calls == []
+
+
+async def _start_stream(
+    db: Session, user: User, llm: FakeLLM
+) -> AsyncGenerator[str | AssistantAnswer, None]:
+    """ask_stream() for "knee x-ray", as the route calls it."""
+    return await assistant_service.ask_stream(
+        db, user_id=user.id, question="knee x-ray", llm=llm, embeddings=FakeEmbeddings()
+    )
+
+
+async def test_a_patient_who_leaves_mid_answer_is_recorded_as_interrupted(
+    db_session: Session, patient_user: User, knee: Service
+) -> None:
+    """What SSEResponse does on a disconnect: close the stream while it is
+    paused at a yield. The model's stream is closed too, so the provider
+    stops writing."""
+    llm = StallsMidStream("navigation")
+    stream = await _start_stream(db_session, patient_user, llm)
+
+    assert await anext(stream) == "Knee "
+    await stream.aclose()
+
+    row = _interaction(db_session)
+    assert row.outcome == "INTERRUPTED"
+    assert row.answer_chars == len("Knee ")
+    # The safety check's one word: a stream cut short reports no counts.
+    assert row.output_tokens == 1
+    assert llm.closed
+
+
+async def test_an_interrupted_answer_is_recorded_though_the_request_is_cancelled(
+    db_session: Session, patient_user: User, knee: Service
+) -> None:
+    """The other way a disconnect arrives: Starlette cancels the request
+    while the stream waits on the provider. anyio then cancels every later
+    await too, so without the shield the write recording the question would
+    be cancelled as well."""
+    stream = await _start_stream(
+        db_session, patient_user, StallsMidStream("navigation")
+    )
+
+    with anyio.CancelScope() as scope:
+        async for _ in stream:
+            scope.cancel()
+
+    row = _interaction(db_session)
+    assert row.outcome == "INTERRUPTED"
+    assert row.answer_chars == len("Knee ")

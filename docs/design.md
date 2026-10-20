@@ -16,8 +16,9 @@ How SmartHealth is put together, and why. Updated as work lands.
 
 ### 1.1 ERD — core domain and chunk vectors
 
-Eighteen entities. The ten Week 1 shapes, everything the scheduling saga and
-visit lifecycle attach to them, and Week 4's chunk vectors.
+Twenty entities. The ten Week 1 shapes, everything the scheduling saga and
+visit lifecycle attach to them, Week 4's chunk vectors, and Week 5's AI
+records.
 
 ```mermaid
 erDiagram
@@ -45,6 +46,10 @@ erDiagram
     PATIENT ||--o{ WAITLIST : "waits on"
     CONTENT_CHUNK ||--o| CHUNK_EMBEDDING : "embedded as"
     SERVICE ||--o{ CHUNK_EMBEDDING : "described by"
+    USER ||--o{ AI_INTERACTION : "asks or generates"
+    AI_INTERACTION ||--o| GENERATED_CONTENT : "produced"
+    APPOINTMENT ||--o{ GENERATED_CONTENT : "written about"
+    USER ||--o{ GENERATED_CONTENT : "created"
 
     CLINIC {
         bigint id PK
@@ -228,9 +233,43 @@ erDiagram
         timestamptz created_at
         timestamptz updated_at
     }
+
+    AI_INTERACTION {
+        bigint id PK
+        bigint user_id FK "NOT NULL"
+        text correlation_id "indexed"
+        text intent "nullable"
+        text outcome
+        jsonb retrieved_ids "ids only"
+        text model
+        text safety_prompt_version
+        text prompt_version
+        int input_tokens
+        int output_tokens
+        int latency_ms
+        int answer_chars
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    GENERATED_CONTENT {
+        bigint id PK
+        text kind
+        bigint appointment_id FK "summary and follow-up only"
+        date report_start "report only"
+        date report_end "report only"
+        jsonb content
+        text model
+        text prompt_version
+        bigint created_by FK "NOT NULL"
+        bigint interaction_id FK "UNIQUE"
+        timestamptz created_at
+        timestamptz updated_at
+    }
 ```
 
 Exported copies of this and every other diagram here live in `docs/diagrams/`.
+`erd-core-domain.svg` predates the two Week 5 tables.
 
 **Conventions applied to every table.** Integer (`bigint`) identity primary keys.
 `created_at` / `updated_at` as `timestamptz`, always UTC-aware — never a naive
@@ -526,6 +565,19 @@ migrating rows that had already been created without it.
 | `/assistant/ask` is for patients only (task 5.3) | It is the patient assistant: booking conversion is per patient, and task 5.5 scopes appointments to the caller | Front desk cannot ask it on a patient's behalf |
 | A question is refused on `medical_advice` or when the reply names no label (task 5.4) | A reply the code cannot read shows nothing about whether the question is safe | A formatting slip by the model refuses a safe question |
 | `STAFF_GENERATION` is an intent but never a safety label (task 5.7) | The brief's analytics list it beside the other intents, so the column accepts it now rather than through a constraint migration in task 5.9 | One enum mixes the model's labels with a code-only value; `parse_intent()` rejects it |
+| A separate `POST /assistant/ask/stream`, with `/ask` kept as it was (task 5.8) | Each route returns one type. `/ask` still serves Swagger, which cannot show a stream as it arrives, and its tests | Two routes to document; both share `_prepare()`, so their answers cannot drift apart |
+| Retrieval and the safety check run before the stream starts (task 5.8) | Their failures stay ordinary JSON errors, and no text is sent before a refusal is decided | The 200 waits 0.6 to 1.1 s; a failure after it can only be an `error` event |
+| `SSEResponse` closes its generator when the response ends (task 5.8) | Starlette 0.41 never closes it after a disconnect, so an interrupted answer was recorded 106 s late, at the next reload | Every stream must use `SSEResponse` rather than Starlette's `StreamingResponse` |
+| A stream's final write runs in `anyio.CancelScope(shield=True)` (task 5.8) | A disconnect cancels the request, and anyio would cancel the write recording it too | The cancellation waits for one insert |
+| A stream's final write reuses the request's session after `get_db` has closed it (task 5.8) | FastAPI 0.115 closes yield dependencies before the stream starts; SQLAlchemy 2.0 lets a closed session be used again, and the tests' session override keeps working | Depends on that SQLAlchemy behaviour; checked live with `pg_stat_activity` |
+| Every number in a utilisation report is read by the code; the model writes only commentary, and a digit in it fails validation (task 5.9) | The brief: "never let the model invent figures". A number the model never writes cannot be wrong | The commentary cannot quote a figure, and a wrong comparison in words still passes |
+| The report's analytics figures are `summarise_range()` through `AnalyticsSummaryResponse` (task 5.9) | The same function and schema as `GET /analytics/summary`, so "its numbers match analytics" holds by construction | Total patients and failed jobs come along, though they say little about utilisation |
+| Department utilisation is counted from `slots` (task 5.9) | `analytics_daily` has no department; adding one would mean a consumer change and a reconciliation for it | A count on each request, with no aggregate or reconciliation behind it |
+| The repair retry shows the model its own reply and the problem (task 5.9) | The model can fix the reply rather than start again. The problem text is written by the code, so no model text is echoed | A repaired report costs two calls' tokens |
+| `generated_content` links its `ai_interactions` row rather than repeating the outcome; every run saves both, interrupted and failed included (task 5.10) | One record of outcome, tokens and latency, and the brief's "still persist what was generated" | Two commits per run; reading an outcome needs a join |
+| Appendix B's `report_scope` is `report_start` and `report_end`, with a check constraint per kind (task 5.10) | Dates that can be queried, and no row can mix an appointment with a range | Two columns where the appendix names one |
+| No model call before a generation stream starts (task 5.9) | There is no patient text, so no safety check to run first | A provider that is down shows as an `error` event after a 200 |
+| Staff generation has its own model dependency, failing as `GENERATION_UNAVAILABLE` (task 5.9) | A staff member's 503 names generation, not the patient assistant | Two near-identical dependencies |
 
 **Enum member names and values are kept identical** (`AVAILABLE = "AVAILABLE"`).
 SQLAlchemy persists a Python enum's `.name`, while a `str`-based enum serialises
