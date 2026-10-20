@@ -131,12 +131,36 @@ async def test_fake_stream_yields_word_pieces_that_join_to_the_reply_then_counts
 
 
 async def test_fake_raises_its_error_from_both_calls() -> None:
-    fake = FakeLLM(error=TransientLLMError("down"))
+    fake = FakeLLM(TransientLLMError("down"))
 
     with pytest.raises(TransientLLMError):
         await fake.complete(MESSAGES)
     with pytest.raises(TransientLLMError):
         await _collect(fake.stream(MESSAGES))
+    assert len(fake.calls) == 2
+
+
+async def test_fake_gives_each_call_the_next_reply_then_repeats_the_last() -> None:
+    """How a test scripts the assistant's two calls: the safety label, then
+    the answer."""
+    fake = FakeLLM("navigation", "Book the Knee X-Ray.")
+
+    first = await fake.complete(MESSAGES)
+    second = await fake.complete(MESSAGES)
+    third = await _collect(fake.stream(MESSAGES))
+
+    assert first.text == "navigation"
+    assert second == LLMResult("Book the Knee X-Ray.", LLMUsage(12, 4))
+    assert "".join(chunk.text for chunk in third) == "Book the Knee X-Ray."
+    assert len(fake.calls) == 3
+
+
+async def test_fake_raises_only_the_call_whose_reply_is_an_error() -> None:
+    fake = FakeLLM("navigation", PermanentLLMError("LLM provider returned HTTP 401"))
+
+    assert (await fake.complete(MESSAGES)).text == "navigation"
+    with pytest.raises(PermanentLLMError):
+        await fake.complete(MESSAGES)
     assert len(fake.calls) == 2
 
 

@@ -392,61 +392,62 @@ _WORD_PIECE = re.compile(r"\S+\s*")
 class FakeLLM(LLMProvider):
     """A network-free stand-in for tests.
 
-    Replies with `reply`. stream() yields it one word per chunk, then a last
-    chunk with the token counts, in the same order as the real provider.
-    Tokens are counted as words: repeatable, though not what a real
-    tokenizer would give.
+    Each call takes the next of `replies`, and the last one repeats once
+    they run out, so FakeLLM("navigation", "Book the Knee X-Ray.") answers
+    the assistant's safety check and then its answer prompt. A reply that
+    is an LLMError is raised instead, so a test can fail any one call.
+
+    stream() yields a reply one word per chunk, then a last chunk with the
+    token counts, in the same order as the real provider. Tokens are counted
+    as words: repeatable, though not what a real tokenizer would give.
 
     Records each call's messages so a test can check what the prompt held.
-    With `error` set, every call raises it instead, so a test can drive the
-    failure paths.
     """
 
     DEFAULT_REPLY = "This is a fake reply."
 
-    def __init__(
-        self, reply: str = DEFAULT_REPLY, *, error: LLMError | None = None
-    ) -> None:
+    def __init__(self, *replies: str | LLMError) -> None:
         """Start with an empty call log. The model name marks anything the
         fake produced, so it can never pass for a real answer in the
         database.
         """
         super().__init__(model="fake-llm-v1")
-        self.reply = reply
-        self.error = error
+        self.replies = list(replies) or [self.DEFAULT_REPLY]
         self.calls: list[list[LLMMessage]] = []
 
     async def complete(
         self, messages: list[LLMMessage], *, max_tokens: int = DEFAULT_MAX_TOKENS
     ) -> LLMResult:
         """Record the call, then return the whole reply."""
-        self._record(messages)
-        return LLMResult(text=self.reply, usage=self._usage(messages))
+        reply = self._take(messages)
+        return LLMResult(text=reply, usage=self._usage(messages, reply))
 
     async def stream(
         self, messages: list[LLMMessage], *, max_tokens: int = DEFAULT_MAX_TOKENS
     ) -> AsyncIterator[LLMChunk]:
         """Record the call, then yield the reply a word at a time."""
-        self._record(messages)
-        for piece in _WORD_PIECE.findall(self.reply):
+        reply = self._take(messages)
+        for piece in _WORD_PIECE.findall(reply):
             # Hands control back to the event loop between pieces, as
             # waiting on a real provider does, so other work can run
             # between them.
             await asyncio.sleep(0)
             yield LLMChunk(text=piece)
-        yield LLMChunk(usage=self._usage(messages))
+        yield LLMChunk(usage=self._usage(messages, reply))
 
-    def _record(self, messages: list[LLMMessage]) -> None:
-        """Log the call, then raise `error` if the test set one."""
+    def _take(self, messages: list[LLMMessage]) -> str:
+        """Log the call and return its reply, or raise it if it is an error."""
+        reply = self.replies[min(len(self.calls), len(self.replies) - 1)]
         self.calls.append(list(messages))
-        if self.error is not None:
-            raise self.error
+        if isinstance(reply, LLMError):
+            raise reply
+        return reply
 
-    def _usage(self, messages: list[LLMMessage]) -> LLMUsage:
+    def _usage(self, messages: list[LLMMessage], reply: str) -> LLMUsage:
         """Count words in the messages sent and in the reply."""
         return LLMUsage(
             input_tokens=sum(len(m.content.split()) for m in messages),
-            output_tokens=len(self.reply.split()),
+            output_tokens=len(reply.split()),
         )
 
 

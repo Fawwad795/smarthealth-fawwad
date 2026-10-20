@@ -31,6 +31,7 @@ def record_interaction(
     intent: AssistantIntent | None = None,
     service_ids: Iterable[int] = (),
     appointment_ids: Iterable[int] = (),
+    slot_ids: Iterable[int] = (),
     model: str | None = None,
     safety_prompt_version: str | None = None,
     prompt_version: str | None = None,
@@ -38,6 +39,9 @@ def record_interaction(
     answer_chars: int = 0,
 ) -> AIInteraction:
     """Write one ai_interactions row, commit it, and log it.
+
+    `slot_ids` are the free slots whose times an availability answer was
+    shown, so the answer can be checked against them later.
 
     `usages` holds the token counts of each model call the interaction
     made, the safety check's and the answer's. None, from a stream cut
@@ -56,6 +60,7 @@ def record_interaction(
         retrieved_ids={
             "services": list(service_ids),
             "appointments": list(appointment_ids),
+            "slots": list(slot_ids),
         },
         model=model,
         safety_prompt_version=safety_prompt_version,
@@ -73,12 +78,13 @@ def record_interaction(
     # correlation ID to the line.
     logger.info(
         "ai interaction %d: outcome=%s intent=%s services=%s appointments=%s "
-        "model=%s prompt=%s tokens_in=%d tokens_out=%d latency_ms=%d",
+        "slots=%s model=%s prompt=%s tokens_in=%d tokens_out=%d latency_ms=%d",
         interaction.id,
         interaction.outcome,
         interaction.intent,
         interaction.retrieved_ids["services"],
         interaction.retrieved_ids["appointments"],
+        interaction.retrieved_ids["slots"],
         interaction.model,
         interaction.prompt_version,
         interaction.input_tokens,

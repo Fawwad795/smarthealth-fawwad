@@ -136,6 +136,10 @@ class Settings(BaseSettings):
     # pass, so every token of max_completion_tokens goes to the answer
     # (docs/ai-layer.md section 9).
     llm_model: str = "qwen/qwen3.8-27b"
+    # The name the assistant gives the clinic in its prompts and fixed
+    # replies. A setting, not a read of the clinics table: the assistant
+    # speaks for the organisation, and a clinics row is one site of it.
+    assistant_clinic_name: str = "MediNova"
     # Seconds httpx waits on any one step of a model call: connecting, or
     # the gap between two pieces of a reply. A per-step limit rather than a
     # total, so a long reply that keeps arriving is never cut off.

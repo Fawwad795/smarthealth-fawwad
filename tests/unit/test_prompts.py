@@ -7,7 +7,7 @@ tested end to end with FakeLLM once /assistant/ask exists (task 5.4).
 """
 
 import hashlib
-from dataclasses import fields
+from dataclasses import fields, replace
 from datetime import datetime
 from pathlib import Path
 
@@ -46,6 +46,7 @@ FROZEN = {
     "PROMPT_SAFETY_V1": "14c9409b99974f59",
     "PROMPT_NAV_V1": "4ea5e5f25ff07311",
     "PROMPT_PREP_V1": "f6804d9f73ade669",
+    "PROMPT_PREP_V2": "5504ad33715c46d9",
     "REFUSAL_V1": "6c5aebfe20573c0c",
     "REFUSAL_NO_SERVICE_V1": "d6e09170698938a9",
     "NO_MATCH_V1": "712190a751480e5f",
@@ -228,18 +229,31 @@ def test_the_navigation_prompt_lists_each_service_with_its_preparation() -> None
 
 def test_a_prompt_with_nothing_to_list_says_none() -> None:
     nav = build_navigation_prompt("x", [], clinic=CLINIC).messages[1].content
-    prep = build_preparation_prompt("x", [], clinic=CLINIC).messages[1].content
+    prep = build_preparation_prompt("x", [], [], clinic=CLINIC).messages[1].content
 
     assert nav.startswith("<services>\n(none)\n</services>")
-    assert prep.startswith("<appointments>\n(none)\n</appointments>")
-
-
-def test_the_preparation_prompt_shows_each_appointments_time_and_preparation() -> None:
-    built = build_preparation_prompt(
-        "When is my MRI?", [MRI_APPOINTMENT], clinic=CLINIC
+    assert prep.startswith(
+        "<appointments>\n(none)\n</appointments>\n\n<services>\n(none)\n</services>"
     )
 
-    assert built.version == "PROMPT_PREP_V1"
+
+def test_the_preparation_prompt_shows_appointments_then_services_with_open_times() -> (
+    None
+):
+    """One prompt for preparation and availability questions: the patient's
+    own appointments, then the services found, each with its next open
+    times."""
+    knee = replace(
+        KNEE_XRAY,
+        open_times=(datetime(2030, 1, 7, 9, 0), datetime(2030, 1, 7, 9, 30)),
+    )
+
+    built = build_preparation_prompt(
+        "When is my MRI?", [MRI_APPOINTMENT], [knee], clinic=CLINIC
+    )
+
+    assert built.version == "PROMPT_PREP_V2"
+    assert CLINIC in built.messages[0].content
     assert built.messages[1].content == (
         "<appointments>\n"
         "- Knee MRI Scan (Radiology)\n"
@@ -247,8 +261,30 @@ def test_the_preparation_prompt_shows_each_appointments_time_and_preparation() -
         "  Status: CONFIRMED\n"
         "  Preparation: Remove all metal items.\n"
         "</appointments>\n\n"
+        "<services>\n"
+        "- Knee X-Ray (Radiology)\n"
+        "  Description: Standard imaging of the knee joint.\n"
+        "  Preparation: Wear loose clothing.\n"
+        "  Open times: Monday 07 January 2030, 09:00; Monday 07 January 2030, 09:30\n"
+        "</services>\n\n"
         "<question>\nWhen is my MRI?\n</question>"
     )
+
+
+def test_a_service_with_no_open_times_says_none() -> None:
+    user = build_preparation_prompt("x", [], [KNEE_XRAY], clinic=CLINIC).messages[1]
+
+    assert "  Open times: none\n</services>" in user.content
+
+
+def test_the_navigation_prompt_never_shows_open_times() -> None:
+    """Open times are for preparation and availability questions only;
+    PROMPT_NAV_V1's listing is unchanged by them."""
+    knee = replace(KNEE_XRAY, open_times=(datetime(2030, 1, 7, 9, 0),))
+
+    user = build_navigation_prompt("knee scan", [knee], clinic=CLINIC).messages[1]
+
+    assert "Open times" not in user.content
 
 
 def test_an_appointment_carries_nothing_that_identifies_the_patient() -> None:

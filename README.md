@@ -204,6 +204,7 @@ and a patient's details never being findable through it.
 | POST/GET/PATCH | `/api/v1/services`, `/services/{id}` | Service CRUD (always created `DRAFT`) | Admin write, any staff read |
 | GET | `/api/v1/services/search` | Public catalog: published + offered, filterable | Public |
 | POST | `/api/v1/search` | Semantic search: published services ranked by meaning, with similarity scores; empty with a message when nothing clears the threshold | Any signed-in user |
+| POST | `/api/v1/assistant/ask` | Patient assistant: answers from the published services with citations, refuses medical advice, says "we don't offer that" when nothing matches | Patient |
 | POST/GET/PATCH | `/api/v1/providers`, `/providers/{id}` | Provider profile CRUD | Admin write, any staff read |
 | POST/GET/PATCH | `/api/v1/providers/{id}/schedules`, `/schedules/{id}` | Weekly working-hours templates | Admin write, any staff read |
 | POST | `/api/v1/providers/{id}/schedules/generate-slots` | Turn templates into bookable `Slot` rows, idempotent | Admin |
@@ -224,7 +225,7 @@ and a patient's details never being findable through it.
 | GET | `/api/v1/analytics/reconciliation` | Compare the aggregates with the raw tables and report drift | Admin |
 | GET | `/metrics` | Prometheus scrape page (not in Swagger) | Public |
 
-The AI assistant (Week 5) is added here when it lands.
+Streaming and staff generation (Week 5) are added here when they land.
 
 ---
 
@@ -287,7 +288,7 @@ leak `password_hash` and patient data).
 | `docs/runbook.md` | Diagnosing a stuck booking, missing reminders, wrong analytics numbers and a silent consumer |
 | `docs/kafka-ui-demo.md` | Driving the event path from Kafka UI: a good event, a replay, three faulty events, and a transient outage |
 | `docs/retrieval-demo.md` | A 15-minute Week 4 demo: search, publish and find a service, re-index, withdraw, an embedding failure, the eval |
-| `docs/ai-layer.md` | Embeddings, chunking, the embedding provider, vector storage, re-indexing, `POST /search` with its threshold and filters, the retrieval eval, offline testing |
+| `docs/ai-layer.md` | Embeddings, chunking, the embedding provider, vector storage, re-indexing, `POST /search` with its threshold and filters, the retrieval eval, offline testing, the LLM provider, prompts, and `POST /assistant/ask` with its transcripts |
 | `docs/prd.md` | Requirements, milestones, and the requirement → implementation → test traceability table |
 | `NOTES.md` | Working log and weekly tracking tables |
 
@@ -336,7 +337,7 @@ hand-edit them.
 | 2 | Temporal workflows, scheduling, slots | Done |
 | 3 | Celery, Kafka, observability | Done |
 | 4 | Chunking, embeddings, retrieval | Done |
-| 5 | AI assistant, streaming, demo | Not started |
+| 5 | AI assistant, streaming, demo | In progress |
 
 **Working today:**
 
@@ -363,4 +364,6 @@ overlapping slots they would generate; booking accepts a slot in the past; searc
 gives a near miss ("chest x-ray") a weak match instead of "we don't offer that".
 See `docs/prd.md` §7.
 
-**Not built yet:** the AI assistant, streaming and staff generation (Week 5).
+**Week 5 so far:** `POST /assistant/ask`, which refuses medical advice with fixed text, answers navigation questions from the published services with citations, and answers preparation and availability questions from the caller's own appointments and real open slots.
+
+**Not built yet:** streaming and staff generation (Week 5).
