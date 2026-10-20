@@ -9,9 +9,8 @@ transplant" finds nothing. The threshold is fixed at 0.3, as in the search
 tests.
 """
 
-import json
 import logging
-from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from collections.abc import AsyncGenerator, Callable
 from datetime import UTC, date, datetime, timedelta
 
 import anyio
@@ -26,7 +25,6 @@ from app.ai.embeddings import EmbeddingProvider, FakeEmbeddings, TransientEmbedd
 from app.ai.llm import (
     DEFAULT_MAX_TOKENS,
     FakeLLM,
-    LLMChunk,
     LLMMessage,
     LLMResult,
     TransientLLMError,
@@ -54,6 +52,12 @@ from app.services.assistant import (
     get_assistant_llm,
 )
 from tests.indexing import index_service
+from tests.streaming import (
+    BreaksMidStream,
+    StallsMidStream,
+    read_events,
+    streamed_text,
+)
 
 THRESHOLD = 0.3
 
@@ -836,52 +840,9 @@ STREAM_URL = "/api/v1/assistant/ask/stream"
 def _stream(client: TestClient, headers: dict, question: str) -> list[tuple[str, dict]]:
     """POST /assistant/ask/stream and return its events in order, as
     (name, data) pairs."""
-    response = client.post(STREAM_URL, headers=headers, json={"question": question})
-    assert response.status_code == 200
-    assert response.headers["content-type"] == "text/event-stream; charset=utf-8"
-    events = []
-    for block in response.text.removesuffix("\n\n").split("\n\n"):
-        name, data = block.split("\n")
-        events.append(
-            (name.removeprefix("event: "), json.loads(data.removeprefix("data: ")))
-        )
-    return events
-
-
-def _streamed_text(events: list[tuple[str, dict]]) -> str:
-    """The reply: every token event's text, joined in order."""
-    return "".join(data["text"] for name, data in events if name == "token")
-
-
-class _BreaksMidAnswer(FakeLLM):
-    """Answers the safety check, then streams one piece of the answer and
-    fails, as a dropped connection would."""
-
-    async def stream(
-        self, messages: list[LLMMessage], *, max_tokens: int = DEFAULT_MAX_TOKENS
-    ) -> AsyncIterator[LLMChunk]:
-        self.calls.append(list(messages))
-        yield LLMChunk(text="Knee ")
-        raise TransientLLMError("LLM provider unreachable (ReadError)")
-
-
-class _StallsMidAnswer(FakeLLM):
-    """Answers the safety check, then streams one piece of the answer and
-    goes quiet, as a slow provider would. Notes when its stream is closed."""
-
-    def __init__(self, *replies: str) -> None:
-        super().__init__(*replies)
-        self.closed = False
-
-    async def stream(
-        self, messages: list[LLMMessage], *, max_tokens: int = DEFAULT_MAX_TOKENS
-    ) -> AsyncIterator[LLMChunk]:
-        self.calls.append(list(messages))
-        try:
-            yield LLMChunk(text="Knee ")
-            await anyio.sleep_forever()
-        finally:
-            self.closed = True
+    return read_events(
+        client.post(STREAM_URL, headers=headers, json={"question": question})
+    )
 
 
 def test_the_stream_sends_the_answer_piece_by_piece_then_citations_then_done(
@@ -933,7 +894,7 @@ def test_the_streamed_reply_matches_the_one_ask_returns(
 ) -> None:
     use_llm(FakeLLM("navigation", "Knee X-Ray fits.", "navigation", "Knee X-Ray fits."))
 
-    streamed = _streamed_text(_stream(client, patient_auth_headers, "knee x-ray"))
+    streamed = streamed_text(_stream(client, patient_auth_headers, "knee x-ray"))
     asked = _ask(client, patient_auth_headers, "knee x-ray").json()["answer"]
 
     assert streamed == asked
@@ -957,7 +918,7 @@ def test_the_stream_records_the_interaction_with_ids_tokens_and_length(
     assert row.retrieved_ids["services"] == [knee.id]
     assert row.input_tokens == _words(llm.calls)
     assert row.output_tokens == 1 + 6
-    assert row.answer_chars == len(_streamed_text(events))
+    assert row.answer_chars == len(streamed_text(events))
 
 
 def test_a_refusal_is_streamed_as_one_piece_with_the_disclaimer(
@@ -1016,7 +977,7 @@ def test_a_provider_failure_mid_answer_ends_the_stream_with_an_error_event(
 ) -> None:
     """The 200 and the first piece have already gone, so the failure can
     only be reported in the stream."""
-    use_llm(_BreaksMidAnswer("navigation"))
+    use_llm(BreaksMidStream("navigation"))
 
     events = _stream(client, patient_auth_headers, "knee x-ray")
 
@@ -1116,7 +1077,7 @@ async def test_a_patient_who_leaves_mid_answer_is_recorded_as_interrupted(
     """What SSEResponse does on a disconnect: close the stream while it is
     paused at a yield. The model's stream is closed too, so the provider
     stops writing."""
-    llm = _StallsMidAnswer("navigation")
+    llm = StallsMidStream("navigation")
     stream = await _start_stream(db_session, patient_user, llm)
 
     assert await anext(stream) == "Knee "
@@ -1138,7 +1099,7 @@ async def test_an_interrupted_answer_is_recorded_though_the_request_is_cancelled
     await too, so without the shield the write recording the question would
     be cancelled as well."""
     stream = await _start_stream(
-        db_session, patient_user, _StallsMidAnswer("navigation")
+        db_session, patient_user, StallsMidStream("navigation")
     )
 
     with anyio.CancelScope() as scope:
