@@ -206,6 +206,9 @@ and a patient's details never being findable through it.
 | POST | `/api/v1/search` | Semantic search: published services ranked by meaning, with similarity scores; empty with a message when nothing clears the threshold | Any signed-in user |
 | POST | `/api/v1/assistant/ask` | Patient assistant: answers from the published services with citations, refuses medical advice, says "we don't offer that" when nothing matches | Patient |
 | POST | `/api/v1/assistant/ask/stream` | The same answer as server-sent events while the model writes it: `token` events, then `citations`, then `done`. Try it with `curl -N` | Patient |
+| POST | `/api/v1/appointments/{id}/generate/summary` | Stream a patient-facing summary of the appointment, for staff to review | Front desk, admin |
+| POST | `/api/v1/appointments/{id}/generate/followup` | Stream a follow-up message draft matched to the appointment's status | Front desk, admin |
+| POST | `/api/v1/reports/generate/utilisation` | Stream a utilisation report: the analytics figures and each department's booked slots for a date range, with the model's validated commentary | Front desk, admin |
 | POST/GET/PATCH | `/api/v1/providers`, `/providers/{id}` | Provider profile CRUD | Admin write, any staff read |
 | POST/GET/PATCH | `/api/v1/providers/{id}/schedules`, `/schedules/{id}` | Weekly working-hours templates | Admin write, any staff read |
 | POST | `/api/v1/providers/{id}/schedules/generate-slots` | Turn templates into bookable `Slot` rows, idempotent | Admin |
@@ -225,8 +228,6 @@ and a patient's details never being findable through it.
 | GET | `/api/v1/analytics/appointments` | Appointments booked per day | Front desk, admin |
 | GET | `/api/v1/analytics/reconciliation` | Compare the aggregates with the raw tables and report drift | Admin |
 | GET | `/metrics` | Prometheus scrape page (not in Swagger) | Public |
-
-Staff generation (Week 5) is added here when it lands.
 
 ---
 
@@ -289,7 +290,7 @@ leak `password_hash` and patient data).
 | `docs/runbook.md` | Diagnosing a stuck booking, missing reminders, wrong analytics numbers and a silent consumer |
 | `docs/kafka-ui-demo.md` | Driving the event path from Kafka UI: a good event, a replay, three faulty events, and a transient outage |
 | `docs/retrieval-demo.md` | A 15-minute Week 4 demo: search, publish and find a service, re-index, withdraw, an embedding failure, the eval |
-| `docs/ai-layer.md` | Embeddings, chunking, the embedding provider, vector storage, re-indexing, `POST /search` with its threshold and filters, the retrieval eval, offline testing, the LLM provider, prompts, `POST /assistant/ask` with its transcripts, and its streamed form with the booking-during-AI demonstration |
+| `docs/ai-layer.md` | Embeddings, chunking, the embedding provider, vector storage, re-indexing, `POST /search` with its threshold and filters, the retrieval eval, offline testing, the LLM provider, prompts, `POST /assistant/ask` with its transcripts, its streamed form with the booking-during-AI demonstration, and staff generation with its prompts and live output |
 | `docs/prd.md` | Requirements, milestones, and the requirement → implementation → test traceability table |
 | `NOTES.md` | Working log and weekly tracking tables |
 
@@ -361,10 +362,10 @@ hand-edit them.
 live demonstration rather than one end-to-end test; a booking whose workflow
 fails to start because Temporal is unreachable stays `REQUESTED` with nothing to
 retry it; overlapping provider *schedule* windows are not prevented, only the
-overlapping slots they would generate; booking accepts a slot in the past; search
-gives a near miss ("chest x-ray") a weak match instead of "we don't offer that".
+overlapping slots they would generate; booking accepts a slot in the past; check-in is
+accepted days early, recording a negative wait; search gives a near miss ("chest x-ray") a weak match instead of "we don't offer that".
 See `docs/prd.md` §7.
 
-**Week 5 so far:** `POST /assistant/ask`, which refuses medical advice with fixed text, answers navigation questions from the published services with citations, and answers preparation and availability questions from the caller's own appointments and real open slots. `POST /assistant/ask/stream` sends the same answer as server-sent events and records a dropped connection as `INTERRUPTED`.
+**Week 5 so far:** `POST /assistant/ask`, which refuses medical advice with fixed text, answers navigation questions from the published services with citations, and answers preparation and availability questions from the caller's own appointments and real open slots. `POST /assistant/ask/stream` sends the same answer as server-sent events and records a dropped connection as `INTERRUPTED`. Front desk and admin can stream an appointment summary, a follow-up draft and a utilisation report whose numbers all come from the database; the report's commentary is validated, with one repair retry, and every run is saved to `generated_content`.
 
-**Not built yet:** staff generation, AI analytics and metrics, and rate limiting (Week 5).
+**Not built yet:** AI analytics and metrics, rate limiting, and accepting or rejecting a generated draft (Week 5).
