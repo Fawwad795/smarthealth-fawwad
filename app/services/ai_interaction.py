@@ -7,6 +7,9 @@ can store either by mistake.
 
 The correlation ID is read from the request's context here rather than
 passed in, so a caller cannot forget it.
+
+Being the one place every interaction ends, it is also where the AI
+metrics (task 5.11) are counted.
 """
 
 import logging
@@ -16,6 +19,12 @@ from sqlalchemy.orm import Session
 
 from app.ai.llm import LLMUsage
 from app.core.logging import get_correlation_id
+from app.core.metrics import (
+    ai_interaction_duration,
+    ai_interactions,
+    ai_refusals,
+    ai_tokens,
+)
 from app.models import AIInteraction
 from app.models.enums import AssistantIntent, InteractionOutcome
 
@@ -91,4 +100,49 @@ def record_interaction(
         interaction.output_tokens,
         interaction.latency_ms,
     )
+    _count(interaction)
     return interaction
+
+
+def _label(intent: AssistantIntent | None) -> str:
+    """The metric label for an intent: "none" when the safety check gave no
+    label, because a Prometheus label cannot be null."""
+    return intent or "none"
+
+
+def _count(interaction: AIInteraction) -> None:
+    """Add one stored interaction to the Prometheus AI metrics.
+
+    Called after the commit, beside the log line, so the metrics, the logs
+    and the table all count the same interactions.
+    """
+    intent = _label(interaction.intent)
+    ai_interactions.labels(intent, interaction.outcome).inc()
+    # Prometheus measures time in seconds; the row stores milliseconds.
+    ai_interaction_duration.labels(intent).observe(interaction.latency_ms / 1000)
+    ai_tokens.labels("input").inc(interaction.input_tokens)
+    ai_tokens.labels("output").inc(interaction.output_tokens)
+    if interaction.outcome == InteractionOutcome.REFUSED:
+        ai_refusals.labels(intent).inc()
+
+
+def _start_metrics_at_zero() -> None:
+    """Create every AI metric series at zero when the process starts.
+
+    A labelled series otherwise first appears at its first increment,
+    already at 1. Prometheus's increase() and rate() work from the change
+    between two samples, so they would miss that first refusal: found when
+    the runbook's "refusals in the last hour" query said 0 after one.
+    """
+    for intent in [*AssistantIntent, None]:
+        ai_interaction_duration.labels(_label(intent))
+        for outcome in InteractionOutcome:
+            ai_interactions.labels(_label(intent), outcome)
+    # Only these two are ever refused (SafetyCheck.refused).
+    for intent in (AssistantIntent.MEDICAL_ADVICE, None):
+        ai_refusals.labels(_label(intent))
+    for direction in ("input", "output"):
+        ai_tokens.labels(direction)
+
+
+_start_metrics_at_zero()
