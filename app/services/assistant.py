@@ -1,6 +1,8 @@
-"""The patient assistant: POST /assistant/ask (tasks 5.3, 5.4 and 5.5).
+"""The patient assistant: POST /assistant/ask and /assistant/ask/stream
+(tasks 5.3, 5.4, 5.5 and 5.8).
 
-ask() answers one question in this order:
+ask() returns the whole reply at once; ask_stream() streams it. Both
+answer one question in this order:
 
 1. Retrieval finds the offered services closest to the question, above the
    threshold (app/ai/retrieval.py), and loads what the answer prompts show
@@ -39,10 +41,13 @@ included, the whole time.
 import asyncio
 import logging
 import time
+from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import aclosing, asynccontextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
+import anyio
 from fastapi import status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -111,6 +116,13 @@ UPCOMING_STATUSES = (
 APPOINTMENTS_SHOWN = 5
 OPEN_TIMES_SHOWN = 3
 
+# What the patient is told when the model fails: in the 503 before a reply
+# starts, and in the stream's error event after.
+UNAVAILABLE_CODE = "ASSISTANT_UNAVAILABLE"
+UNAVAILABLE_MESSAGE = (
+    "The assistant is unavailable right now. Please try again shortly."
+)
+
 
 @dataclass(frozen=True)
 class SafetyCheck:
@@ -129,6 +141,16 @@ class SafetyCheck:
         nothing shows the question is safe to answer.
         """
         return self.intent is None or self.intent is AssistantIntent.MEDICAL_ADVICE
+
+
+@dataclass(frozen=True)
+class _FixedAnswer:
+    """A reply that needs no model: the refusal or "we don't offer that",
+    already ending with the disclaimer."""
+
+    version: str
+    text: str
+    outcome: InteractionOutcome
 
 
 @dataclass(frozen=True)
@@ -190,15 +212,15 @@ async def ask(
     recording the question as FAILED.
     """
     progress = _Progress(started=time.monotonic())
-    try:
-        text, outcome = await _reply(db, user_id, question, llm, embeddings, progress)
-    except LLMError as err:
-        await _record(db, user_id, progress, InteractionOutcome.FAILED)
-        raise _assistant_unavailable(err) from None
-    except AppError:
-        # Retrieval could not embed the question, and has said so as a 503.
-        await _record(db, user_id, progress, InteractionOutcome.FAILED)
-        raise
+    async with _failures_recorded(db, user_id, progress):
+        prepared = await _prepare(db, user_id, question, llm, embeddings, progress)
+        if isinstance(prepared, _FixedAnswer):
+            text, outcome = prepared.text, prepared.outcome
+        else:
+            result = await llm.complete(prepared.messages)
+            progress.usages.append(result.usage)
+            text = with_disclaimer(result.text.strip())
+            outcome = InteractionOutcome.ANSWERED
     interaction = await _record(db, user_id, progress, outcome, answer_chars=len(text))
     return AssistantAnswer(
         text=text,
@@ -207,6 +229,30 @@ async def ask(
         citations=progress.services,
         interaction_id=interaction.id,
     )
+
+
+async def ask_stream(
+    db: Session,
+    *,
+    user_id: int,
+    question: str,
+    llm: LLMProvider,
+    embeddings: EmbeddingProvider,
+) -> AsyncGenerator[str | AssistantAnswer, None]:
+    """Do everything before the answer, then return the answer as a stream
+    (task 5.8).
+
+    Retrieval and the safety check run here, before the route sends
+    anything, so a failure in them is still an ordinary 503, recorded as
+    FAILED, exactly as in ask(). Only the answer itself is streamed.
+
+    The stream yields the reply's text piece by piece, then one
+    AssistantAnswer saying how it ended.
+    """
+    progress = _Progress(started=time.monotonic())
+    async with _failures_recorded(db, user_id, progress):
+        prepared = await _prepare(db, user_id, question, llm, embeddings, progress)
+    return _stream_answer(db, user_id, prepared, llm, progress)
 
 
 async def check_safety(question: str, llm: LLMProvider) -> SafetyCheck:
@@ -248,16 +294,41 @@ def with_disclaimer(text: str) -> str:
     return f"{text}\n\n{DISCLAIMER}"
 
 
-async def _reply(
+@asynccontextmanager
+async def _failures_recorded(
+    db: Session, user_id: int, progress: _Progress
+) -> AsyncIterator[None]:
+    """Record the question as FAILED if the block raises, then raise the
+    503 the patient sees.
+
+    A model failure becomes ASSISTANT_UNAVAILABLE. Retrieval's failure is
+    already an AppError (SEARCH_UNAVAILABLE) and is raised as it is.
+    """
+    try:
+        yield
+    except LLMError as err:
+        await _record(db, user_id, progress, InteractionOutcome.FAILED)
+        raise _assistant_unavailable(err) from None
+    except AppError:
+        await _record(db, user_id, progress, InteractionOutcome.FAILED)
+        raise
+
+
+async def _prepare(
     db: Session,
     user_id: int,
     question: str,
     llm: LLMProvider,
     embeddings: EmbeddingProvider,
     progress: _Progress,
-) -> tuple[str, InteractionOutcome]:
-    """The reply to `question` and how the question ended, filling in
-    `progress` as each step finishes."""
+) -> BuiltPrompt | _FixedAnswer:
+    """Everything before the answer is written: retrieval, the safety check
+    and, for a booking question, the caller's appointments.
+
+    Returns the prompt for the model to answer, or a fixed reply that needs
+    no model. ask() and ask_stream() differ only in how they get the
+    model's answer. Fills in `progress` as each step finishes.
+    """
     found = await asyncio.to_thread(_find_services, db, question, embeddings)
     progress.services = [service for service, _ in found]
 
@@ -270,7 +341,7 @@ async def _reply(
     if check.refused:
         fixed = refusal(progress.services)
         progress.prompt_version = fixed.version
-        return fixed.text, InteractionOutcome.REFUSED
+        return _FixedAnswer(fixed.version, fixed.text, InteractionOutcome.REFUSED)
 
     if check.intent in BOOKING_INTENTS:
         appointments, open_slots = await asyncio.to_thread(
@@ -292,29 +363,104 @@ async def _reply(
             services,
             clinic=settings.assistant_clinic_name,
         )
-        return await _answer(prompt, llm, progress)
+        progress.prompt_version = prompt.version
+        return prompt
 
     if not found:
         fixed = not_offered()
         progress.prompt_version = fixed.version
-        return fixed.text, InteractionOutcome.NOT_OFFERED
+        return _FixedAnswer(fixed.version, fixed.text, InteractionOutcome.NOT_OFFERED)
 
     prompt = build_navigation_prompt(
         question,
         [context for _, context in found],
         clinic=settings.assistant_clinic_name,
     )
-    return await _answer(prompt, llm, progress)
-
-
-async def _answer(
-    prompt: BuiltPrompt, llm: LLMProvider, progress: _Progress
-) -> tuple[str, InteractionOutcome]:
-    """The model's answer to `prompt`, with the disclaimer after it."""
     progress.prompt_version = prompt.version
-    result = await llm.complete(prompt.messages)
-    progress.usages.append(result.usage)
-    return with_disclaimer(result.text.strip()), InteractionOutcome.ANSWERED
+    return prompt
+
+
+async def _stream_answer(
+    db: Session,
+    user_id: int,
+    prepared: BuiltPrompt | _FixedAnswer,
+    llm: LLMProvider,
+    progress: _Progress,
+) -> AsyncGenerator[str | AssistantAnswer, None]:
+    """Yield the reply as it is written, then record it and yield the
+    AssistantAnswer.
+
+    A fixed reply is sent as one piece: it is not generated, so there is
+    nothing to stream. A model's answer is passed on piece by piece as the
+    provider sends it, then the disclaimer as a last piece.
+
+    How it ends decides the outcome recorded:
+
+    - the reply is sent in full: ANSWERED, or the fixed reply's outcome;
+    - the provider fails part-way: FAILED. The patient already has a 200
+      and part of the answer, so the failure can only be reported in the
+      last item, which the route sends as an error event;
+    - the patient disconnects: INTERRUPTED. Nothing more is yielded, and
+      the row records how many characters were sent before they left.
+
+    `db` was closed by get_db when the route returned, before streaming
+    began: FastAPI 0.115 closes yield dependencies at that point. A closed
+    SQLAlchemy Session can be used again; the write below checks out a
+    fresh connection, and its commit hands it back.
+    """
+    # Each piece is added just before it is yielded. A yield hands the piece
+    # over, and a disconnect then arrives at that same yield, so adding it
+    # afterwards would miss a piece the patient was given.
+    parts: list[str] = []
+    # Until the reply has been sent in full, the patient leaving is how
+    # it ends.
+    outcome = InteractionOutcome.INTERRUPTED
+    try:
+        if isinstance(prepared, _FixedAnswer):
+            # Set first: a refusal is a refusal whether or not the patient
+            # stays to read it, and the refusal counter must count it.
+            outcome = prepared.outcome
+            parts.append(prepared.text)
+            yield prepared.text
+        else:
+            # aclosing() closes the provider's stream, and its connection,
+            # as soon as this generator stops, so a patient who leaves
+            # stops the model writing too.
+            async with aclosing(llm.stream(prepared.messages)) as chunks:
+                async for chunk in chunks:
+                    if chunk.usage is not None:
+                        progress.usages.append(chunk.usage)
+                    if chunk.text:
+                        parts.append(chunk.text)
+                        yield chunk.text
+            ending = f"\n\n{DISCLAIMER}"
+            parts.append(ending)
+            yield ending
+            outcome = InteractionOutcome.ANSWERED
+    except LLMError as err:
+        logger.warning("assistant stream failed: %s", err)
+        outcome = InteractionOutcome.FAILED
+    finally:
+        # Runs however the reply ended. A disconnect reaches this generator
+        # one of two ways: as GeneratorExit at a yield, when SSEResponse
+        # closes it, or as a cancellation while it waits on the provider.
+        # A cancelled request would also cancel this write at its first
+        # await; the shield lets this one write finish.
+        with anyio.CancelScope(shield=True):
+            interaction = await _record(
+                db,
+                user_id,
+                progress,
+                outcome,
+                answer_chars=sum(len(part) for part in parts),
+            )
+    yield AssistantAnswer(
+        text="".join(parts),
+        intent=progress.intent,
+        outcome=outcome,
+        citations=progress.services,
+        interaction_id=interaction.id,
+    )
 
 
 def _find_services(
@@ -541,6 +687,6 @@ def _assistant_unavailable(err: LLMError) -> AppError:
     logger.warning("assistant unavailable: %s", err)
     return AppError(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-        code="ASSISTANT_UNAVAILABLE",
-        message="The assistant is unavailable right now. Please try again shortly.",
+        code=UNAVAILABLE_CODE,
+        message=UNAVAILABLE_MESSAGE,
     )
