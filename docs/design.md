@@ -526,6 +526,11 @@ migrating rows that had already been created without it.
 | `/assistant/ask` is for patients only (task 5.3) | It is the patient assistant: booking conversion is per patient, and task 5.5 scopes appointments to the caller | Front desk cannot ask it on a patient's behalf |
 | A question is refused on `medical_advice` or when the reply names no label (task 5.4) | A reply the code cannot read shows nothing about whether the question is safe | A formatting slip by the model refuses a safe question |
 | `STAFF_GENERATION` is an intent but never a safety label (task 5.7) | The brief's analytics list it beside the other intents, so the column accepts it now rather than through a constraint migration in task 5.9 | One enum mixes the model's labels with a code-only value; `parse_intent()` rejects it |
+| A separate `POST /assistant/ask/stream`, with `/ask` kept as it was (task 5.8) | Each route returns one type. `/ask` still serves Swagger, which cannot show a stream as it arrives, and its tests | Two routes to document; both share `_prepare()`, so their answers cannot drift apart |
+| Retrieval and the safety check run before the stream starts (task 5.8) | Their failures stay ordinary JSON errors, and no text is sent before a refusal is decided | The 200 waits 0.6 to 1.1 s; a failure after it can only be an `error` event |
+| `SSEResponse` closes its generator when the response ends (task 5.8) | Starlette 0.41 never closes it after a disconnect, so an interrupted answer was recorded 106 s late, at the next reload | Every stream must use `SSEResponse` rather than Starlette's `StreamingResponse` |
+| A stream's final write runs in `anyio.CancelScope(shield=True)` (task 5.8) | A disconnect cancels the request, and anyio would cancel the write recording it too | The cancellation waits for one insert |
+| A stream's final write reuses the request's session after `get_db` has closed it (task 5.8) | FastAPI 0.115 closes yield dependencies before the stream starts; SQLAlchemy 2.0 lets a closed session be used again, and the tests' session override keeps working | Depends on that SQLAlchemy behaviour; checked live with `pg_stat_activity` |
 
 **Enum member names and values are kept identical** (`AVAILABLE = "AVAILABLE"`).
 SQLAlchemy persists a Python enum's `.name`, while a `str`-based enum serialises

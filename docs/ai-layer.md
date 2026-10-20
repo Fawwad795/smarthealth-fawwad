@@ -1094,8 +1094,8 @@ read between the two model calls, and that read commits too;
 fails without it.
 
 Checked live: `GET /health` answered in 13 ms while six questions were with
-the model, and the six finished in 0.85 to 1.23 s each, side by side. Booking
-during a long AI call is still to be demonstrated.
+the model, and the six finished in 0.85 to 1.23 s each, side by side. Section
+13 shows a booking made while five streamed answers were running.
 
 ### Transcripts
 
@@ -1206,5 +1206,139 @@ dermatology provider.
 - Times are the clinic's local time, shown without a timezone name.
 - At most five upcoming appointments reach the model; a sixth is invisible to
   the assistant.
-- No streaming yet (task 5.8): the patient waits for the whole answer, 0.25 to
-  2.8 s in the live runs.
+- `/ask` returns the whole answer at once, after 0.25 to 2.8 s in the live
+  runs. `/ask/stream` (section 13) sends it as the model writes it.
+
+## 13. Streaming: `POST /assistant/ask/stream`
+
+The same checks and the same answer as `/ask`, sent as server-sent events while
+the model writes it. `/ask` stays for clients that want one JSON body, and for
+Swagger, which cannot show a stream as it arrives.
+
+```text
+curl -N -X POST localhost:8000/api/v1/assistant/ask/stream \
+  -H "Authorization: Bearer $PATIENT" -H "Content-Type: application/json" \
+  -d '{"question": "Do you offer knee scans?"}'
+```
+
+| Event | Data | Sent |
+|---|---|---|
+| `token` | `{"text": "..."}` | for each piece of the reply as the provider sends it; the disclaimer is the last piece |
+| `citations` | `{"citations": [...]}` | once the reply is complete; the same fields as `/ask` |
+| `error` | `{"error": {"code": "ASSISTANT_UNAVAILABLE", "message": "..."}}` | in place of `citations`, if the model fails part-way |
+| `done` | `{"intent": ..., "outcome": ..., "interaction_id": ...}` | always last |
+
+Joined in order, the `token` texts equal `/ask`'s `answer`. A refusal and "we
+don't offer that" are fixed text, so each arrives as a single `token`. Each
+event's data is one line of JSON, so a newline in the reply cannot end the
+event early.
+
+The start of a live stream, for "Do you offer knee scans?":
+
+```text
+event: token
+data: {"text":"Yes"}
+
+event: token
+data: {"text":","}
+
+event: token
+data: {"text":" Medi"}
+```
+
+and its end:
+
+```text
+event: token
+data: {"text":"\n\nThis is not medical advice — please consult a professional."}
+
+event: citations
+data: {"citations":[{"service_id":6,"name":"Knee MRI Scan","department":"Orthopaedics","similarity":0.598}, ...]}
+
+event: done
+data: {"intent":"NAVIGATION","outcome":"ANSWERED","interaction_id":21}
+```
+
+### What runs before the stream starts
+
+`ask_stream()` runs retrieval and the safety check before the route returns,
+as `ask()` does, so a failure there is still a 503 JSON error, and 401, 403
+and 422 are unchanged. Only the answer's model call streams: each piece from
+`llm.stream()` is passed on as it arrives.
+
+Once the 200 has gone, the status cannot change. A provider failure after that
+arrives as an `error` event, and the row is `FAILED`, with the characters
+already sent.
+
+Timed live from inside the container: the 200 arrived after 1.1 s, the first
+piece 0.24 s later, and the last of 22 pieces 52 ms after that.
+
+### Disconnects
+
+A patient who closes the connection mid-answer is recorded as `INTERRUPTED`,
+with `answer_chars` counting what was sent before they left. Groq reports
+token counts only at the end of a stream, so the row holds the safety check's
+tokens alone. The provider's stream is closed straight away (`aclosing()`), so
+the model stops writing.
+
+A disconnect reaches the stream's generator in one of two ways:
+
+- **Paused at a `yield`**, waiting for the middleware to take the last piece.
+  Starlette 0.41 stops reading the generator but never closes it, so its
+  `finally` runs only when the garbage collector or a server shutdown reaches
+  it. Found live: the first interrupted question was recorded 106 s late, at
+  the next reload. `SSEResponse` in `app/core/sse.py` closes the generator
+  when the response ends, which raises `GeneratorExit` at that `yield`.
+- **Waiting on the provider.** Starlette cancels the request, and anyio then
+  cancels every later `await` in it, the write that records the question
+  included. That write runs inside `anyio.CancelScope(shield=True)`.
+
+Each fix has a test that fails without it:
+`test_a_generator_paused_at_a_yield_is_closed_when_the_client_disconnects`
+(without `aclose()`) and
+`test_an_interrupted_answer_is_recorded_though_the_request_is_cancelled`
+(without the shield, 5 runs out of 5).
+
+Checked live after the fix: two questions dropped after three pieces were
+recorded as `INTERRUPTED` with `latency_ms` 653 and 1,067 (105,834 before the
+fix), holding 26 and 15 characters.
+
+FastAPI 0.115 closes `get_db`'s session when the route returns, before the
+stream starts. SQLAlchemy 2.0 lets a closed session be used again: the final
+write takes a fresh pooled connection, and its commit returns it. After the
+live runs, `pg_stat_activity` showed no connection left inside a transaction.
+
+### Booking during a long AI call
+
+A throwaway script started five streamed answers to a long question ("Tell me
+about every heart test and consultation you offer, what each one involves, and
+how I should prepare for each of them."), booked an appointment while they
+ran, then polled the booking until it was `CONFIRMED`. Live Groq, seeded data,
+one synthetic patient.
+
+| Run | `POST /appointments` | Answers running when it returned | `CONFIRMED` after the 202 |
+|---|---|---|---|
+| No AI load | 202 in 99 ms | none | 0.45 s |
+| Five answers, booking sent at 0.64 s | 202 in 228 ms | 5 of 5, none streaming yet | 4.0 s |
+| Five answers, booking sent at 1.12 s | 202 in 101 ms | 5 of 5, one streaming, one that ran 3.8 s in all | 2.6 s |
+
+The booking never waited on an answer: in both loaded runs it returned before
+any answer finished. Sent while the answers waited on Groq, it took as long as
+with no load. Sent at 0.64 s, while all five questions were being embedded, it
+took 228 ms. Embedding is CPU work and competes for the CPU even from a worker
+thread.
+
+### Known limitations
+
+- The 200 waits for retrieval and the safety check: 0.6 to 1.1 s in the live
+  runs, before the first piece. A refusal has to be decided before any answer
+  starts.
+- `answer_chars` counts the pieces handed to Starlette. A piece handed over
+  just as the connection dropped may never have reached the patient.
+- An interrupted row has no output token count for the partial answer.
+- A question still streaming when the server stops or reloads may be recorded
+  late or not at all. While debugging, one was recorded at the reload and a
+  second was lost.
+- Under AI load, the saga took 2.6 and 4.0 s to confirm, against 0.45 s
+  without it. Its worker runs on the same machine; whether the embedding's CPU
+  use is the cause has not been measured.
