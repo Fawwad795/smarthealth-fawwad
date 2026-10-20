@@ -194,6 +194,17 @@ sum by (endpoint, status) (rate(http_requests_total[5m]))
 `prometheus_client` appends `_total` to counter names, so the metric is
 `appointments_booked_total` even though the code says `appointments_booked`.
 
+The AI metrics come from the API alone (`docs/ai-layer.md` section 15):
+
+```promql
+# AI interactions per second by outcome; a rise in FAILED means the provider is down
+sum by (outcome) (rate(ai_interactions_total[5m]))
+# medical-advice refusals in the last hour
+sum(increase(ai_refusals_total[1h]))
+# p95 time to the last of the answer
+histogram_quantile(0.95, sum by (le) (rate(ai_interaction_duration_seconds_bucket[5m])))
+```
+
 ---
 
 ## 5. A publish failed, or sits in PUBLISHING

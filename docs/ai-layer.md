@@ -1573,3 +1573,61 @@ finished between 0.84 and 2.44 s.
   content row needs that row's id. A failure between them would leave the
   interaction without its content.
 - Staff cannot yet accept or reject a draft (a SHOULD).
+
+## 15. AI metrics and analytics
+
+### Prometheus
+
+The API's `/metrics` page has four AI metrics. `record_interaction()` updates
+them after it commits the `ai_interactions` row, so the metrics, the log line
+and the table count the same interactions.
+
+| Metric | Labels | Counts |
+|---|---|---|
+| `ai_interactions_total` | `intent`, `outcome` | finished interactions; failures are `outcome="FAILED"` |
+| `ai_interaction_duration_seconds` | `intent` | time from the request to the last of the answer |
+| `ai_tokens_total` | `direction`: `input` or `output` | tokens sent to the model and received from it |
+| `ai_refusals_total` | `intent` | questions refused as requests for medical advice |
+
+Every label value comes from an enum, so the number of series is fixed. A
+refusal with no safety label is counted under `intent="none"`, because a label
+cannot be null. The refusal counter repeats
+`ai_interactions_total{outcome="REFUSED"}`; it exists because the brief asks
+for one by name.
+
+Every series is created at zero when the API starts. Without that, a series
+first appears at its first increment, already at 1, and `increase()` has no
+earlier sample to compare with. The runbook's "refusals in the last hour"
+query returned 0 after one refusal; with the zero start it returned 1.05
+(`increase()` estimates across the gap between scrapes, so it is rarely a
+whole number).
+
+The latency buckets run from 0.25 s to 60 s, the provider timeout. Prometheus's
+default buckets stop at 10 s, and a streamed report can take longer.
+
+`http_request_duration_seconds` stops timing a stream when its headers go out,
+so it misses the answer. For one streamed navigation answer it recorded
+0.67 s, the retrieval and safety check; `ai_interaction_duration_seconds`
+recorded 1.31 s, and the client saw 1.33 s.
+
+Queries are in `docs/runbook.md` under Metrics.
+
+**Checked live**, as a seeded patient through `POST /assistant/ask`:
+
+| Question | Outcome | Tokens in / out | Latency |
+|---|---|---|---|
+| "Can you diagnose me? My knee hurts when I walk." | `REFUSED`, `MEDICAL_ADVICE` | 287 / 4 | 307 ms |
+| "Which service should I book for a knee x-ray?" | `ANSWERED`, `NAVIGATION` | 736 / 31 | 1,007 ms |
+
+`/metrics` then showed `ai_tokens_total` at 1023 input and 35 output, the two
+rows' sums, and Prometheus returned `ai_refusals_total{intent="MEDICAL_ADVICE"}`
+as 1 for job `app-api`.
+
+### Known limitations
+
+- The metrics count interactions, not model calls. A provider call that failed
+  and then succeeded on its retry shows nowhere.
+- An interaction whose row fails to commit is not counted: the count comes
+  after the commit.
+- The counts live in the API process and restart from zero with it;
+  `ai_interactions` is the lasting record.
