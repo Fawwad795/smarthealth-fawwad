@@ -226,6 +226,7 @@ and a patient's details never being findable through it.
 | POST | `/api/v1/appointments/{id}/visit/complete` | Complete visit + appointment, idempotent | Front desk, provider, admin |
 | GET | `/api/v1/analytics/summary` | The six operational metrics for a date range, from the aggregates | Front desk, admin |
 | GET | `/api/v1/analytics/appointments` | Appointments booked per day | Front desk, admin |
+| GET | `/api/v1/analytics/ai` | AI usage for a date range: outcomes, intents, latency, tokens, booking conversion | Front desk, admin |
 | GET | `/api/v1/analytics/reconciliation` | Compare the aggregates with the raw tables and report drift | Admin |
 | GET | `/metrics` | Prometheus scrape page (not in Swagger) | Public |
 

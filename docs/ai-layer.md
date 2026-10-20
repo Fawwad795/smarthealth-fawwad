@@ -1623,8 +1623,56 @@ Queries are in `docs/runbook.md` under Metrics.
 rows' sums, and Prometheus returned `ai_refusals_total{intent="MEDICAL_ADVICE"}`
 as 1 for job `app-api`.
 
+### `GET /analytics/ai`
+
+For front desk and admin, with the same `start_date` and `end_date` as
+`/analytics/summary`: UTC days, the last 30 by default, at most 366. It counts
+`ai_interactions` rows on each request, because the p95 latency needs every
+latency in the range and a stored total cannot give it.
+
+| Field | Holds |
+|---|---|
+| `interactions`, `questions_asked`, `staff_generations` | every row; patients' questions; staff generations |
+| `by_outcome` | a count for every outcome, `ANSWERED` and `REFUSED` among them |
+| `by_intent` | a count for every intent, plus `none` for a question the safety check gave no label |
+| `avg_latency_ms`, `p95_latency_ms` | from the request to the last of the answer; the p95 interpolates, as numpy does |
+| `input_tokens`, `output_tokens`, `total_tokens` | summed over the range |
+| `booking_conversion` | `patients_asked`, `patients_booked`, `rate`, `window_hours` |
+
+Booking conversion counts patients. A patient converts when one of their
+appointments was booked (`booked_at`, set when the saga confirms it) within 24
+hours after one of their questions, so five questions and one booking is one
+conversion. A booking made before the question, or 30 hours after it, does not
+count; each case has a test.
+
+Averages and the rate are null when there is nothing to divide, as in
+`/analytics/summary`.
+
+**Checked live** over the four interactions above (two refusals, two answers):
+
+```json
+{"start_date": "2026-09-21", "end_date": "2026-10-20",
+ "interactions": 4, "questions_asked": 4, "staff_generations": 0,
+ "by_outcome": {"ANSWERED": 2, "REFUSED": 2, "NOT_OFFERED": 0, "INTERRUPTED": 0, "FAILED": 0},
+ "by_intent": {"MEDICAL_ADVICE": 2, "PREPARATION": 0, "AVAILABILITY": 0, "NAVIGATION": 2,
+               "OTHER": 0, "STAFF_GENERATION": 0, "none": 0},
+ "avg_latency_ms": 729.0, "p95_latency_ms": 1264.55,
+ "input_tokens": 2048, "output_tokens": 65, "total_tokens": 2113,
+ "booking_conversion": {"window_hours": 24, "patients_asked": 1, "patients_booked": 0, "rate": 0.0}}
+```
+
+The same figures came from SQL over the table, and numpy gave the same p95.
+The patient then booked through `POST /appointments`; once the saga confirmed
+it, `booking_conversion` read 1 of 1, rate 1.0. A patient got 403, no token
+401, and a backwards range 422.
+
 ### Known limitations
 
+- A booking within 24 hours of a question is credited to the assistant whether
+  or not the answer led to it.
+- `GET /analytics/ai` reads the table on every request, with no aggregate or
+  cache in front of it.
+- Interactions are counted by UTC day, as `analytics_daily` is.
 - The metrics count interactions, not model calls. A provider call that failed
   and then succeeded on its retry shows nowhere.
 - An interaction whose row fails to commit is not counted: the count comes

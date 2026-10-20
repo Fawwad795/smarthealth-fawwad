@@ -578,6 +578,9 @@ migrating rows that had already been created without it.
 | Appendix B's `report_scope` is `report_start` and `report_end`, with a check constraint per kind (task 5.10) | Dates that can be queried, and no row can mix an appointment with a range | Two columns where the appendix names one |
 | No model call before a generation stream starts (task 5.9) | There is no patient text, so no safety check to run first | A provider that is down shows as an `error` event after a 200 |
 | Staff generation has its own model dependency, failing as `GENERATION_UNAVAILABLE` (task 5.9) | A staff member's 503 names generation, not the patient assistant | Two near-identical dependencies |
+| AI metrics counted in `record_interaction()`, after its commit, with every series started at zero (task 5.11) | Every AI path ends there, so none is missed, and the metrics count the same interactions as the table. Without the zero start, `increase()` missed the first refusal | Model calls are not counted on their own: a provider failure that a retry recovered shows nowhere |
+| `GET /analytics/ai` counts from `ai_interactions` on each request, not from an aggregate table (task 5.11) | The p95 latency needs every latency in the range, which a stored sum and count cannot give | Slower as the table grows; the range is capped at 366 days and `created_at` is indexed |
+| Booking conversion is per patient: of those who asked a question, how many booked within 24 hours after one (task 5.11) | A patient who asks five questions and books once is one conversion, not five | The 24-hour window is a judgment, and a booking is credited to the assistant whether or not the answer led to it |
 
 **Enum member names and values are kept identical** (`AVAILABLE = "AVAILABLE"`).
 SQLAlchemy persists a Python enum's `.name`, while a `str`-based enum serialises
