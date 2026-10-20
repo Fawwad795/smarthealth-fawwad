@@ -61,7 +61,7 @@ assistant. API only — no UI. No clinical data anywhere.
 | ID | Requirement | Status |
 |---|---|---|
 | NFR-1 | No double-booking under ~50 concurrent attempts | Met |
-| NFR-2 | ≥25 meaningful tests, ≥80% coverage | Met — 548 tests, 98% |
+| NFR-2 | ≥25 meaningful tests, ≥80% coverage | Met — 701 tests, 98% |
 | NFR-3 | Schema built solely by Alembic; every revision round-tripped | Met |
 | NFR-4 | No PHI in logs, events or AI records — ids only | Met for events (`test_outbox.py::test_every_queued_event_carries_ids_only`) and search logs (`test_search_routes.py::test_search_logs_result_ids_but_never_the_query`); other log lines by review; AI records ids, labels and counts only (`test_ai_interaction_model.py`) |
 | NFR-5 | No clinical content in code, prompts, seeds or docs | Met |
@@ -70,6 +70,7 @@ assistant. API only — no UI. No clinical data anywhere.
 | NFR-8 | Crash mid-workflow resumes without duplicate side effects | Demonstrated live (Weeks 2–3) |
 | NFR-9 | One command to run; tests runnable from cold | Met |
 | NFR-10 | The suite passes with no network access; tests embed with `FakeEmbeddings` and answer with `FakeLLM` unless they ask otherwise | Met — enforced by the `no_network`, `fake_embeddings_by_default` and `fake_llm_by_default` fixtures (`tests/network_guard.py`, `test_offline_guards.py`) |
+| NFR-11 | A long AI call never blocks booking | Demonstrated live: `POST /appointments` took 101 ms with five streamed answers running, 99 ms with none (`docs/ai-layer.md` section 13) |
 
 ## 5. Milestones
 
@@ -79,7 +80,7 @@ assistant. API only — no UI. No clinical data anywhere.
 | 2 | Temporal publishing + scheduling saga, slot concurrency, visits | Done |
 | 3 | Celery, Kafka, analytics, observability | Done |
 | 4 | Chunking, embeddings, retrieval | Done |
-| 5 | Assistant, streaming, demo | Not started |
+| 5 | Assistant, streaming, demo | In progress |
 
 ## 6. Traceability
 
@@ -108,7 +109,7 @@ assistant. API only — no UI. No clinical data anywhere.
 | FR-19c | `activities.py::chunk_content` (keeps unchanged chunks), `::embed_chunks` (skips chunks already embedded), `vector_store.py::PgVectorStore.store_service_vectors`, `service_publish.py::start_publish` (re-publish unpublishes the old vectors), `::unpublish_service` | `test_publish_activities.py::test_republishing_unchanged_text_embeds_nothing`, `::test_republishing_changed_text_embeds_it_and_leaves_one_vector`, `::test_embed_chunks_re_embeds_a_vector_made_by_another_model`, `test_vector_store.py::test_store_keeps_the_vector_of_a_current_chunk_it_was_not_given`, `test_service_reindex.py`, `test_service_publish_routes.py::test_publish_a_service_again_returns_202_and_takes_its_vectors_out_of_search`, `::test_unpublish_service_returns_200_inactive_and_takes_it_out_of_search` |
 | FR-19d | `app/api/v1/search.py`, `app/ai/retrieval.py`, `vector_store.py::PgVectorStore.search` | `test_vector_store.py::test_search_never_returns_an_unpublished_vector`, `::test_search_drops_services_below_the_threshold`, `test_search_routes.py` (published filter, threshold message, client threshold ignored, validation, auth, 503); PHI: `test_search_routes.py::test_a_patients_details_cannot_be_found_through_search`, `::test_search_logs_result_ids_but_never_the_query`, `::test_a_failed_search_logs_the_reason_but_never_the_query` |
 | FR-19e | `scripts/eval_retrieval.py` (`make eval`), `RETRIEVAL_MIN_SIMILARITY=0.31` | `test_eval_retrieval.py` (hit rate and sweep scoring; the set expects exactly the seeded catalogue), `test_eval_ranking.py::test_evaluate_ranks_every_published_service_whatever_its_score` |
-| FR-20 | In progress: `app/ai/llm.py`, `app/ai/prompts.py`, `app/models/ai_interaction.py`, `app/services/ai_interaction.py`, `app/schemas/assistant.py`, `app/services/assistant.py`, `app/api/v1/assistant.py` | `test_llm.py`, `test_llm_live.py` (skipped unless `RUN_LIVE_TESTS=1`), `test_prompts.py`, `test_ai_interaction_model.py`, `test_ai_interaction_service.py`, `test_schema_constraints.py::test_an_ai_interaction_outcome_must_be_one_the_enum_knows`, `test_assistant_schemas.py`, `test_assistant_refusal.py`, `test_assistant_routes.py` (answer and citations, refusal, not offered, 422s, roles, 503s, no transaction held during the model call, question never logged, open times, slots recorded once); PHI: `test_assistant_routes.py::test_another_patients_appointment_for_the_same_service_is_never_shown`, `::test_a_preparation_question_is_answered_from_the_callers_own_appointments`, `::test_a_navigation_question_never_loads_appointments` |
+| FR-20 | `app/ai/llm.py`, `app/ai/prompts.py`, `app/models/ai_interaction.py`, `app/services/ai_interaction.py`, `app/schemas/assistant.py`, `app/services/assistant.py`, `app/api/v1/assistant.py`, `app/core/sse.py` | `test_llm.py`, `test_llm_live.py` (skipped unless `RUN_LIVE_TESTS=1`), `test_prompts.py`, `test_ai_interaction_model.py`, `test_ai_interaction_service.py`, `test_schema_constraints.py::test_an_ai_interaction_outcome_must_be_one_the_enum_knows`, `test_assistant_schemas.py`, `test_assistant_refusal.py`, `test_assistant_routes.py` (answer and citations, refusal, not offered, 422s, roles, 503s, no transaction held during the model call, question never logged, open times, slots recorded once); PHI: `test_assistant_routes.py::test_another_patients_appointment_for_the_same_service_is_never_shown`, `::test_a_preparation_question_is_answered_from_the_callers_own_appointments`, `::test_a_navigation_question_never_loads_appointments`; streaming: `test_assistant_routes.py::test_the_stream_sends_the_answer_piece_by_piece_then_citations_then_done`, `::test_a_provider_failure_mid_answer_ends_the_stream_with_an_error_event`, `::test_a_patient_who_leaves_mid_answer_is_recorded_as_interrupted`, `::test_an_interrupted_answer_is_recorded_though_the_request_is_cancelled`, `test_sse.py` |
 
 ## 7. Known gaps
 
