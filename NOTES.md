@@ -1813,3 +1813,66 @@ prompts (5.2) and `ai_interactions` (5.7).
 - `ai_interactions` stores no question or answer text, though the task names
   both. Acceptable?
 - Week 3's two (relay `attempts=1`, uncovered handler branches) still open.
+
+### Day 2 - 2026-10-20
+
+**Goal:** `/assistant/ask` end to end without streaming: input checks (5.6),
+refusal (5.4), the route (5.3), answers from the patient's own appointments
+(5.5).
+
+**Done**
+
+- 5.6: `AskRequest`; empty, over 1000 characters or letterless is a 422
+  before any AI work. Gibberish scores 0.069-0.138, under the threshold.
+- 5.4: `check_safety()`; `medical_advice` or no label gets the fixed refusal
+  and the disclaimer. Safety call capped at 16 tokens.
+- 5.3: `POST /assistant/ask`, patients only, with citations. Every question
+  writes an `ai_interactions` row, failures included.
+- 5.5: `PROMPT_PREP_V2`: own upcoming appointments, plus the services found
+  with their next three open times. Scoped on `patients.user_id` in SQL.
+- `FakeLLM` scripts a reply per call; `tests/indexing.py` shared.
+- Live on Groq: "diagnose me" refused; recommendation, preparation, open
+  times and PHI scoping as expected. Transcripts in `ai-layer.md` 12.
+- 625 -> 686 tests, 98.40% coverage.
+
+**Decisions**
+
+| Decision | Why |
+|---|---|
+| Retrieval before the safety check | Every path needs the services |
+| `commit()` before each model call | An open transaction holds a pooled connection |
+| `other` answered like navigation | The threshold decides; no new prompt |
+| `PROMPT_PREP_V2` for preparation and availability | One prompt for "my appointment" and "a service" |
+| Booking questions skip "we don't offer that" | "What should I bring tomorrow?" names no service |
+| `retrieved_ids` gains `slots` | Availability answers checkable against their slots |
+
+**Cost time**
+
+- Open-transaction test saw `[True, True]`: both model calls held a
+  connection until `commit()` went in.
+- Slot ids recorded once per service: one dermatologist offers four. Found
+  live, not by the tests.
+- A heredoc turned `\n` escapes into newlines in `prompts.py`; back to the
+  Edit tool for code.
+- A comment said `commit()` expires loaded values; `SessionLocal` sets
+  `expire_on_commit=False`.
+
+**Explain out loud**
+
+- The route is `async def`; embedding and the database run in
+  `asyncio.to_thread`. With six questions in flight, `/health` took 13 ms.
+- PHI scoping is the SQL `WHERE`, from the token; the prompt's "the
+  patient's own" enforces nothing.
+
+**Carrying into Day 3**
+
+- 5.8 SSE for `/ask`: tokens, citations, `done`; record an interrupted
+  answer.
+- Demonstrate booking during a long AI call (DoD).
+- Then 5.9 staff generation.
+
+**Open questions**
+
+- Resolved: `ai_interactions` stores no question or answer text (approved on
+  Day 2).
+- Week 3's two (relay `attempts=1`, uncovered handler branches) still open.
