@@ -1876,3 +1876,72 @@ refusal (5.4), the route (5.3), answers from the patient's own appointments
 - Resolved: `ai_interactions` stores no question or answer text (approved on
   Day 2).
 - Week 3's two (relay `attempts=1`, uncovered handler branches) still open.
+
+### Day 3 - 2026-10-20
+
+**Goal:** Stream `/ask` (5.8) and show booking isn't blocked, then staff
+generation (5.9) with `generated_content` (5.10).
+
+**Done**
+
+- 5.8: `POST /assistant/ask/stream`: provider pieces as `token` events, then
+  `citations`, `done`; `error` if the model fails after the 200.
+- `/ask` unchanged; both share `_prepare()`. A dropped connection is recorded
+  `INTERRUPTED`. `SSEResponse` in `app/core/sse.py`.
+- Booking during AI: 99 ms alone, 101 ms with five streamed answers, 228 ms
+  while they embedded, 137 ms with five reports generating.
+- 5.9: summary, follow-up and utilisation report routes, front desk and
+  admin, streamed. The model writes report commentary only: no digits, one
+  repair retry.
+- 5.10: `generated_content` with prompt version, model and its
+  `ai_interactions` row; every run saved, interrupted and failed included.
+- Live on Groq: a summary, two follow-ups and a report valid first time; its
+  figures equal `GET /analytics/summary`.
+- 686 -> 749 tests, 99% coverage.
+
+**Decisions**
+
+| Decision | Why |
+|---|---|
+| Separate `/ask/stream`; `/ask` kept | One response type per route; Swagger can't show a stream |
+| Retrieval and safety check before the stream | Their failures stay JSON errors |
+| `SSEResponse` closes its generator | Starlette 0.41 never does after a disconnect |
+| Final write shielded | A disconnect cancels the request, and the write with it |
+| No digits in report commentary | A number the model never writes can't be wrong |
+| Department figures from `slots` | `analytics_daily` has no department |
+| 5.10 built with 5.9 | "Still persist what was generated" needs the table |
+
+**Cost time**
+
+- An interrupted answer was recorded 106 s late, at a reload. Two throwaway
+  apps showed why: Starlette leaves a generator paused at a `yield` unclosed.
+- `answer_chars` missed the piece in hand: counted after the `yield`, where
+  a disconnect lands. Found by a test.
+- The scope CHECK let a report with a null `report_end` through: a CHECK
+  passes on null. Caught reading the migration.
+- Git Bash `date` per line (~80 ms) made the first stream timing useless;
+  re-timed in Python.
+
+**Explain out loud**
+
+- A disconnect reaches a stream two ways: `GeneratorExit` at a `yield`
+  (`SSEResponse` closes it), or a cancellation while it waits on Groq (the
+  shield).
+- FastAPI 0.115 closes `get_db` before the stream body runs; the final write
+  reuses the closed session, which SQLAlchemy 2.0 allows.
+
+**Carrying into Day 4**
+
+- 5.11 AI analytics (booking conversion, refusal counter) and Prometheus AI
+  metrics.
+- 5.12 Redis rate limiting and answer caching.
+- Regenerate `docs/diagrams/erd-core-domain.svg`; `make reset` before the
+  demo (appointment 9's negative wait is in the dev analytics).
+
+**Open questions**
+
+- Check-in is accepted days early, recording a negative wait (`prd.md` 7).
+  Fix now, or keep as a known gap?
+- Booking took 2.6-4.0 s to confirm under AI load, 0.45 s without; cause not
+  measured.
+- Week 3's two (relay `attempts=1`, uncovered handler branches) still open.
