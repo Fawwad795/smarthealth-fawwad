@@ -46,11 +46,14 @@ def record_interaction(
     prompt_version: str | None = None,
     usages: Iterable[LLMUsage | None] = (),
     answer_chars: int = 0,
+    cache_hit: bool = False,
 ) -> AIInteraction:
     """Write one ai_interactions row, commit it, and log it.
 
     `slot_ids` are the free slots whose times an availability answer was
     shown, so the answer can be checked against them later.
+
+    `cache_hit` marks a reply served from the answer cache (task 5.12).
 
     `usages` holds the token counts of each model call the interaction
     made, the safety check's and the answer's. None, from a stream cut
@@ -78,6 +81,7 @@ def record_interaction(
         output_tokens=sum(usage.output_tokens for usage in reported),
         latency_ms=latency_ms,
         answer_chars=answer_chars,
+        cache_hit=cache_hit,
     )
     db.add(interaction)
     db.commit()
@@ -87,7 +91,8 @@ def record_interaction(
     # correlation ID to the line.
     logger.info(
         "ai interaction %d: outcome=%s intent=%s services=%s appointments=%s "
-        "slots=%s model=%s prompt=%s tokens_in=%d tokens_out=%d latency_ms=%d",
+        "slots=%s model=%s prompt=%s tokens_in=%d tokens_out=%d latency_ms=%d "
+        "cache_hit=%s",
         interaction.id,
         interaction.outcome,
         interaction.intent,
@@ -99,6 +104,7 @@ def record_interaction(
         interaction.input_tokens,
         interaction.output_tokens,
         interaction.latency_ms,
+        interaction.cache_hit,
     )
     _count(interaction)
     return interaction

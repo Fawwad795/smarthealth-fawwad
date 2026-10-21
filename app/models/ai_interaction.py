@@ -18,7 +18,7 @@ log lines.
 
 from typing import Any
 
-from sqlalchemy import BigInteger, ForeignKey, Index, Integer, String, text
+from sqlalchemy import BigInteger, Boolean, ForeignKey, Index, Integer, String, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -106,4 +106,11 @@ class AIInteraction(Base, TimestampMixin):
     # got through, without storing what it said.
     answer_chars: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default="0"
+    )
+
+    # True when the reply came from the answer cache (task 5.12): no model
+    # was called for it, so its tokens are 0. `model` and the prompt
+    # versions are those that wrote the reply when it was first answered.
+    cache_hit: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
     )

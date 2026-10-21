@@ -132,7 +132,7 @@ def test_the_log_line_carries_ids_and_counts_and_nothing_else(
     assert record.getMessage() == (
         f"ai interaction {row.id}: outcome=ANSWERED intent=NAVIGATION "
         "services=[5] appointments=[] slots=[] model=qwen/qwen3.8-27b prompt=PROMPT_NAV_V1 "
-        "tokens_in=10 tokens_out=20 latency_ms=900"
+        "tokens_in=10 tokens_out=20 latency_ms=900 cache_hit=False"
     )
 
 
