@@ -36,7 +36,7 @@ flowchart TD
     Client["curl / Postman"] --> API["FastAPI API"]
 
     API --> PG[("PostgreSQL + pgvector<br/>domain + outbox + analytics + vectors + AI records")]
-    API --> Redis[("Redis<br/>broker / idempotency keys /<br/>AI rate limit + answer cache")]
+    API --> Redis[("Redis<br/>broker, idempotency keys,<br/>AI rate limit, answer cache")]
     API --> TemporalServer["Temporal server"]
     API -- "HTTPS, streamed" --> LLM["Hosted LLM<br/>Groq by default"]
 
@@ -337,10 +337,10 @@ leak `password_hash` and patient data).
 |---|---|
 | `docs/design.md` | Data model / ERD, module breakdown, publish workflow and scheduling saga, the slot concurrency approach, decisions and tradeoffs |
 | `docs/events.md` | Every event: envelope, catalogue, topics, the outbox, and how a replay changes nothing |
-| `docs/runbook.md` | Diagnosing a stuck booking, missing reminders, wrong analytics numbers and a silent consumer |
+| `docs/runbook.md` | Diagnosing a stuck booking, missing reminders, wrong analytics numbers, a silent consumer, a failed publish, and an assistant answering 503 |
 | `docs/kafka-ui-demo.md` | Driving the event path from Kafka UI: a good event, a replay, three faulty events, and a transient outage |
 | `docs/retrieval-demo.md` | A 15-minute Week 4 demo: search, publish and find a service, re-index, withdraw, an embedding failure, the eval |
-| `docs/ai-layer.md` | Embeddings, chunking, the embedding provider, vector storage, re-indexing, `POST /search` with its threshold and filters, the retrieval eval, offline testing, the LLM provider and its timeouts, prompts, `POST /assistant/ask` with its transcripts, its streamed form with the booking-during-AI demonstration, staff generation with its prompts and live output, AI metrics and analytics, rate limiting, and the answer cache |
+| `docs/ai-layer.md` | Embeddings, chunking, the embedding provider, vector storage, re-indexing, `POST /search` with its threshold and filters, the retrieval eval, offline testing, the LLM provider and its timeouts, prompts, `POST /assistant/ask` with its transcripts, its streamed form with the booking-during-AI demonstration, staff generation with its prompts and live output, AI metrics and analytics, rate limiting, the answer cache, what each request costs and how long it takes, and every failure mode |
 | `docs/prd.md` | Requirements, milestones, and the requirement → implementation → test traceability table |
 | `NOTES.md` | Working log and weekly tracking tables |
 

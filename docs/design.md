@@ -248,6 +248,7 @@ erDiagram
         int output_tokens
         int latency_ms
         int answer_chars
+        boolean cache_hit
         timestamptz created_at
         timestamptz updated_at
     }
@@ -269,7 +270,6 @@ erDiagram
 ```
 
 Exported copies of this and every other diagram here live in `docs/diagrams/`.
-`erd-core-domain.svg` predates the two Week 5 tables.
 
 **Conventions applied to every table.** Integer (`bigint`) identity primary keys.
 `created_at` / `updated_at` as `timestamptz`, always UTC-aware — never a naive
@@ -351,6 +351,21 @@ shared `department_id` — a department groups people and offerings, it does not
 certify who performs what. Added Day 3, ahead of Week 2's eligibility check and
 task 1.8's `has_available_slots` search filter, both of which need the real
 answer.
+
+**AIInteraction** — one assistant question or staff generation: who asked, the
+intent and outcome, the ids retrieval found, the model and prompt versions,
+tokens, latency, and whether the cache answered. It is *not* a transcript. It
+holds no question or answer text, because the question is the patient's own
+words; a wrong answer is traced from its ids and versions instead.
+
+**GeneratedContent** — the text one staff generation produced (a summary, a
+follow-up or a report), with its prompt version, model and the
+`ai_interactions` row of that run. Every run is saved, interrupted and failed
+included, so staff can review it. It has no accepted or rejected status yet
+(`docs/prd.md` section 7).
+
+The tables the saga, the event pipeline and search added are described with
+the parts that use them: section 6, `docs/events.md` and `docs/ai-layer.md`.
 
 ---
 
@@ -691,33 +706,56 @@ reconciliation was clean with no `--repair`.
 
 ## 4. Open questions
 
-- Confirm a single clinic is sufficient for Week 1 — assumed yes.
-- Confirm treating slots as the schedule (generated from templates) rather than
-  computing availability on the fly is the expected shape.
+- Resolved: one clinic was enough for all five weeks, and slots generated
+  from templates stayed the shape of availability throughout.
+- Should staff accept or reject a generated draft before it is used? A SHOULD,
+  not built: every draft is saved and reviewable, with no status.
+- Should check-in be refused well before the appointment? It is accepted days
+  early today, which records a negative wait (`docs/prd.md` section 7).
 
 ---
 
 ## 5. Module breakdown
 
 ```
-api/v1/    auth, departments, services (+ public /search, /{id}/slots), providers,
-           provider_schedules (+ generate-slots). Parse input, call a
-           service, shape the response — no business logic, no SQL.
-services/  Business rules: uniqueness checks, role/ownership checks,
-           slot generation. One module per api/v1 router, same name.
+api/v1/    One router per resource: auth, departments, services (+ public
+           /search and /{id}/slots), providers, provider_schedules,
+           appointments, waitlist, visits, analytics, search, assistant,
+           generation. Parse input, call a service, shape the response.
+           No business logic, no SQL.
+services/  Business rules: one module per CRUD router, plus booking and its
+           saga entry point
+           (appointment_scheduling, slot, idempotency, billing, waitlist,
+           visit), publishing (service_publish), the catalogue
+           (service_search, open_slots), analytics, and the AI features
+           (assistant, generation, ai_interaction, ai_analytics,
+           rate_limit, answer_cache).
+ai/        Everything that talks to a model: chunking, embeddings,
+           vector_store, retrieval, the LLM client (llm) and every
+           versioned prompt (prompts).
+temporal/  The publish workflow and scheduling saga, their activities,
+           the connection the API uses to start and query them, and the
+           worker.
+events/    The event envelope and record_event(), which writes to the
+           outbox. Imports no broker client.
+kafka/     Everything that talks to Kafka: relay, producer, consumer,
+           dedupe, handlers.
+celery/    Reminders and the periodic outbox relay task.
 models/    SQLAlchemy ORM. Database shape only.
 schemas/   Pydantic request/response. No ORM object ever leaves an endpoint;
            writable schemas omit any field only a workflow may set (e.g.
            Service.status).
 core/      config, security (bcrypt + JWT), dependencies (get_current_user,
            require_role, ensure_patient_self_or_staff), exceptions +
-           error_handlers (one JSON error shape), pagination.
+           error_handlers (one JSON error shape), pagination, logging with
+           correlation ids, metrics, health checks, Redis, and SSEResponse.
 ```
 
-Every router endpoint is admin/staff-gated with `require_role` except
-`GET /services/search` and `GET /services/{id}/slots`, which are deliberately
-public — a prospective patient browsing before they register is the point of
-task 1.8, and seeing when a service can be booked is the next step.
+Access is checked in each route with `require_role`, plus
+`ensure_patient_self_or_staff` where a patient may read their own rows. Two
+routes are public: `GET /services/search` and `GET /services/{id}/slots`. A
+patient can browse the catalogue and see when a service can be booked before
+registering.
 
 ## 6. Publish workflow and scheduling saga
 
