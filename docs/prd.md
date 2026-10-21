@@ -35,7 +35,7 @@ assistant. API only — no UI. No clinical data anywhere.
 | FR-2 | Patients see only their own data; staff scoping enforced in the endpoint | 1 |
 | FR-3 | Department / service / provider CRUD, admin-gated | 1 |
 | FR-4 | Provider schedule templates generating discrete `Slot` rows, idempotently | 1 |
-| FR-5 | Public search over published, offered services | 1 |
+| FR-5 | Public search over published, offered services, and each one's open slots | 1, 5 |
 | FR-6 | Service publishing as a durable Temporal workflow writing `content_chunks` | 2 |
 | FR-7 | Illegal publish entry actions rejected with 409 | 2 |
 | FR-8 | Slot reservation is a single atomic conditional UPDATE | 2 |
@@ -65,7 +65,7 @@ assistant. API only — no UI. No clinical data anywhere.
 | ID | Requirement | Status |
 |---|---|---|
 | NFR-1 | No double-booking under ~50 concurrent attempts | Met |
-| NFR-2 | ≥25 meaningful tests, ≥80% coverage | Met — 804 tests, 98.65% |
+| NFR-2 | ≥25 meaningful tests, ≥80% coverage | Met — 813 tests, 98.66% |
 | NFR-3 | Schema built solely by Alembic; every revision round-tripped | Met |
 | NFR-4 | No PHI in logs, events or AI records — ids only | Met for events (`test_outbox.py::test_every_queued_event_carries_ids_only`) search logs (`test_search_routes.py::test_search_logs_result_ids_but_never_the_query`) and assistant logs on both routes (`test_assistant_routes.py::test_neither_route_logs_the_question_or_the_answer`); other log lines by review; AI records ids, labels and counts only (`test_ai_interaction_model.py`) |
 | NFR-5 | No clinical content in code, prompts, seeds or docs | Met |
@@ -94,7 +94,7 @@ assistant. API only — no UI. No clinical data anywhere.
 | FR-2 | `app/core/dependencies.py` (`ensure_patient_self_or_staff`) | `test_dependencies.py`, `test_appointment_routes.py::test_get_appointment_state_forbidden_for_a_different_patient` |
 | FR-3 | `app/services/{department,service,provider}.py` | `test_department_routes.py`, `test_service_routes.py`, `test_provider_routes.py` |
 | FR-4 | `app/services/provider_schedule.py` | `test_provider_schedule_service.py`, `test_provider_schedule_routes.py` |
-| FR-5 | `app/services/service_search.py` | `test_service_search_service.py` |
+| FR-5 | `app/services/service_search.py`, `app/services/open_slots.py`, `app/api/v1/services.py::list_open_slots` | `test_service_search_service.py`; open slots: `test_open_slot_routes.py` (only open future slots of providers who offer the service, earliest first; a service not published is a 404 like a missing one; provider filter; paging; a shared slot under each service; search's `has_available_slots` agrees with the list) |
 | FR-6 | `app/temporal/workflows.py::PublishServiceWorkflow`, `activities.py::PublishActivities` | `test_publish_workflow.py`, `test_publish_activities.py` |
 | FR-7 | `app/services/service_publish.py::ensure_can_publish`, `::ensure_can_unpublish`, `::_lock` (row lock, so two requests cannot both pass the check) | `test_service_publish_guard.py`, `test_service_publish_routes.py`, `test_service_publish_concurrency.py` |
 | FR-8 | `app/services/slot.py::reserve_slot_uncommitted` | `test_slot_service.py::test_concurrent_reservations_exactly_one_wins` |
@@ -151,10 +151,6 @@ assistant. API only — no UI. No clinical data anywhere.
 - **`/search` is PHI-safe by construction, not by a per-patient filter**: the
   index holds service text only and the query is never logged. Retrieval
   scoped to the caller's own data starts with the Week 5 assistant.
-- **No route lists a provider's open slots.** Service search filters on
-  `has_available_slots`, and the assistant names open times, but booking needs
-  a slot id, which a client can only get from the database. The README's "Try
-  it" shows the query. Found in the Week 5 Day 5 clean-clone run.
 - **Staff cannot accept or reject a generated draft** (a SHOULD). Every draft
   is saved to `generated_content` with its prompt version and model, so it can
   be reviewed, but it has no status.

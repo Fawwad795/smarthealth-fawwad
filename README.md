@@ -135,9 +135,9 @@ curl -N http://localhost:8000/api/v1/assistant/ask/stream \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"question": "Do you offer knee scans?"}'
 
-# book: no route lists open slots, so take one from the database
-docker compose exec postgres psql -U app -d app -c "SELECT s.id AS slot_id, s.provider_id, ps.service_id, s.start_time FROM slots s JOIN provider_services ps ON ps.provider_id = s.provider_id JOIN services sv ON sv.id = ps.service_id WHERE s.status = 'AVAILABLE' AND s.start_time > now() AND sv.status = 'PUBLISHED' ORDER BY s.start_time LIMIT 5"
-# then book one of the rows it printed
+# book: find a service, list its open slots, then book one of them
+curl "http://localhost:8000/api/v1/services/search?q=cardiology+consultation"
+curl "http://localhost:8000/api/v1/services/4/slots?limit=3"
 curl http://localhost:8000/api/v1/appointments \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -H "Idempotency-Key: try-it-1" \
@@ -221,8 +221,8 @@ docker compose run --rm test pytest --cov=app --cov-report=term-missing
 Run `make help` to list every target (`up`, `migrate`, `seed`, `lint`, `fmt`,
 `psql`, `reset`).
 
-Target is ≥25 meaningful tests and ≥80% coverage; the suite stands at 804 tests
-(plus 2 live ones, skipped) and 98.65% coverage, and takes about two and a half
+Target is ≥25 meaningful tests and ≥80% coverage; the suite stands at 813 tests
+(plus 2 live ones, skipped) and 98.66% coverage, and takes about two and a half
 minutes. It embeds with `FakeEmbeddings` and answers with `FakeLLM`, and a guard
 fixture fails any test that tries to reach the network. The hard cases are
 covered as they land: 50 threads racing one slot, a repeated idempotency key
@@ -250,6 +250,7 @@ and the order of a stream's events.
 | POST/GET/PATCH | `/api/v1/departments`, `/departments/{id}` | Department CRUD | Admin write, any staff read |
 | POST/GET/PATCH | `/api/v1/services`, `/services/{id}` | Service CRUD (always created `DRAFT`) | Admin write, any staff read |
 | GET | `/api/v1/services/search` | Public catalog: published + offered, filterable | Public |
+| GET | `/api/v1/services/{id}/slots` | A published service's open slots, earliest first, with the ids a booking needs; filter by `provider_id`, paginated | Public |
 | POST | `/api/v1/search` | Semantic search: published services ranked by meaning, with similarity scores; empty with a message when nothing clears the threshold | Any signed-in user |
 | POST | `/api/v1/assistant/ask` | Patient assistant: answers from the published services with citations, refuses medical advice, says "we don't offer that" when nothing matches | Patient |
 | POST | `/api/v1/assistant/ask/stream` | The same answer as server-sent events while the model writes it: `token` events, then `citations`, then `done`. Try it with `curl -N` | Patient |
@@ -413,8 +414,10 @@ hand-edit them.
   whose figures match the analytics. Every AI call is recorded with ids,
   tokens and latency, counted in Prometheus and `GET /analytics/ai`, limited
   to ten a minute per user, and repeated questions are answered from a cache.
+  A public route lists each published service's open slots, so a patient can
+  pick a time and book without help.
 
-804 tests at 98.65% coverage. A clean clone was run end to end from this
+813 tests at 98.66% coverage. A clean clone was run end to end from this
 README on Week 5 Day 5.
 
 **Known limitations:** the saga's compensation is covered as two halves plus a
@@ -423,6 +426,5 @@ fails to start because Temporal is unreachable stays `REQUESTED` with nothing to
 retry it; overlapping provider *schedule* windows are not prevented, only the
 overlapping slots they would generate; booking accepts a slot in the past;
 check-in is accepted days early, recording a negative wait; search gives a near
-miss ("chest x-ray") a weak match instead of "we don't offer that"; no route
-lists a provider's open slots; staff cannot yet accept or reject a generated
-draft (a SHOULD). See `docs/prd.md` §7.
+miss ("chest x-ray") a weak match instead of "we don't offer that"; staff
+cannot yet accept or reject a generated draft (a SHOULD). See `docs/prd.md` §7.

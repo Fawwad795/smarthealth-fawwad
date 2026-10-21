@@ -588,6 +588,8 @@ migrating rows that had already been created without it.
 | Only replies holding nothing about the patient are cached, and shared by every patient (task 5.12) | A preparation answer holds the caller's appointments and must never reach another patient | Booking questions always call the model; reply text sits in Redis for the TTL |
 | A hit never extends the TTL, and a store never overwrites (`SET NX`) (task 5.12) | A popular reply is written afresh every hour, never served indefinitely | A popular question costs one model call an hour |
 | `cache_hit` is a boolean column on `ai_interactions` (task 5.12) | A fact about a finished interaction, with no states to move through; the status-enum rule is for rows that change | A migration for one column |
+| `AI_REQUEST_TIMEOUT_SECONDS` lowered from 60 to 20 (task 5.14) | Normal replies arrive within a second, so 20 s cuts only a stall. A provider that stops answering now costs a patient 41 s before the 503, measured, instead of 121 s | A reasoning model that thinks silently for over 20 s would be cut off and retried |
+| `GET /services/{id}/slots` lists a published service's open slots, public (task 5.14) | The clean-clone run found no way to get a slot id except psql. Per service, because a patient finds the service first, and each row then holds every id `POST /appointments` needs. Public, like the catalogue search | Anyone can see when providers are free. No date filter: pages run in start-time order |
 
 **Enum member names and values are kept identical** (`AVAILABLE = "AVAILABLE"`).
 SQLAlchemy persists a Python enum's `.name`, while a `str`-based enum serialises
@@ -698,7 +700,7 @@ reconciliation was clean with no `--repair`.
 ## 5. Module breakdown
 
 ```
-api/v1/    auth, departments, services (+ public /search), providers,
+api/v1/    auth, departments, services (+ public /search, /{id}/slots), providers,
            provider_schedules (+ generate-slots). Parse input, call a
            service, shape the response — no business logic, no SQL.
 services/  Business rules: uniqueness checks, role/ownership checks,
@@ -713,8 +715,9 @@ core/      config, security (bcrypt + JWT), dependencies (get_current_user,
 ```
 
 Every router endpoint is admin/staff-gated with `require_role` except
-`GET /services/search`, which is deliberately public — a prospective patient
-browsing before they register is the point of task 1.8.
+`GET /services/search` and `GET /services/{id}/slots`, which are deliberately
+public — a prospective patient browsing before they register is the point of
+task 1.8, and seeing when a service can be booked is the next step.
 
 ## 6. Publish workflow and scheduling saga
 
