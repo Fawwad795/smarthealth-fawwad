@@ -1,6 +1,6 @@
 # Runbook
 
-Diagnosing the five things most likely to go wrong. Every command here has
+Diagnosing the six things most likely to go wrong. Every command here has
 been run against this stack.
 
 To *cause* these conditions deliberately — for a demo, or to re-verify the
@@ -254,3 +254,48 @@ line as the API key, six hours after the key was added.
 
 `progress` is `null` while `PUBLISHING` when nothing is pending: between two
 steps, or when no worker is running. Check `docker compose ps temporal-worker`.
+
+---
+
+## 6. The assistant or staff generation answers 503
+
+**Symptom:** `/assistant/ask` returns 503 `ASSISTANT_UNAVAILABLE`, or a
+generation route returns 503 `GENERATION_UNAVAILABLE` or ends its stream with
+an `error` event. Booking is unaffected: it never calls the model.
+
+**1. Read why.** The API logs the provider's error, which carries a status
+code and never the patient's words:
+
+```bash
+docker compose logs api --since 1h | grep -E "assistant unavailable|generation unavailable|generation failed|assistant stream failed"
+```
+
+| Log says | Meaning | Do |
+|---|---|---|
+| `LLM provider returned HTTP 429` | Groq's own limit: on the free tier, 8,000 tokens a minute or 1,000 requests a day | Wait for the reset (step 3 shows when), or use a paid key |
+| `HTTP 401` | The key is wrong | Fix `LLM_API_KEY` in `.env`, alone on its line, then `docker compose up -d --force-recreate api` |
+| `LLM_API_KEY is empty` | No key set | The same |
+| `LLM provider unreachable (ReadTimeout)` or `(ConnectError)` | Groq is down, or stalled for 20 s twice | Wait; nothing to fix here |
+
+**2. See how many, and since when:**
+
+```bash
+docker compose exec -T postgres psql -U app -d app -c "SELECT date_trunc('minute', created_at) AS minute, outcome, count(*) FROM ai_interactions WHERE created_at > now() - interval '1 hour' GROUP BY 1, 2 ORDER BY 1 DESC"
+```
+
+A run of `FAILED` rows that starts at one minute and stops at the next is a
+rate limit. `FAILED` that never stops is the key or an outage.
+
+**3. Ask Groq how much of the key's limit is left.** One request with one
+token, printing only the rate-limit headers, never the key:
+
+```bash
+docker compose exec -T api python -c "import httpx; from app.core.config import settings as s; r = httpx.post('https://api.groq.com/openai/v1/chat/completions', headers={'Authorization': 'Bearer ' + s.llm_api_key.get_secret_value()}, json={'model': s.llm_model, 'messages': [{'role': 'user', 'content': 'ok'}], 'max_completion_tokens': 1}, timeout=20); print(r.status_code, {k: v for k, v in r.headers.items() if k.startswith('x-ratelimit')})"
+```
+
+`x-ratelimit-remaining-tokens` near 0 with `x-ratelimit-reset-tokens` a few
+seconds away is the minute's limit; `remaining-requests` near 0 is the day's.
+
+A 429 with code `RATE_LIMITED` comes from SmartHealth's own limit of ten AI
+requests a minute per user, not from Groq. Its `Retry-After` header says when
+to try again.
