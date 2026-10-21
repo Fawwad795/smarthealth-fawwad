@@ -713,6 +713,11 @@ name is stored beside each answer. A version is frozen once committed, so a
 change means a V2 beside it. `tests/unit/test_prompts.py` fails if a text
 changes without a new version, or if this section stops quoting it exactly.
 
+A V2 must keep the safety rules, and the same file checks the prompts each
+builder sends today: the answer prompts forbid medical advice and say how to
+refuse, the staff prompts keep to logistics, and every tagged block is named in
+the rule that says it is data.
+
 The code fills `{clinic}` and `{services}`; the patient's words never go
 through that formatting.
 
@@ -866,6 +871,9 @@ This is not medical advice — please consult a professional.
 - Staff-written descriptions and preparation notes get the same treatment.
 - `{clinic}` typed in a question stays as typed: the patient's words never
   reach `str.format`.
+- A route test sends a question that closes its tag, opens an
+  `<appointments>` block and asks for every patient's bookings. The prompt
+  still holds one appointments block, the caller's, which is empty.
 
 ### Checked live
 
@@ -1006,6 +1014,7 @@ model call. Spaces are stripped first.
 | Missing, empty or only spaces | 422 |
 | Over `AI_MAX_QUESTION_CHARS` (1000), the limit `POST /search` uses | 422 |
 | No letter, in any alphabet: `"!!!!"`, `"12345"` | 422, "the question must contain at least one letter" |
+| Broken JSON, or a question that is a number, null or a list | 422 |
 | One word: `"MRI"` | accepted |
 | Gibberish shaped like words: `"asdkjh qwe zzz"` | accepted |
 
