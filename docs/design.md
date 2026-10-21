@@ -584,6 +584,10 @@ migrating rows that had already been created without it.
 | The AI rate limit is a Redis counter per user per clock minute, one count across the five AI routes (task 5.12) | One `INCR` per request, as the brief suggests. One count, because the limit protects one model budget | A fixed window: up to twice the limit across a minute boundary |
 | With Redis down, AI requests go ahead, logged and counted (task 5.12) | The limit guards a budget; refusing all AI requests would take the assistant down with Redis | No limit during the outage, and each request waits 3 to 4 s for the failed lookup |
 | The limit is a dependency declared after the role check (task 5.12) | FastAPI resolves dependencies in order, so a 403 never uses up a request | It runs before the body is checked, so a 422 does |
+| The answer cache key hashes everything the reply depends on, the services found included (task 5.12) | Unpublishing or editing a service, or a new prompt version, needs no invalidation code: the key changes and the old entry is never found | Each lookup still embeds the question; a question whose retrieval differs misses |
+| Only replies holding nothing about the patient are cached, and shared by every patient (task 5.12) | A preparation answer holds the caller's appointments and must never reach another patient | Booking questions always call the model; reply text sits in Redis for the TTL |
+| A hit never extends the TTL, and a store never overwrites (`SET NX`) (task 5.12) | A popular reply is written afresh every hour, never served indefinitely | A popular question costs one model call an hour |
+| `cache_hit` is a boolean column on `ai_interactions` (task 5.12) | A fact about a finished interaction, with no states to move through; the status-enum rule is for rows that change | A migration for one column |
 
 **Enum member names and values are kept identical** (`AVAILABLE = "AVAILABLE"`).
 SQLAlchemy persists a Python enum's `.name`, while a `str`-based enum serialises

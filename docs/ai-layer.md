@@ -923,6 +923,7 @@ rows. A row holds ids, labels and numbers, never text:
 | `input_tokens`, `output_tokens` | summed over the interaction's model calls |
 | `latency_ms` | request in to the last of the answer out |
 | `answer_chars` | how far an `INTERRUPTED` answer got |
+| `cache_hit` | the reply came from the answer cache (section 17): no model call, no tokens; `model` and the versions are those that wrote it |
 
 `outcome` replaces the brief's refused flag: an interaction ends one way, and
 two flags could say "refused" and "failed" at once. The brief's refused is
@@ -951,7 +952,7 @@ model, run at temperature 0. `correlation_id` finds the request's log lines,
 this one among them:
 
 ```text
-ai interaction 12: outcome=REFUSED intent=MEDICAL_ADVICE services=[3, 7] appointments=[] slots=[] model=qwen/qwen3.8-27b prompt=REFUSAL_V1 tokens_in=180 tokens_out=2 latency_ms=412
+ai interaction 12: outcome=REFUSED intent=MEDICAL_ADVICE services=[3, 7] appointments=[] slots=[] model=qwen/qwen3.8-27b prompt=REFUSAL_V1 tokens_in=180 tokens_out=2 latency_ms=412 cache_hit=False
 ```
 
 ### Known limitations
@@ -1633,6 +1634,7 @@ latency in the range and a stored total cannot give it.
 | Field | Holds |
 |---|---|
 | `interactions`, `questions_asked`, `staff_generations` | every row; patients' questions; staff generations |
+| `cache_hits` | questions answered from the answer cache (section 17) |
 | `by_outcome` | a count for every outcome, `ANSWERED` and `REFUSED` among them |
 | `by_intent` | a count for every intent, plus `none` for a question the safety check gave no label |
 | `avg_latency_ms`, `p95_latency_ms` | from the request to the last of the answer; the p95 interpolates, as numpy does |
@@ -1742,3 +1744,71 @@ not cover a name lookup.
   requests that follow; it is not built.
 - `POST /search` has no limit. It calls no language model, and by default its
   embedding model runs inside the API.
+
+## 17. Answer caching
+
+A question asked again, about the same services, gets the reply already
+written, with no model call. Live, a hit took 26 ms against about a second for
+the first answer, and used no tokens.
+
+Only replies that hold nothing about the patient are cached: navigation and
+other answers, refusals, and "we don't offer that". A preparation or
+availability answer is built from the caller's own appointments and the slots
+free right now, so it is never stored. Neither is a reply cut short by a
+failure or a disconnect. Staff generation is not cached: each run is a new
+draft saved to `generated_content`, and a report's figures move with every
+booking.
+
+The cache is shared by every patient, so its key covers everything the reply
+depends on (`app/services/answer_cache.py`):
+
+| | |
+|---|---|
+| Key | `ai-answer:` and the SHA-256 of the question (normalised); each service found, with the description and preparation notes the prompt shows; the prompt versions; the model; and the clinic name |
+| TTL | `AI_ANSWER_CACHE_TTL_SECONDS`, an hour. A hit does not extend it, and a store never overwrites an entry, so a cached reply is at most an hour old |
+| Invalidated by | a change to anything in the key, which gives a new key. An unpublished service drops out of retrieval's results, an edited one shows the prompt new text, and a new prompt version or model changes the key. The old entry is never found again and expires |
+
+Normalising lowercases the question, collapses its spaces and drops a closing
+`?`, `!` or `.`. The key is a hash, so it holds none of the question's words;
+the entry holds the reply's text.
+
+The cache is checked after retrieval, since the services are part of the key,
+and before the safety check. A hit skips the safety check: the reply passed it
+when it was first written. The hit writes its own `ai_interactions` row with
+`cache_hit` true, no tokens, and the intent, prompt versions and model that
+wrote the reply. The analytics count it as a question, `GET /analytics/ai`
+reports `cache_hits`, and a cached refusal still moves `ai_refusals_total`.
+
+`/ask/stream` sends a cached reply as one `token` event, as it does a fixed
+reply: nothing is being generated.
+
+When Redis is down, the lookup is logged, counted in
+`ai_answer_cache_total{result="error"}` and treated as a miss, and no store is
+tried.
+
+### Checked live
+
+Two seeded patients, on Groq:
+
+| Request | Result |
+|---|---|
+| Patient 6: "Which service should I book for a knee x-ray?" | miss; answered from services 5, 6, 8 and 7 in 1,095 ms |
+| Patient 7: "which service  should I book for a KNEE X-RAY" | miss: retrieval found 5, 6 and 8 |
+| Patient 7: "which SERVICE should i book for a   knee x-ray?" | hit: 26 ms, no tokens, services 5, 6, 8 and 7 |
+| Patient 7, the first question on `/ask/stream` | hit: one `token` event, then `citations` and `done` |
+
+The second request missed because, without its `?`, the question's embedding
+left service 7 below the threshold. Its answer named three services, so the
+cached four-service reply would have been wrong for it. Case and spacing did
+not change what retrieval found; the closing mark did.
+
+### Known limitations
+
+- Normalising helps only when retrieval finds the same services. A dropped `?`
+  changed them live, so the question missed.
+- The reply's text sits in Redis for up to an hour and can repeat words from
+  the question.
+- A hit repeats the safety check's first decision on that question for up to
+  an hour.
+- While Redis is stopped, the lookup adds the same 3 to 4 s wait as the rate
+  limit (section 16).

@@ -208,6 +208,13 @@ sum(increase(ai_rate_limited_total[1h]))
 sum(increase(ai_rate_limit_skipped_total[1h]))
 ```
 
+The answer cache's hits, misses and Redis errors over the last hour
+(`docs/ai-layer.md` section 17):
+
+```promql
+sum by (result) (increase(ai_answer_cache_total[1h]))
+```
+
 A rise in `ai_rate_limit_skipped_total` means the API cannot reach Redis, and
 every AI request is waiting 3 to 4 s for it (`docs/ai-layer.md` section 16).
 
