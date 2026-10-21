@@ -65,14 +65,14 @@ assistant. API only — no UI. No clinical data anywhere.
 | ID | Requirement | Status |
 |---|---|---|
 | NFR-1 | No double-booking under ~50 concurrent attempts | Met |
-| NFR-2 | ≥25 meaningful tests, ≥80% coverage | Met — 749 tests, 99% |
+| NFR-2 | ≥25 meaningful tests, ≥80% coverage | Met — 804 tests, 98.65% |
 | NFR-3 | Schema built solely by Alembic; every revision round-tripped | Met |
 | NFR-4 | No PHI in logs, events or AI records — ids only | Met for events (`test_outbox.py::test_every_queued_event_carries_ids_only`) search logs (`test_search_routes.py::test_search_logs_result_ids_but_never_the_query`) and assistant logs on both routes (`test_assistant_routes.py::test_neither_route_logs_the_question_or_the_answer`); other log lines by review; AI records ids, labels and counts only (`test_ai_interaction_model.py`) |
 | NFR-5 | No clinical content in code, prompts, seeds or docs | Met |
 | NFR-6 | Config from env vars; `.env` never committed | Met |
 | NFR-7 | Workflows deterministic; Activities idempotent | Met |
 | NFR-8 | Crash mid-workflow resumes without duplicate side effects | Demonstrated live (Weeks 2–3) |
-| NFR-9 | One command to run; tests runnable from cold | Met |
+| NFR-9 | One command to run; tests runnable from cold | Met — on Week 5 Day 5 a fresh clone, on fresh volumes, followed only the README: build 403 s, migrations 12 s, seed 40 s, then search, the assistant, a booking to `CONFIRMED`, analytics, a streamed report and the suite (804 passed) all worked |
 | NFR-10 | The suite passes with no network access; tests embed with `FakeEmbeddings` and answer with `FakeLLM` unless they ask otherwise | Met — enforced by the `no_network`, `fake_embeddings_by_default` and `fake_llm_by_default` fixtures (`tests/network_guard.py`, `test_offline_guards.py`) |
 | NFR-11 | A long AI call never blocks booking | Demonstrated live: `POST /appointments` took 101 ms with five streamed answers running, 137 ms with five reports generating, and 99 ms with neither (`docs/ai-layer.md` sections 13 and 14) |
 
@@ -151,3 +151,19 @@ assistant. API only — no UI. No clinical data anywhere.
 - **`/search` is PHI-safe by construction, not by a per-patient filter**: the
   index holds service text only and the query is never logged. Retrieval
   scoped to the caller's own data starts with the Week 5 assistant.
+- **No route lists a provider's open slots.** Service search filters on
+  `has_available_slots`, and the assistant names open times, but booking needs
+  a slot id, which a client can only get from the database. The README's "Try
+  it" shows the query. Found in the Week 5 Day 5 clean-clone run.
+- **Staff cannot accept or reject a generated draft** (a SHOULD). Every draft
+  is saved to `generated_content` with its prompt version and model, so it can
+  be reviewed, but it has no status.
+- **Booking slows while AI requests run.** On a clean stack, `POST
+  /appointments` took 47 to 94 ms idle and 203 to 656 ms with eight AI streams
+  running; reaching `CONFIRMED` took 0.52 to 0.75 s and 0.67 to 1.56 s.
+  Reports, which embed nothing, slowed it as much as questions did, so the
+  cost is the API serving concurrent requests, not embedding alone. Day 3's
+  2.6 to 4.0 s did not come back.
+- **While Redis is stopped, every AI request waits 3 to 4 s** for Docker's DNS
+  to fail the name `redis`, which the 2 s Redis timeout does not cover. The
+  request is still answered. `docs/ai-layer.md` section 16.

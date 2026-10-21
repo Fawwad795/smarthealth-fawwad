@@ -681,10 +681,17 @@ outage, and the patient is waiting. A stream is retried only before its first
 piece reaches the caller, since a later retry would send the start of the
 answer twice.
 
-`AI_REQUEST_TIMEOUT_SECONDS` (60) limits each step, connecting or waiting for
+`AI_REQUEST_TIMEOUT_SECONDS` (20) limits each step, connecting or waiting for
 more of the reply, so a long reply that keeps arriving is never cut off. When
 the caller stops reading, as `/assistant/ask` will on a disconnect, the
 connection to the provider closes at once.
+
+It was 60 until the Day 5 hardening pass. On a clean stack, ten streamed
+answers and summaries showed their first piece in 0.23 to 0.80 s and finished
+within a second. One earlier summary stalled at Groq for 31.6 s. At 20 s such
+a stall is cut and retried, and a provider that stops answering costs the
+patient about 41 s before the 503 (two 20 s waits and the one-second pause),
+instead of 121 s. Booking never waits on any of this.
 
 Error messages carry the status code, never the messages sent or the response
 body. The space check on the key comes from Day 1: with `LLM_API_KEY=` followed
@@ -1747,7 +1754,9 @@ not cover a name lookup.
 - A fixed window: the count restarts each minute, so a user can make up to 20
   requests across a minute boundary. A sliding window would close the gap, at
   the cost of storing the time of every request.
-- A request with an empty or over-long question uses up one of the ten.
+- A request with an empty or over-long question uses up one of the ten. Kept
+  on purpose: a client sending bad input in a loop is slowed down like any
+  other.
 - While Redis is stopped, every AI request waits 3 to 4 s for the failed
   lookup. Skipping Redis for a few seconds after one failure would spare the
   requests that follow; it is not built.
