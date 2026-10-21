@@ -203,7 +203,13 @@ sum by (outcome) (rate(ai_interactions_total[5m]))
 sum(increase(ai_refusals_total[1h]))
 # p95 time to the last of the answer
 histogram_quantile(0.95, sum by (le) (rate(ai_interaction_duration_seconds_bucket[5m])))
+# AI requests refused by the rate limit, and let through unchecked because Redis was down
+sum(increase(ai_rate_limited_total[1h]))
+sum(increase(ai_rate_limit_skipped_total[1h]))
 ```
+
+A rise in `ai_rate_limit_skipped_total` means the API cannot reach Redis, and
+every AI request is waiting 3 to 4 s for it (`docs/ai-layer.md` section 16).
 
 ---
 

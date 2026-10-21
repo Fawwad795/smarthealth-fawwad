@@ -1679,3 +1679,66 @@ it, `booking_conversion` read 1 of 1, rate 1.0. A patient got 403, no token
   after the commit.
 - The counts live in the API process and restart from zero with it;
   `ai_interactions` is the lasting record.
+
+## 16. Rate limiting
+
+Each user may make 10 AI requests a minute (`AI_RATE_LIMIT_PER_MINUTE`),
+counted across the five AI routes together: `/assistant/ask`,
+`/assistant/ask/stream` and the three staff generation routes. One count covers
+them all, since the limit protects one model budget. The eleventh request gets a
+429:
+
+```http
+HTTP/1.1 429 Too Many Requests
+retry-after: 22
+
+{"error":{"code":"RATE_LIMITED","message":"Too many AI requests. Try again in 22 seconds."}}
+```
+
+The count is a Redis counter, kept by `app/services/rate_limit.py`:
+
+| | |
+|---|---|
+| Key | `ai-rate:{user_id}:{minute}`, the minute being the Unix time divided by 60 |
+| TTL | 60 seconds, which clears the key once its minute is over |
+| Invalidated by | nothing; a new minute is a new key |
+
+`INCR` adds one and returns the new count in one step, so two requests at the
+same moment never read the same count. A refused request does no AI work and
+writes no `ai_interactions` row; `ai_rate_limited_total` counts it.
+
+The limit is a dependency declared after each route's role check. FastAPI
+resolves dependencies in the order they are declared, so a 403 is never
+counted. It also runs before FastAPI checks the request body, so a 422 is.
+
+### When Redis is down
+
+The request goes ahead. The limit protects a budget, and a Redis outage should
+not take the assistant down with it. Each skipped check logs a warning with the
+user id and the error's type, never its message, which can hold the Redis URL,
+and adds one to `ai_rate_limit_skipped_total`.
+
+### Checked live
+
+With the limit at 10, the front desk's three calls to `/assistant/ask` got 403
+and left no key. A patient's ten empty questions got 422 and the eleventh got
+the 429 above. Redis then held `ai-rate:6:29875317` at 11, with 59 s left to
+live.
+
+With the Redis container stopped and that patient still over the limit, an
+empty question got its 422 and a real question was answered, where both would
+have been 429. Each request first waited 3 to 4 s: Docker's DNS took 3.56 s to
+report that the name `redis` no longer existed, and the 2 s Redis timeout does
+not cover a name lookup.
+
+### Known limitations
+
+- A fixed window: the count restarts each minute, so a user can make up to 20
+  requests across a minute boundary. A sliding window would close the gap, at
+  the cost of storing the time of every request.
+- A request with an empty or over-long question uses up one of the ten.
+- While Redis is stopped, every AI request waits 3 to 4 s for the failed
+  lookup. Skipping Redis for a few seconds after one failure would spare the
+  requests that follow; it is not built.
+- `POST /search` has no limit. It calls no language model, and by default its
+  embedding model runs inside the API.
