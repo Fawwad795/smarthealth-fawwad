@@ -11,7 +11,7 @@ assistant. API only — no UI. No clinical data anywhere.
 | # | Problem | Approach |
 |---|---|---|
 | 1 | Scheduling is manual, and two patients can hold one slot | Atomic conditional slot UPDATE + a Temporal saga |
-| 2 | Patients can't find the right service | Published-catalogue search (Week 1); semantic search over published services (Week 4) |
+| 2 | Patients can't find the right service | Published-catalogue search (Week 1); semantic search over published services (Week 4); an assistant built on it, which refuses medical advice (Week 5) |
 | 3 | Dashboards disagree with the tables | Aggregates maintained by an event consumer + a reconciliation script (Week 3) |
 | 4 | Peak-window timeouts | Reservation, billing and reminders moved out of the request (Weeks 2–3) |
 | 5 | Background failures are invisible | Correlation IDs, `/metrics`, dead-letter table (Week 3) |
@@ -26,6 +26,10 @@ assistant. API only — no UI. No clinical data anywhere.
 - Front desk checks a patient in; the provider starts and completes the visit.
 - An admin publishes a service; it becomes searchable, and re-publishing replaces its chunks cleanly.
 - A patient describes a service in their own words and gets the nearest published services, or "we don't offer that".
+- A patient asks the assistant to diagnose them; it refuses, says where to go, and adds the disclaimer.
+- A patient asks how to prepare for their appointment and is answered from their own booking, never another patient's.
+- A patient picks one of a service's open slots and books it.
+- Front desk streams a utilisation report whose figures match the analytics endpoint.
 
 ## 3. Functional requirements
 
@@ -67,14 +71,18 @@ assistant. API only — no UI. No clinical data anywhere.
 | NFR-1 | No double-booking under ~50 concurrent attempts | Met |
 | NFR-2 | ≥25 meaningful tests, ≥80% coverage | Met — 813 tests, 98.66% |
 | NFR-3 | Schema built solely by Alembic; every revision round-tripped | Met |
-| NFR-4 | No PHI in logs, events or AI records — ids only | Met for events (`test_outbox.py::test_every_queued_event_carries_ids_only`) search logs (`test_search_routes.py::test_search_logs_result_ids_but_never_the_query`) and assistant logs on both routes (`test_assistant_routes.py::test_neither_route_logs_the_question_or_the_answer`); other log lines by review; AI records ids, labels and counts only (`test_ai_interaction_model.py`) |
+| NFR-4 | No PHI in logs, events or AI records — ids only | Met for events (`test_outbox.py::test_every_queued_event_carries_ids_only`), search logs (`test_search_routes.py::test_search_logs_result_ids_but_never_the_query`) and assistant logs on both routes (`test_assistant_routes.py::test_neither_route_logs_the_question_or_the_answer`); other log lines by review; AI records ids, labels and counts only (`test_ai_interaction_model.py`) |
 | NFR-5 | No clinical content in code, prompts, seeds or docs | Met |
 | NFR-6 | Config from env vars; `.env` never committed | Met |
 | NFR-7 | Workflows deterministic; Activities idempotent | Met |
 | NFR-8 | Crash mid-workflow resumes without duplicate side effects | Demonstrated live (Weeks 2–3) |
 | NFR-9 | One command to run; tests runnable from cold | Met — on Week 5 Day 5 a fresh clone, on fresh volumes, followed only the README: build 403 s, migrations 12 s, seed 40 s, then search, the assistant, a booking to `CONFIRMED`, analytics, a streamed report and the suite (804 passed) all worked |
 | NFR-10 | The suite passes with no network access; tests embed with `FakeEmbeddings` and answer with `FakeLLM` unless they ask otherwise | Met — enforced by the `no_network`, `fake_embeddings_by_default` and `fake_llm_by_default` fixtures (`tests/network_guard.py`, `test_offline_guards.py`) |
-| NFR-11 | A long AI call never blocks booking | Demonstrated live: `POST /appointments` took 101 ms with five streamed answers running, 137 ms with five reports generating, and 99 ms with neither (`docs/ai-layer.md` sections 13 and 14) |
+| NFR-11 | A long AI call never blocks booking | Demonstrated live: `POST /appointments` took 101 ms with five streamed answers running, 137 ms with five reports generating, and 99 ms with neither (`docs/ai-layer.md` sections 13 and 14). On Day 5's clean stack, 203 to 656 ms with eight AI streams running against 47 to 94 ms idle: slower, never blocked (section 7) |
+| NFR-12 | AI latency is measured, and a stalled provider cannot hold a patient indefinitely | Met — answers p95 616 to 636 ms, cache hits 36 ms; a provider that stops answering ends in a 503 after 41 s (`docs/ai-layer.md` sections 9 and 18) |
+| NFR-13 | AI cost is known per request and bounded | Met — tokens measured per request type; ten AI requests a minute per user; a cache hit costs nothing; Groq's free tier allows 8,000 tokens a minute and 1,000 requests a day (`docs/ai-layer.md` section 18) |
+| NFR-14 | Groundedness: answers recommend only published services retrieval found, with citations; report figures come from the database | Met — `test_assistant_routes.py::test_the_answer_prompt_holds_only_the_services_found`, `::test_an_unpublished_service_is_never_shown_to_the_model_or_cited`, `test_generation_routes.py::test_the_report_figures_match_the_analytics_endpoint_and_count_each_departments_slots` |
+| NFR-15 | Safety: a question labelled medical advice gets fixed refusal text; every assistant reply ends with the disclaimer | Met — `test_assistant_routes.py::test_a_diagnose_me_question_is_refused_and_routed_with_the_disclaimer`; the answer prompts keep the rule as a second guard (`test_prompts.py::test_every_answer_prompt_forbids_medical_advice_and_says_how_to_refuse`) |
 
 ## 5. Milestones
 
@@ -84,7 +92,7 @@ assistant. API only — no UI. No clinical data anywhere.
 | 2 | Temporal publishing + scheduling saga, slot concurrency, visits | Done |
 | 3 | Celery, Kafka, analytics, observability | Done |
 | 4 | Chunking, embeddings, retrieval | Done |
-| 5 | Assistant, streaming, demo | In progress |
+| 5 | Assistant, streaming, demo | Built; the final demo is next |
 
 ## 6. Traceability
 
