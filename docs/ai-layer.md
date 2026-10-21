@@ -1,7 +1,9 @@
 # AI layer
 
 How SmartHealth's Part B features find services and answer patients, and why
-they are built this way. Sections are added as Weeks 4 and 5 land.
+they are built this way. Sections 1 to 8 cover search (Week 4); 9 to 17 the
+assistant, staff generation and their guards (Week 5); 18 and 19 what it all
+costs and how it fails.
 
 ## 1. Embeddings and vector similarity
 
@@ -1830,3 +1832,72 @@ not change what retrieval found; the closing mark did.
   an hour.
 - While Redis is stopped, the lookup adds the same 3 to 4 s wait as the rate
   limit (section 16).
+
+## 18. Cost and latency
+
+Measured live on Week 5 Day 5 against `qwen/qwen3.8-27b` on Groq and the
+seeded catalogue: 32 assistant questions and 8 staff generations, all
+synthetic. Latency is the row's `latency_ms`, from the request arriving to the
+reply being recorded. A question's tokens cover both its model calls, the
+safety check and the answer; a refused or not-offered question makes only the
+first.
+
+| Request | Count | Tokens | Latency |
+|---|---|---|---|
+| Navigation answer (`PROMPT_NAV_V1`) | 10 | 726 | p50 550 ms, p95 616 ms |
+| Preparation or availability answer (`PROMPT_PREP_V2`) | 7 | 990 | p50 572 ms, p95 636 ms |
+| Refused | 3 | 290 | 266 to 526 ms |
+| Not offered (`NO_MATCH_V1`) | 3 | 284 | 224 to 288 ms |
+| Answered from the cache | 8 | 0 | p50 16 ms, p95 36 ms |
+| Utilisation report | 4 | 701 | 482 to 559 ms |
+| Appointment summary | 2 | 334 | 292 and 318 ms |
+| Follow-up draft | 2 | 352 | 302 and 495 ms |
+
+A not-offered reply is retrieval plus the safety check: 234 ms at the median.
+An answer adds the second model call, for 550 ms. Search alone embeds and
+queries but calls no model: 32 ms at the median and 47 ms at p95 over 20
+queries. Streamed answers showed their first piece 438 to 468 ms after the
+request; staff generation, which has no safety check, 203 to 422 ms.
+
+**Cost.** The project runs on Groq's free tier, so it costs nothing. On a
+paid tier a request costs its tokens above times the provider's price: a
+preparation answer about three and a half times a refusal, and a cache hit
+nothing. Embedding has no per-call cost, because the model runs inside the
+API.
+
+**The free tier is the real limit.** Groq's response headers give this key
+8,000 tokens a minute and 1,000 requests a day. That is about 11 navigation
+answers a minute for the whole clinic, and about 500 answered questions a day,
+since each makes two requests. Past the minute's tokens Groq answers 429: ten
+questions in under seven seconds used them up, and the eleventh got a 503 after
+its one retry (section 19). The app's limit of ten AI requests a minute per
+user keeps one user from spending the budget, but not the clinic as a whole.
+A paid tier lifts both limits with no code change.
+
+**Outliers.** One summary on the Day 5 clean-clone run took 31.6 s, stalled at
+Groq. The 20 s step timeout now cuts a stall like that and retries (section 9).
+None of this reaches booking: `docs/prd.md` section 7 has booking times
+measured while AI requests ran.
+
+## 19. Failure modes
+
+What happens when each part fails, what the caller sees, and where it shows
+up afterwards. Each row was seen live or is pinned by a test.
+
+| Failure | What the caller sees | Where it shows |
+|---|---|---|
+| Groq stops answering | 503 `ASSISTANT_UNAVAILABLE` after one retry: 41 s, measured | Row `FAILED`; warning log; `ai_interactions_total{outcome="FAILED"}` |
+| Groq's rate limit (429) | 503 after one retry a second later | The same |
+| Groq fails mid-stream | The text so far, then an `error` event and `done` | Row `FAILED`, `answer_chars` showing how far it got |
+| The patient leaves mid-stream | Nothing: they have gone | Row `INTERRUPTED`, recorded at once |
+| No `LLM_API_KEY` | 503 on the five AI routes; everything else works | No row: the request stops before any AI work |
+| The question cannot be embedded | 503 `SEARCH_UNAVAILABLE` | Row `FAILED` |
+| A report reply unusable twice | An `error` event after the repair retry | `generated_content` and a `FAILED` row |
+| Redis down | Answers still arrive, 3 to 4 s slower; no rate limit, no cache | Warning log; `ai_rate_limit_skipped_total` |
+| Over the app's own limit | 429 with `Retry-After` | `ai_rate_limited_total` |
+| The safety check mislabels a medical question | The answer prompt's own rule tells the model to refuse, and live it did (section 10); no code guarantees it | The row's `intent` shows the wrong label |
+| A near miss ("chest x-ray") | `POST /search` lists Knee X-Ray; the assistant said chest x-rays are not offered, then suggested an unrelated service | The result's similarity, 0.428 |
+
+The last two are limits of the model and of retrieval, and no setting removes
+them. Section 7 explains the near miss. The safety check's 16 correct labels
+on Day 1 came from one run each, a smoke test (section 10).
