@@ -15,6 +15,7 @@ from datetime import UTC, date, datetime, timedelta
 
 import anyio
 import pytest
+import redis
 from fastapi.testclient import TestClient
 from prometheus_client import REGISTRY
 from pydantic import SecretStr
@@ -1087,9 +1088,15 @@ def test_the_stream_is_for_signed_in_patients_only(
 async def _start_stream(
     db: Session, user: User, llm: FakeLLM
 ) -> AsyncGenerator[str | AssistantAnswer, None]:
-    """ask_stream() for "knee x-ray", as the route calls it."""
+    """ask_stream() for "knee x-ray", as the route calls it, with the test
+    Redis database."""
     return await assistant_service.ask_stream(
-        db, user_id=user.id, question="knee x-ray", llm=llm, embeddings=FakeEmbeddings()
+        db,
+        user_id=user.id,
+        question="knee x-ray",
+        llm=llm,
+        embeddings=FakeEmbeddings(),
+        redis_client=redis.from_url(settings.test_redis_url, decode_responses=True),
     )
 
 

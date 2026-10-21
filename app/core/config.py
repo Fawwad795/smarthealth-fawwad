@@ -147,6 +147,8 @@ class Settings(BaseSettings):
     # AI requests each user may make per clock minute, across the five AI
     # routes together (app/services/rate_limit.py).
     ai_rate_limit_per_minute: int = 10
+    # How long a cached assistant reply is kept (app/services/answer_cache.py).
+    ai_answer_cache_ttl_seconds: int = 3600
 
 
 # Imported everywhere as: from app.core.config import settings

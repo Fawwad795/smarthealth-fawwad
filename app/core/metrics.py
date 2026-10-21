@@ -134,6 +134,17 @@ ai_rate_limit_skipped = Counter(
     "AI requests let through unchecked because Redis could not be reached.",
 )
 
+# The answer cache (task 5.12): hit, miss, or error when Redis could not be
+# reached and the question was answered as a miss.
+ai_answer_cache = Counter(
+    "ai_answer_cache",
+    "Answer cache lookups, by result.",
+    ["result"],
+)
+# Every result starts at zero, so increase() sees the first of each.
+for _result in ("hit", "miss", "error"):
+    ai_answer_cache.labels(_result)
+
 
 def endpoint_label(request: Any) -> str:
     """The route *template* for a request, e.g. /api/v1/appointments/{id}.

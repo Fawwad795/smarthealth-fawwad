@@ -43,6 +43,7 @@ def _interaction(
     outcome: InteractionOutcome = InteractionOutcome.ANSWERED,
     latency_ms: int = 100,
     tokens: tuple[int, int] = (0, 0),
+    cache_hit: bool = False,
 ) -> AIInteraction:
     """One ai_interactions row, written at `when`."""
     row = AIInteraction(
@@ -52,6 +53,7 @@ def _interaction(
         latency_ms=latency_ms,
         input_tokens=tokens[0],
         output_tokens=tokens[1],
+        cache_hit=cache_hit,
         created_at=when,
     )
     db.add(row)
@@ -118,7 +120,8 @@ def test_the_ai_analytics_count_outcomes_intents_latency_and_tokens(
     front_desk_user: User,
 ) -> None:
     """Questions and staff generations are counted apart; a refusal with no
-    label is counted under "none"; the day's edges are respected."""
+    label is counted under "none"; a reply from the answer cache is counted
+    with the rest and in cache_hits; the day's edges are respected."""
     for intent, outcome, latency, tokens in [
         (AssistantIntent.NAVIGATION, InteractionOutcome.ANSWERED, 100, (10, 2)),
         (AssistantIntent.NAVIGATION, InteractionOutcome.ANSWERED, 300, (20, 4)),
@@ -127,6 +130,7 @@ def test_the_ai_analytics_count_outcomes_intents_latency_and_tokens(
         (AssistantIntent.PREPARATION, InteractionOutcome.FAILED, 400, (0, 0)),
     ]:
         _interaction(db_session, patient_user, NOON, intent, outcome, latency, tokens)
+    _interaction(db_session, patient_user, NOON, latency_ms=150, cache_hit=True)
     _interaction(
         db_session,
         front_desk_user,
@@ -147,13 +151,15 @@ def test_the_ai_analytics_count_outcomes_intents_latency_and_tokens(
         body["interactions"],
         body["questions_asked"],
         body["staff_generations"],
+        body["cache_hits"],
     ) == (
+        7,
         6,
-        5,
+        1,
         1,
     )
     assert body["by_outcome"] == {
-        "ANSWERED": 3,
+        "ANSWERED": 4,
         "REFUSED": 2,
         "NOT_OFFERED": 0,
         "INTERRUPTED": 0,
@@ -163,12 +169,12 @@ def test_the_ai_analytics_count_outcomes_intents_latency_and_tokens(
         "MEDICAL_ADVICE": 1,
         "PREPARATION": 1,
         "AVAILABILITY": 0,
-        "NAVIGATION": 2,
+        "NAVIGATION": 3,
         "OTHER": 0,
         "STAFF_GENERATION": 1,
         "none": 1,
     }
-    assert body["avg_latency_ms"] == pytest.approx(2050 / 6)
+    assert body["avg_latency_ms"] == pytest.approx(2200 / 7)
     assert (body["input_tokens"], body["output_tokens"], body["total_tokens"]) == (
         140,
         57,

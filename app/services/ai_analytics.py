@@ -43,17 +43,20 @@ def summarise_ai(db: Session, start_date: date, end_date: date) -> dict[str, obj
         AIInteraction.created_at < range_end,
     )
 
-    total, avg_latency, p95_latency, input_tokens, output_tokens = db.execute(
-        select(
-            func.count(),
-            func.avg(AIInteraction.latency_ms),
-            # Interpolates between the two nearest latencies, as numpy's
-            # default percentile does.
-            func.percentile_cont(0.95).within_group(AIInteraction.latency_ms),
-            func.coalesce(func.sum(AIInteraction.input_tokens), 0),
-            func.coalesce(func.sum(AIInteraction.output_tokens), 0),
-        ).where(in_range)
-    ).one()
+    total, cache_hits, avg_latency, p95_latency, input_tokens, output_tokens = (
+        db.execute(
+            select(
+                func.count(),
+                func.count().filter(AIInteraction.cache_hit),
+                func.avg(AIInteraction.latency_ms),
+                # Interpolates between the two nearest latencies, as numpy's
+                # default percentile does.
+                func.percentile_cont(0.95).within_group(AIInteraction.latency_ms),
+                func.coalesce(func.sum(AIInteraction.input_tokens), 0),
+                func.coalesce(func.sum(AIInteraction.output_tokens), 0),
+            ).where(in_range)
+        ).one()
+    )
 
     outcomes = _count_by(db, AIInteraction.outcome, in_range)
     intents = _count_by(db, AIInteraction.intent, in_range)
@@ -74,6 +77,7 @@ def summarise_ai(db: Session, start_date: date, end_date: date) -> dict[str, obj
         "interactions": total,
         "questions_asked": total - staff_generations,
         "staff_generations": staff_generations,
+        "cache_hits": cache_hits,
         "by_outcome": by_outcome,
         "by_intent": by_intent,
         # avg() of an integer column comes back from Postgres as a Decimal.

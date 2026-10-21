@@ -11,12 +11,14 @@ from collections.abc import AsyncGenerator
 from contextlib import aclosing
 
 from fastapi import APIRouter, Depends, status
+from redis import Redis
 from sqlalchemy.orm import Session
 
 from app.ai.embeddings import EmbeddingProvider
 from app.ai.llm import LLMProvider
 from app.ai.retrieval import RetrievedService, get_query_embeddings
 from app.core.dependencies import require_role
+from app.core.redis import get_redis
 from app.core.sse import SSEResponse, sse_event
 from app.db.session import get_db
 from app.models import User
@@ -69,6 +71,7 @@ async def ask_assistant(
     db: Session = Depends(get_db),
     llm: LLMProvider = Depends(get_assistant_llm),
     embeddings: EmbeddingProvider = Depends(get_query_embeddings),
+    redis_client: Redis = Depends(get_redis),
 ) -> AskResponse:
     """Answer a patient's question about the clinic's services, citing the
     services the answer drew on. PATIENT only.
@@ -81,7 +84,10 @@ async def ask_assistant(
 
     async, unlike POST /search: the model calls are awaited, so this request
     gives way to others while the model works. The service runs the
-    blocking parts (embedding, the database) in worker threads.
+    blocking parts (embedding, the database, Redis) in worker threads.
+
+    A question already answered about the same services may come from the
+    answer cache, with no model call.
     """
     answer = await assistant_service.ask(
         db,
@@ -89,6 +95,7 @@ async def ask_assistant(
         question=body.question,
         llm=llm,
         embeddings=embeddings,
+        redis_client=redis_client,
     )
     return AskResponse(
         answer=answer.text,
@@ -121,6 +128,7 @@ async def ask_assistant_stream(
     db: Session = Depends(get_db),
     llm: LLMProvider = Depends(get_assistant_llm),
     embeddings: EmbeddingProvider = Depends(get_query_embeddings),
+    redis_client: Redis = Depends(get_redis),
 ) -> SSEResponse:
     """Answer like POST /assistant/ask, but stream the reply as the model
     writes it. PATIENT only. Try it with `curl -N`.
@@ -135,6 +143,7 @@ async def ask_assistant_stream(
         question=body.question,
         llm=llm,
         embeddings=embeddings,
+        redis_client=redis_client,
     )
     return SSEResponse(_events(answer))
 

@@ -107,8 +107,9 @@ class AIAnalyticsResponse(BaseModel):
     by_outcome has a key for every InteractionOutcome, and by_intent one for
     every AssistantIntent plus "none" (no label from the safety check), each
     0 if it never occurred. questions_asked is every interaction except
-    staff generations. The latencies run from the request to the last of
-    the answer, and are null when there were no interactions.
+    staff generations; cache_hits, the questions answered from the answer
+    cache with no model call. The latencies run from the request to the
+    last of the answer, and are null when there were no interactions.
     """
 
     start_date: date
@@ -116,6 +117,7 @@ class AIAnalyticsResponse(BaseModel):
     interactions: int
     questions_asked: int
     staff_generations: int
+    cache_hits: int
     by_outcome: dict[str, int]
     by_intent: dict[str, int]
     avg_latency_ms: float | None
