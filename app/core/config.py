@@ -144,6 +144,9 @@ class Settings(BaseSettings):
     # the gap between two pieces of a reply. A per-step limit rather than a
     # total, so a long reply that keeps arriving is never cut off.
     ai_request_timeout_seconds: float = 60.0
+    # AI requests each user may make per clock minute, across the five AI
+    # routes together (app/services/rate_limit.py).
+    ai_rate_limit_per_minute: int = 10
 
 
 # Imported everywhere as: from app.core.config import settings

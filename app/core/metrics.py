@@ -122,6 +122,18 @@ ai_refusals = Counter(
     ["intent"],
 )
 
+# The rate limit (task 5.12). Neither request reaches the model or writes an
+# ai_interactions row, so these counters are the only record of them.
+ai_rate_limited = Counter(
+    "ai_rate_limited",
+    "AI requests refused with a 429 for going over the per-user limit.",
+)
+
+ai_rate_limit_skipped = Counter(
+    "ai_rate_limit_skipped",
+    "AI requests let through unchecked because Redis could not be reached.",
+)
+
 
 def endpoint_label(request: Any) -> str:
     """The route *template* for a request, e.g. /api/v1/appointments/{id}.

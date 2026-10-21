@@ -24,14 +24,22 @@ from app.schemas.errors import ErrorDetail, ErrorResponse, error_responses
 from app.schemas.generation import GenerationCitations, GenerationDone, GenerationRetry
 from app.services import generation as generation_service
 from app.services.generation import GenerationResult, ReportRetry, get_generation_llm
+from app.services.rate_limit import limit_ai_requests
 
 router = APIRouter(tags=["generation"])
 
 _STAFF = (UserRole.FRONT_DESK, UserRole.ADMIN)
 
+# Each route declares the rate limit after the role check. FastAPI resolves
+# dependencies in the order they are declared, so a request refused for its
+# role is never counted against the limit.
 _ERRORS = {
     status.HTTP_401_UNAUTHORIZED: "Not signed in.",
     status.HTTP_403_FORBIDDEN: "Front desk and admin only.",
+    status.HTTP_429_TOO_MANY_REQUESTS: (
+        "RATE_LIMITED -- over the AI requests allowed per minute; "
+        "Retry-After says when to try again."
+    ),
     status.HTTP_503_SERVICE_UNAVAILABLE: "GENERATION_UNAVAILABLE -- no model is configured.",
 }
 
@@ -66,6 +74,7 @@ _REPORT_STREAM = (
 async def generate_summary(
     appointment_id: int,
     current_user: User = Depends(require_role(*_STAFF)),
+    _rate_limit: None = Depends(limit_ai_requests),
     db: Session = Depends(get_db),
     llm: LLMProvider = Depends(get_generation_llm),
 ) -> SSEResponse:
@@ -73,7 +82,7 @@ async def generate_summary(
     before sending. FRONT_DESK/ADMIN only.
 
     401 without a token, 403 for other roles, 404 for an unknown
-    appointment, 503 if no model is configured.
+    appointment, 429 over the AI rate limit, 503 if no model is configured.
     """
     stream = await generation_service.generate_for_appointment(
         db,
@@ -97,6 +106,7 @@ async def generate_summary(
 async def generate_followup(
     appointment_id: int,
     current_user: User = Depends(require_role(*_STAFF)),
+    _rate_limit: None = Depends(limit_ai_requests),
     db: Session = Depends(get_db),
     llm: LLMProvider = Depends(get_generation_llm),
 ) -> SSEResponse:
@@ -104,7 +114,7 @@ async def generate_followup(
     status, for staff to review before sending. FRONT_DESK/ADMIN only.
 
     401 without a token, 403 for other roles, 404 for an unknown
-    appointment, 503 if no model is configured.
+    appointment, 429 over the AI rate limit, 503 if no model is configured.
     """
     stream = await generation_service.generate_for_appointment(
         db,
@@ -128,6 +138,7 @@ async def generate_followup(
 async def generate_utilisation_report(
     body: DateRange,
     current_user: User = Depends(require_role(*_STAFF)),
+    _rate_limit: None = Depends(limit_ai_requests),
     db: Session = Depends(get_db),
     llm: LLMProvider = Depends(get_generation_llm),
 ) -> SSEResponse:
@@ -138,6 +149,7 @@ async def generate_utilisation_report(
     The body takes `start_date` and `end_date`, both optional, with GET
     /analytics/summary's defaults (the last 30 days). 401 without a token,
     403 for other roles, 422 for start after end or a range over 366 days,
+    429 over the AI rate limit,
     503 if no model is configured.
     """
     stream = await generation_service.generate_report(
