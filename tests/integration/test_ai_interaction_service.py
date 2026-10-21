@@ -7,6 +7,7 @@ object the function returned, so what is checked is what was stored.
 import logging
 
 import pytest
+from prometheus_client import REGISTRY
 from sqlalchemy.orm import Session
 
 from app.ai.llm import LLMUsage
@@ -20,6 +21,15 @@ def _stored(db: Session, interaction_id: int) -> AIInteraction:
     """The row as the database holds it, not as the session cached it."""
     db.expire_all()
     return db.get(AIInteraction, interaction_id)
+
+
+def _sample(name: str, **labels: str) -> float:
+    """One metric's current value, 0 if never set.
+
+    Metrics are shared by every test in the run, so tests compare before
+    and after rather than expect a fixed number.
+    """
+    return REGISTRY.get_sample_value(name, labels) or 0.0
 
 
 def test_a_refusal_is_stored_with_its_ids_versions_and_correlation_id(
@@ -122,5 +132,73 @@ def test_the_log_line_carries_ids_and_counts_and_nothing_else(
     assert record.getMessage() == (
         f"ai interaction {row.id}: outcome=ANSWERED intent=NAVIGATION "
         "services=[5] appointments=[] slots=[] model=qwen/qwen3.8-27b prompt=PROMPT_NAV_V1 "
-        "tokens_in=10 tokens_out=20 latency_ms=900"
+        "tokens_in=10 tokens_out=20 latency_ms=900 cache_hit=False"
+    )
+
+
+# --- Prometheus metrics (task 5.11) -------------------------------------------
+
+
+def test_an_answer_is_counted_with_its_latency_in_seconds_and_its_tokens(
+    db_session: Session, patient_user: User
+) -> None:
+    """An answer moves the interaction count, the latency and the tokens,
+    and leaves the refusal counter alone."""
+    labels = {"intent": "NAVIGATION", "outcome": "ANSWERED"}
+    before = {
+        "count": _sample("ai_interactions_total", **labels),
+        "seconds": _sample("ai_interaction_duration_seconds_sum", intent="NAVIGATION"),
+        "input": _sample("ai_tokens_total", direction="input"),
+        "output": _sample("ai_tokens_total", direction="output"),
+        "refused": _sample("ai_refusals_total", intent="NAVIGATION"),
+    }
+
+    record_interaction(
+        db_session,
+        user_id=patient_user.id,
+        outcome=InteractionOutcome.ANSWERED,
+        latency_ms=1500,
+        intent=AssistantIntent.NAVIGATION,
+        usages=[LLMUsage(input_tokens=10, output_tokens=20)],
+    )
+
+    assert _sample("ai_interactions_total", **labels) - before["count"] == 1
+    assert _sample("ai_interaction_duration_seconds_sum", intent="NAVIGATION") - before[
+        "seconds"
+    ] == pytest.approx(1.5)
+    assert _sample("ai_tokens_total", direction="input") - before["input"] == 10
+    assert _sample("ai_tokens_total", direction="output") - before["output"] == 20
+    assert _sample("ai_refusals_total", intent="NAVIGATION") == before["refused"]
+
+
+def test_a_refusal_is_counted_and_one_without_a_label_counts_as_none(
+    db_session: Session, patient_user: User
+) -> None:
+    """Both kinds of refusal reach the refusal counter. The one with no
+    label is counted under "none", since a label cannot be null."""
+    before = {
+        "medical": _sample("ai_refusals_total", intent="MEDICAL_ADVICE"),
+        "none": _sample("ai_refusals_total", intent="none"),
+        "none_refused": _sample(
+            "ai_interactions_total", intent="none", outcome="REFUSED"
+        ),
+    }
+
+    for intent in (AssistantIntent.MEDICAL_ADVICE, None):
+        record_interaction(
+            db_session,
+            user_id=patient_user.id,
+            outcome=InteractionOutcome.REFUSED,
+            latency_ms=5,
+            intent=intent,
+        )
+
+    assert (
+        _sample("ai_refusals_total", intent="MEDICAL_ADVICE") - before["medical"] == 1
+    )
+    assert _sample("ai_refusals_total", intent="none") - before["none"] == 1
+    assert (
+        _sample("ai_interactions_total", intent="none", outcome="REFUSED")
+        - before["none_refused"]
+        == 1
     )

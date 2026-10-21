@@ -26,6 +26,7 @@ def test_ai_interactions_has_exactly_these_columns() -> None:
         "output_tokens",
         "latency_ms",
         "answer_chars",
+        "cache_hit",
         "created_at",
         "updated_at",
     ]

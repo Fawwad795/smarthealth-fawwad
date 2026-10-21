@@ -41,10 +41,12 @@ def _error_body(code: str, message: str) -> dict:
 
 async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
     """A failure services/ raised deliberately -- its status, code and
-    message were all chosen for the client, so they pass straight through."""
+    message were all chosen for the client, so they pass straight through,
+    with any headers it carries."""
     return JSONResponse(
         status_code=exc.status_code,
         content=_error_body(exc.code, exc.message),
+        headers=exc.headers,
     )
 
 

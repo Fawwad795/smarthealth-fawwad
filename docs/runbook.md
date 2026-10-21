@@ -194,6 +194,30 @@ sum by (endpoint, status) (rate(http_requests_total[5m]))
 `prometheus_client` appends `_total` to counter names, so the metric is
 `appointments_booked_total` even though the code says `appointments_booked`.
 
+The AI metrics come from the API alone (`docs/ai-layer.md` section 15):
+
+```promql
+# AI interactions per second by outcome; a rise in FAILED means the provider is down
+sum by (outcome) (rate(ai_interactions_total[5m]))
+# medical-advice refusals in the last hour
+sum(increase(ai_refusals_total[1h]))
+# p95 time to the last of the answer
+histogram_quantile(0.95, sum by (le) (rate(ai_interaction_duration_seconds_bucket[5m])))
+# AI requests refused by the rate limit, and let through unchecked because Redis was down
+sum(increase(ai_rate_limited_total[1h]))
+sum(increase(ai_rate_limit_skipped_total[1h]))
+```
+
+The answer cache's hits, misses and Redis errors over the last hour
+(`docs/ai-layer.md` section 17):
+
+```promql
+sum by (result) (increase(ai_answer_cache_total[1h]))
+```
+
+A rise in `ai_rate_limit_skipped_total` means the API cannot reach Redis, and
+every AI request is waiting 3 to 4 s for it (`docs/ai-layer.md` section 16).
+
 ---
 
 ## 5. A publish failed, or sits in PUBLISHING

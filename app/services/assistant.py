@@ -8,6 +8,9 @@ answer one question in this order:
    threshold (app/ai/retrieval.py), and loads what the answer prompts show
    of each. Every path needs them: an answer is grounded in them, and a
    refusal names them so the patient knows where to go.
+   The answer cache is checked next, since the services are part of its
+   key (app/services/answer_cache.py). A hit is the reply, with no model
+   call.
 2. check_safety() labels the question. medical_advice, or no label, gets
    the fixed refusal.
 3. preparation or availability: the model answers from PROMPT_PREP_V2,
@@ -49,6 +52,7 @@ from zoneinfo import ZoneInfo
 
 import anyio
 from fastapi import status
+from redis import Redis
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -86,7 +90,9 @@ from app.models.enums import (
     InteractionOutcome,
     SlotStatus,
 )
+from app.services import answer_cache
 from app.services.ai_interaction import record_interaction
+from app.services.answer_cache import CachedAnswer, CacheUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +108,14 @@ NONE_LISTED = "None listed."
 # The questions answered from the patient's own appointments and the
 # services' open times, with PROMPT_PREP_V2.
 BOOKING_INTENTS = (AssistantIntent.PREPARATION, AssistantIntent.AVAILABILITY)
+
+# The ways a question can end whose reply is complete and can be cached.
+# A FAILED or INTERRUPTED reply is not whole, so it is never stored.
+CACHEABLE_OUTCOMES = (
+    InteractionOutcome.ANSWERED,
+    InteractionOutcome.REFUSED,
+    InteractionOutcome.NOT_OFFERED,
+)
 
 # An appointment still going ahead: the saga has not ended it.
 UPCOMING_STATUSES = (
@@ -182,6 +196,10 @@ class _Progress:
     safety_prompt_version: str | None = None
     prompt_version: str | None = None
     usages: list[LLMUsage] = field(default_factory=list)
+    # The answer cache key, or None if Redis could not be reached for the
+    # lookup: then the reply is not stored either.
+    cache_key: str | None = None
+    cache_hit: bool = False
 
 
 def get_assistant_llm() -> LLMProvider:
@@ -205,6 +223,7 @@ async def ask(
     question: str,
     llm: LLMProvider,
     embeddings: EmbeddingProvider,
+    redis_client: Redis,
 ) -> AssistantAnswer:
     """Answer `question` for the user `user_id`, and record it.
 
@@ -213,7 +232,9 @@ async def ask(
     """
     progress = _Progress(started=time.monotonic())
     async with _failures_recorded(db, user_id, progress):
-        prepared = await _prepare(db, user_id, question, llm, embeddings, progress)
+        prepared = await _prepare(
+            db, user_id, question, llm, embeddings, redis_client, progress
+        )
         if isinstance(prepared, _FixedAnswer):
             text, outcome = prepared.text, prepared.outcome
         else:
@@ -222,6 +243,7 @@ async def ask(
             text = with_disclaimer(result.text.strip())
             outcome = InteractionOutcome.ANSWERED
     interaction = await _record(db, user_id, progress, outcome, answer_chars=len(text))
+    await _remember(redis_client, progress, outcome, text)
     return AssistantAnswer(
         text=text,
         intent=progress.intent,
@@ -238,6 +260,7 @@ async def ask_stream(
     question: str,
     llm: LLMProvider,
     embeddings: EmbeddingProvider,
+    redis_client: Redis,
 ) -> AsyncGenerator[str | AssistantAnswer, None]:
     """Do everything before the answer, then return the answer as a stream
     (task 5.8).
@@ -251,8 +274,10 @@ async def ask_stream(
     """
     progress = _Progress(started=time.monotonic())
     async with _failures_recorded(db, user_id, progress):
-        prepared = await _prepare(db, user_id, question, llm, embeddings, progress)
-    return _stream_answer(db, user_id, prepared, llm, progress)
+        prepared = await _prepare(
+            db, user_id, question, llm, embeddings, redis_client, progress
+        )
+    return _stream_answer(db, user_id, prepared, llm, redis_client, progress)
 
 
 async def check_safety(question: str, llm: LLMProvider) -> SafetyCheck:
@@ -320,17 +345,23 @@ async def _prepare(
     question: str,
     llm: LLMProvider,
     embeddings: EmbeddingProvider,
+    redis_client: Redis,
     progress: _Progress,
 ) -> BuiltPrompt | _FixedAnswer:
-    """Everything before the answer is written: retrieval, the safety check
-    and, for a booking question, the caller's appointments.
+    """Everything before the answer is written: retrieval, the answer cache,
+    the safety check and, for a booking question, the caller's appointments.
 
-    Returns the prompt for the model to answer, or a fixed reply that needs
-    no model. ask() and ask_stream() differ only in how they get the
-    model's answer. Fills in `progress` as each step finishes.
+    Returns the prompt for the model to answer, or a reply that needs no
+    model: a fixed one, or a cached one. ask() and ask_stream() differ only
+    in how they get the model's answer. Fills in `progress` as each step
+    finishes.
     """
     found = await asyncio.to_thread(_find_services, db, question, embeddings)
     progress.services = [service for service, _ in found]
+
+    cached = await _cached(redis_client, question, found, llm, progress)
+    if cached is not None:
+        return cached
 
     progress.model = llm.model
     check = await check_safety(question, llm)
@@ -380,18 +411,75 @@ async def _prepare(
     return prompt
 
 
+async def _cached(
+    redis_client: Redis,
+    question: str,
+    found: list[tuple[RetrievedService, ServiceContext]],
+    llm: LLMProvider,
+    progress: _Progress,
+) -> _FixedAnswer | None:
+    """The cached reply to `question`, or None to answer it as usual.
+
+    A hit fills in `progress` from the entry: the intent, versions and
+    model that wrote the reply, so its row says what produced it. Redis in
+    a worker thread: a call to an unreachable Redis waits seconds.
+    """
+    key = answer_cache.answer_key(question, found, llm.model)
+    try:
+        entry = await asyncio.to_thread(answer_cache.lookup, redis_client, key)
+    except CacheUnavailable:
+        return None
+    progress.cache_key = key
+    if entry is None:
+        return None
+    progress.cache_hit = True
+    progress.model = entry.model
+    progress.intent = entry.intent
+    progress.safety_prompt_version = entry.safety_prompt_version
+    progress.prompt_version = entry.prompt_version
+    return _FixedAnswer(entry.prompt_version, entry.text, entry.outcome)
+
+
+async def _remember(
+    redis_client: Redis,
+    progress: _Progress,
+    outcome: InteractionOutcome,
+    text: str,
+) -> None:
+    """Cache a finished reply, if it is whole and holds nothing about the
+    patient.
+
+    Not after a hit (storing again would restart its TTL), and not after a
+    failed lookup, since Redis is unreachable.
+    """
+    if progress.cache_key is None or progress.cache_hit:
+        return
+    if outcome not in CACHEABLE_OUTCOMES or progress.intent in BOOKING_INTENTS:
+        return
+    entry = CachedAnswer(
+        text=text,
+        outcome=outcome,
+        intent=progress.intent,
+        model=progress.model,
+        safety_prompt_version=progress.safety_prompt_version,
+        prompt_version=progress.prompt_version,
+    )
+    await asyncio.to_thread(answer_cache.store, redis_client, progress.cache_key, entry)
+
+
 async def _stream_answer(
     db: Session,
     user_id: int,
     prepared: BuiltPrompt | _FixedAnswer,
     llm: LLMProvider,
+    redis_client: Redis,
     progress: _Progress,
 ) -> AsyncGenerator[str | AssistantAnswer, None]:
     """Yield the reply as it is written, then record it and yield the
     AssistantAnswer.
 
-    A fixed reply is sent as one piece: it is not generated, so there is
-    nothing to stream. A model's answer is passed on piece by piece as the
+    A fixed or cached reply is sent as one piece: nothing is being
+    generated, so there is nothing to stream. A model's answer is passed on piece by piece as the
     provider sends it, then the disclaimer as a last piece.
 
     How it ends decides the outcome recorded:
@@ -454,6 +542,7 @@ async def _stream_answer(
                 outcome,
                 answer_chars=sum(len(part) for part in parts),
             )
+            await _remember(redis_client, progress, outcome, "".join(parts))
     yield AssistantAnswer(
         text="".join(parts),
         intent=progress.intent,
@@ -674,6 +763,7 @@ async def _record(
         prompt_version=progress.prompt_version,
         usages=progress.usages,
         answer_chars=answer_chars,
+        cache_hit=progress.cache_hit,
     )
 
 

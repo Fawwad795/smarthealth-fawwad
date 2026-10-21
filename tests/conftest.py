@@ -408,6 +408,10 @@ def client(
     def _get_test_redis() -> redis.Redis:
         return test_redis_client
 
+    # Each test starts with an empty Redis, as it starts with an empty
+    # database: an answer one test cached must not answer the next one's
+    # question without its model being called.
+    test_redis_client.flushdb()
     app.dependency_overrides[get_db] = _get_test_db
     app.dependency_overrides[get_redis] = _get_test_redis
     with TestClient(app) as test_client:

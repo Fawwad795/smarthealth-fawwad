@@ -923,6 +923,7 @@ rows. A row holds ids, labels and numbers, never text:
 | `input_tokens`, `output_tokens` | summed over the interaction's model calls |
 | `latency_ms` | request in to the last of the answer out |
 | `answer_chars` | how far an `INTERRUPTED` answer got |
+| `cache_hit` | the reply came from the answer cache (section 17): no model call, no tokens; `model` and the versions are those that wrote it |
 
 `outcome` replaces the brief's refused flag: an interaction ends one way, and
 two flags could say "refused" and "failed" at once. The brief's refused is
@@ -951,7 +952,7 @@ model, run at temperature 0. `correlation_id` finds the request's log lines,
 this one among them:
 
 ```text
-ai interaction 12: outcome=REFUSED intent=MEDICAL_ADVICE services=[3, 7] appointments=[] slots=[] model=qwen/qwen3.8-27b prompt=REFUSAL_V1 tokens_in=180 tokens_out=2 latency_ms=412
+ai interaction 12: outcome=REFUSED intent=MEDICAL_ADVICE services=[3, 7] appointments=[] slots=[] model=qwen/qwen3.8-27b prompt=REFUSAL_V1 tokens_in=180 tokens_out=2 latency_ms=412 cache_hit=False
 ```
 
 ### Known limitations
@@ -1573,3 +1574,241 @@ finished between 0.84 and 2.44 s.
   content row needs that row's id. A failure between them would leave the
   interaction without its content.
 - Staff cannot yet accept or reject a draft (a SHOULD).
+
+## 15. AI metrics and analytics
+
+### Prometheus
+
+The API's `/metrics` page has four AI metrics. `record_interaction()` updates
+them after it commits the `ai_interactions` row, so the metrics, the log line
+and the table count the same interactions.
+
+| Metric | Labels | Counts |
+|---|---|---|
+| `ai_interactions_total` | `intent`, `outcome` | finished interactions; failures are `outcome="FAILED"` |
+| `ai_interaction_duration_seconds` | `intent` | time from the request to the last of the answer |
+| `ai_tokens_total` | `direction`: `input` or `output` | tokens sent to the model and received from it |
+| `ai_refusals_total` | `intent` | questions refused as requests for medical advice |
+
+Every label value comes from an enum, so the number of series is fixed. A
+refusal with no safety label is counted under `intent="none"`, because a label
+cannot be null. The refusal counter repeats
+`ai_interactions_total{outcome="REFUSED"}`; it exists because the brief asks
+for one by name.
+
+Every series is created at zero when the API starts. Without that, a series
+first appears at its first increment, already at 1, and `increase()` has no
+earlier sample to compare with. The runbook's "refusals in the last hour"
+query returned 0 after one refusal; with the zero start it returned 1.05
+(`increase()` estimates across the gap between scrapes, so it is rarely a
+whole number).
+
+The latency buckets run from 0.25 s to 60 s, the provider timeout. Prometheus's
+default buckets stop at 10 s, and a streamed report can take longer.
+
+`http_request_duration_seconds` stops timing a stream when its headers go out,
+so it misses the answer. For one streamed navigation answer it recorded
+0.67 s, the retrieval and safety check; `ai_interaction_duration_seconds`
+recorded 1.31 s, and the client saw 1.33 s.
+
+Queries are in `docs/runbook.md` under Metrics.
+
+**Checked live**, as a seeded patient through `POST /assistant/ask`:
+
+| Question | Outcome | Tokens in / out | Latency |
+|---|---|---|---|
+| "Can you diagnose me? My knee hurts when I walk." | `REFUSED`, `MEDICAL_ADVICE` | 287 / 4 | 307 ms |
+| "Which service should I book for a knee x-ray?" | `ANSWERED`, `NAVIGATION` | 736 / 31 | 1,007 ms |
+
+`/metrics` then showed `ai_tokens_total` at 1023 input and 35 output, the two
+rows' sums, and Prometheus returned `ai_refusals_total{intent="MEDICAL_ADVICE"}`
+as 1 for job `app-api`.
+
+### `GET /analytics/ai`
+
+For front desk and admin, with the same `start_date` and `end_date` as
+`/analytics/summary`: UTC days, the last 30 by default, at most 366. It counts
+`ai_interactions` rows on each request, because the p95 latency needs every
+latency in the range and a stored total cannot give it.
+
+| Field | Holds |
+|---|---|
+| `interactions`, `questions_asked`, `staff_generations` | every row; patients' questions; staff generations |
+| `cache_hits` | questions answered from the answer cache (section 17) |
+| `by_outcome` | a count for every outcome, `ANSWERED` and `REFUSED` among them |
+| `by_intent` | a count for every intent, plus `none` for a question the safety check gave no label |
+| `avg_latency_ms`, `p95_latency_ms` | from the request to the last of the answer; the p95 interpolates, as numpy does |
+| `input_tokens`, `output_tokens`, `total_tokens` | summed over the range |
+| `booking_conversion` | `patients_asked`, `patients_booked`, `rate`, `window_hours` |
+
+Booking conversion counts patients. A patient converts when one of their
+appointments was booked (`booked_at`, set when the saga confirms it) within 24
+hours after one of their questions, so five questions and one booking is one
+conversion. A booking made before the question, or 30 hours after it, does not
+count; each case has a test.
+
+Averages and the rate are null when there is nothing to divide, as in
+`/analytics/summary`.
+
+**Checked live** over the four interactions above (two refusals, two answers):
+
+```json
+{"start_date": "2026-09-21", "end_date": "2026-10-20",
+ "interactions": 4, "questions_asked": 4, "staff_generations": 0,
+ "by_outcome": {"ANSWERED": 2, "REFUSED": 2, "NOT_OFFERED": 0, "INTERRUPTED": 0, "FAILED": 0},
+ "by_intent": {"MEDICAL_ADVICE": 2, "PREPARATION": 0, "AVAILABILITY": 0, "NAVIGATION": 2,
+               "OTHER": 0, "STAFF_GENERATION": 0, "none": 0},
+ "avg_latency_ms": 729.0, "p95_latency_ms": 1264.55,
+ "input_tokens": 2048, "output_tokens": 65, "total_tokens": 2113,
+ "booking_conversion": {"window_hours": 24, "patients_asked": 1, "patients_booked": 0, "rate": 0.0}}
+```
+
+The same figures came from SQL over the table, and numpy gave the same p95.
+The patient then booked through `POST /appointments`; once the saga confirmed
+it, `booking_conversion` read 1 of 1, rate 1.0. A patient got 403, no token
+401, and a backwards range 422.
+
+### Known limitations
+
+- A booking within 24 hours of a question is credited to the assistant whether
+  or not the answer led to it.
+- `GET /analytics/ai` reads the table on every request, with no aggregate or
+  cache in front of it.
+- Interactions are counted by UTC day, as `analytics_daily` is.
+- The metrics count interactions, not model calls. A provider call that failed
+  and then succeeded on its retry shows nowhere.
+- An interaction whose row fails to commit is not counted: the count comes
+  after the commit.
+- The counts live in the API process and restart from zero with it;
+  `ai_interactions` is the lasting record.
+
+## 16. Rate limiting
+
+Each user may make 10 AI requests a minute (`AI_RATE_LIMIT_PER_MINUTE`),
+counted across the five AI routes together: `/assistant/ask`,
+`/assistant/ask/stream` and the three staff generation routes. One count covers
+them all, since the limit protects one model budget. The eleventh request gets a
+429:
+
+```http
+HTTP/1.1 429 Too Many Requests
+retry-after: 22
+
+{"error":{"code":"RATE_LIMITED","message":"Too many AI requests. Try again in 22 seconds."}}
+```
+
+The count is a Redis counter, kept by `app/services/rate_limit.py`:
+
+| | |
+|---|---|
+| Key | `ai-rate:{user_id}:{minute}`, the minute being the Unix time divided by 60 |
+| TTL | 60 seconds, which clears the key once its minute is over |
+| Invalidated by | nothing; a new minute is a new key |
+
+`INCR` adds one and returns the new count in one step, so two requests at the
+same moment never read the same count. A refused request does no AI work and
+writes no `ai_interactions` row; `ai_rate_limited_total` counts it.
+
+The limit is a dependency declared after each route's role check. FastAPI
+resolves dependencies in the order they are declared, so a 403 is never
+counted. It also runs before FastAPI checks the request body, so a 422 is.
+
+### When Redis is down
+
+The request goes ahead. The limit protects a budget, and a Redis outage should
+not take the assistant down with it. Each skipped check logs a warning with the
+user id and the error's type, never its message, which can hold the Redis URL,
+and adds one to `ai_rate_limit_skipped_total`.
+
+### Checked live
+
+With the limit at 10, the front desk's three calls to `/assistant/ask` got 403
+and left no key. A patient's ten empty questions got 422 and the eleventh got
+the 429 above. Redis then held `ai-rate:6:29875317` at 11, with 59 s left to
+live.
+
+With the Redis container stopped and that patient still over the limit, an
+empty question got its 422 and a real question was answered, where both would
+have been 429. Each request first waited 3 to 4 s: Docker's DNS took 3.56 s to
+report that the name `redis` no longer existed, and the 2 s Redis timeout does
+not cover a name lookup.
+
+### Known limitations
+
+- A fixed window: the count restarts each minute, so a user can make up to 20
+  requests across a minute boundary. A sliding window would close the gap, at
+  the cost of storing the time of every request.
+- A request with an empty or over-long question uses up one of the ten.
+- While Redis is stopped, every AI request waits 3 to 4 s for the failed
+  lookup. Skipping Redis for a few seconds after one failure would spare the
+  requests that follow; it is not built.
+- `POST /search` has no limit. It calls no language model, and by default its
+  embedding model runs inside the API.
+
+## 17. Answer caching
+
+A question asked again, about the same services, gets the reply already
+written, with no model call. Live, a hit took 26 ms against about a second for
+the first answer, and used no tokens.
+
+Only replies that hold nothing about the patient are cached: navigation and
+other answers, refusals, and "we don't offer that". A preparation or
+availability answer is built from the caller's own appointments and the slots
+free right now, so it is never stored. Neither is a reply cut short by a
+failure or a disconnect. Staff generation is not cached: each run is a new
+draft saved to `generated_content`, and a report's figures move with every
+booking.
+
+The cache is shared by every patient, so its key covers everything the reply
+depends on (`app/services/answer_cache.py`):
+
+| | |
+|---|---|
+| Key | `ai-answer:` and the SHA-256 of the question (normalised); each service found, with the description and preparation notes the prompt shows; the prompt versions; the model; and the clinic name |
+| TTL | `AI_ANSWER_CACHE_TTL_SECONDS`, an hour. A hit does not extend it, and a store never overwrites an entry, so a cached reply is at most an hour old |
+| Invalidated by | a change to anything in the key, which gives a new key. An unpublished service drops out of retrieval's results, an edited one shows the prompt new text, and a new prompt version or model changes the key. The old entry is never found again and expires |
+
+Normalising lowercases the question, collapses its spaces and drops a closing
+`?`, `!` or `.`. The key is a hash, so it holds none of the question's words;
+the entry holds the reply's text.
+
+The cache is checked after retrieval, since the services are part of the key,
+and before the safety check. A hit skips the safety check: the reply passed it
+when it was first written. The hit writes its own `ai_interactions` row with
+`cache_hit` true, no tokens, and the intent, prompt versions and model that
+wrote the reply. The analytics count it as a question, `GET /analytics/ai`
+reports `cache_hits`, and a cached refusal still moves `ai_refusals_total`.
+
+`/ask/stream` sends a cached reply as one `token` event, as it does a fixed
+reply: nothing is being generated.
+
+When Redis is down, the lookup is logged, counted in
+`ai_answer_cache_total{result="error"}` and treated as a miss, and no store is
+tried.
+
+### Checked live
+
+Two seeded patients, on Groq:
+
+| Request | Result |
+|---|---|
+| Patient 6: "Which service should I book for a knee x-ray?" | miss; answered from services 5, 6, 8 and 7 in 1,095 ms |
+| Patient 7: "which service  should I book for a KNEE X-RAY" | miss: retrieval found 5, 6 and 8 |
+| Patient 7: "which SERVICE should i book for a   knee x-ray?" | hit: 26 ms, no tokens, services 5, 6, 8 and 7 |
+| Patient 7, the first question on `/ask/stream` | hit: one `token` event, then `citations` and `done` |
+
+The second request missed because, without its `?`, the question's embedding
+left service 7 below the threshold. Its answer named three services, so the
+cached four-service reply would have been wrong for it. Case and spacing did
+not change what retrieval found; the closing mark did.
+
+### Known limitations
+
+- Normalising helps only when retrieval finds the same services. A dropped `?`
+  changed them live, so the question missed.
+- The reply's text sits in Redis for up to an hour and can repeat words from
+  the question.
+- A hit repeats the safety check's first decision on that question for up to
+  an hour.
+- While Redis is stopped, the lookup adds the same 3 to 4 s wait as the rate
+  limit (section 16).

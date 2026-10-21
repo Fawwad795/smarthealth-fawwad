@@ -15,7 +15,9 @@ from datetime import UTC, date, datetime, timedelta
 
 import anyio
 import pytest
+import redis
 from fastapi.testclient import TestClient
+from prometheus_client import REGISTRY
 from pydantic import SecretStr
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -32,6 +34,7 @@ from app.ai.llm import (
 from app.ai.prompts import DISCLAIMER, NO_MATCH_V1, PROMPT_NAV_V1, PROMPT_PREP_V2
 from app.ai.retrieval import get_query_embeddings
 from app.core.config import settings
+from app.core.metrics import METRICS_PATH
 from app.main import app
 from app.models import (
     AIInteraction,
@@ -313,6 +316,26 @@ def test_a_reply_that_names_no_label_is_refused(
     assert body["intent"] is None
     assert len(llm.calls) == 1
     assert _interaction(db_session).intent is None
+
+
+def test_a_refused_question_is_counted_on_the_metrics_page(
+    client: TestClient,
+    patient_auth_headers: dict,
+    use_llm: Callable[[FakeLLM], FakeLLM],
+    knee: Service,
+) -> None:
+    """The refusal counter moves through the real route, and the API's
+    /metrics page shows it."""
+    labels = {"intent": "MEDICAL_ADVICE"}
+    before = REGISTRY.get_sample_value("ai_refusals_total", labels) or 0.0
+    use_llm(FakeLLM("medical_advice"))
+
+    _ask(client, patient_auth_headers, "diagnose my knee x-ray")
+
+    assert REGISTRY.get_sample_value("ai_refusals_total", labels) - before == 1
+    page = client.get(METRICS_PATH).text
+    assert 'ai_refusals_total{intent="MEDICAL_ADVICE"}' in page
+    assert 'ai_interactions_total{intent="MEDICAL_ADVICE",outcome="REFUSED"}' in page
 
 
 def test_a_question_nothing_offered_matches_gets_we_dont_offer_that(
@@ -1065,9 +1088,15 @@ def test_the_stream_is_for_signed_in_patients_only(
 async def _start_stream(
     db: Session, user: User, llm: FakeLLM
 ) -> AsyncGenerator[str | AssistantAnswer, None]:
-    """ask_stream() for "knee x-ray", as the route calls it."""
+    """ask_stream() for "knee x-ray", as the route calls it, with the test
+    Redis database."""
     return await assistant_service.ask_stream(
-        db, user_id=user.id, question="knee x-ray", llm=llm, embeddings=FakeEmbeddings()
+        db,
+        user_id=user.id,
+        question="knee x-ray",
+        llm=llm,
+        embeddings=FakeEmbeddings(),
+        redis_client=redis.from_url(settings.test_redis_url, decode_responses=True),
     )
 
 
