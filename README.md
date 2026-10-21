@@ -11,7 +11,8 @@ assistant refuses to give medical advice by design.
 It is also **API only**. There is no UI; Swagger UI at `/docs`, curl or Postman
 is the interface.
 
-> Status: **Week 4 complete**: chunking, embeddings and semantic search. See
+> Status: **Week 5**: the assistant, streaming, staff generation, AI analytics,
+> rate limiting and answer caching all work; the final demo is next. See
 > [Project status](#project-status) for what works today.
 
 ---
@@ -34,9 +35,10 @@ is the interface.
 flowchart TD
     Client["curl / Postman"] --> API["FastAPI API"]
 
-    API --> PG[("PostgreSQL + pgvector<br/>domain + outbox + analytics + vectors")]
-    API --> Redis[("Redis<br/>cache / broker / idempotency keys")]
+    API --> PG[("PostgreSQL + pgvector<br/>domain + outbox + analytics + vectors + AI records")]
+    API --> Redis[("Redis<br/>broker / idempotency keys /<br/>AI rate limit + answer cache")]
     API --> TemporalServer["Temporal server"]
+    API -- "HTTPS, streamed" --> LLM["Hosted LLM<br/>Groq by default"]
 
     TemporalServer --> TemporalWorker["Temporal worker<br/>workflows + activities"]
     TemporalWorker --> PG
@@ -62,9 +64,11 @@ Nothing but the Celery relay talks to Kafka. Events are written to an outbox
 table in the same transaction as the change that caused them, and the relay
 publishes from there — see `docs/events.md`.
 
-The AI layer adds no new service. The embedding model runs inside the API and
+The AI layer adds no new container. The embedding model runs inside the API and
 the Temporal worker, and the vectors live in the same Postgres through pgvector,
-so search's published filter is a plain `WHERE` clause. See `docs/ai-layer.md`.
+so search's published filter is a plain `WHERE` clause. The one thing outside
+the stack is the hosted model the assistant and staff generation call. Booking
+never waits on it. See `docs/ai-layer.md`.
 
 **Division of labour.** Temporal owns the multi-step durable workflows (service
 publishing, the appointment scheduling saga). Celery owns fire-and-forget work
@@ -78,40 +82,78 @@ The ERD lives in `docs/design.md`; exported copies of every diagram are in
 
 ## Running it
 
-**Prerequisites:** Docker Desktop. Nothing else — no local Python needed.
+**Prerequisites:** Docker Desktop. Nothing else: no local Python, and `make` is
+optional, since every step below is a plain `docker compose` command.
 
 ```bash
-# 1. configure
+# 1. configure: copy the template, then set two values in .env
 cp .env.example .env
-python -c "import secrets; print(secrets.token_urlsafe(48))"   # paste into JWT_SECRET
+#    JWT_SECRET: paste the output of
+docker run --rm python:3.11-slim python -c "import secrets; print(secrets.token_urlsafe(48))"
+#    LLM_API_KEY: a free Groq key from https://console.groq.com/keys, alone on
+#    its line. Without it everything works except the assistant and staff
+#    generation, which answer 503 ASSISTANT_UNAVAILABLE.
 
-# 2. start. `--build api` alone gives postgres + redis + api, which is enough
-#    for Week 1's domain; booking and publishing also need the Temporal server
-#    and worker, so from Week 2 on start everything
+# 2. build and start everything: Postgres, Redis, Temporal, Kafka, Prometheus,
+#    the API and its workers. The first build takes about 7 minutes, because it
+#    bakes the embedding model into the image
 docker compose up -d --build
 
 # 3. build the schema
 docker compose exec api alembic upgrade head
 
-# 4. load a synthetic demo dataset (clinic, departments, providers + schedules,
-#    services, patients) -- idempotent, safe to re-run. The services are
-#    published through the real publish workflow, so temporal-worker must be up
+# 4. load the synthetic demo data: a clinic, departments, providers with
+#    schedules and slots, services and patients. Safe to re-run. Each service
+#    is published through the real Temporal workflow
 docker compose exec api python -m scripts.seed
 
-# 5. check
+# 5. check: liveness, then every dependency
 curl http://localhost:8000/health
+curl http://localhost:8000/health/ready
 ```
 
-Then open <http://localhost:8000/docs>.
+Then open <http://localhost:8000/docs>. The seed prints its accounts, which all
+share the password `ChangeMe123!`:
+
+| Account | Role |
+|---|---|
+| `admin@medinova.example` | admin |
+| `frontdesk@medinova.example` | front desk |
+| `dr.khan@`, `dr.ahmed@`, `dr.raza@medinova.example` | provider |
+| `patient.one@`, `patient.two@`, `patient.three@example.com` | patient |
+
+### Try it
+
+Sign in with `POST /api/v1/auth/login` and send the `access_token` back as
+`Authorization: Bearer <token>`. In Swagger UI that is the **Authorize** button.
+
+```bash
+TOKEN=<patient.one's access_token>
+
+# ask the assistant, and watch the answer arrive as it is written
+curl -N http://localhost:8000/api/v1/assistant/ask/stream \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"question": "Do you offer knee scans?"}'
+
+# book: no route lists open slots, so take one from the database
+docker compose exec postgres psql -U app -d app -c "SELECT s.id AS slot_id, s.provider_id, ps.service_id, s.start_time FROM slots s JOIN provider_services ps ON ps.provider_id = s.provider_id JOIN services sv ON sv.id = ps.service_id WHERE s.status = 'AVAILABLE' AND s.start_time > now() AND sv.status = 'PUBLISHED' ORDER BY s.start_time LIMIT 5"
+# then book one of the rows it printed
+curl http://localhost:8000/api/v1/appointments \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -H "Idempotency-Key: try-it-1" \
+  -d '{"provider_id": 1, "slot_id": 17, "service_id": 4}'
+```
+
+The booking answers 202 at once; `GET /api/v1/appointments/{id}` shows it
+reach `CONFIRMED` about half a second later, once the saga has run.
 
 | Command | What it does |
 |---|---|
-| `docker compose up -d --build api` | API + Postgres + Redis |
-| `docker compose up -d` | the above + Temporal and its UI (Week 2) |
-| `docker compose --profile week3 up -d` | the above + Kafka, Kafka UI, Prometheus (Week 3) |
+| `docker compose up -d` | start everything, after the first build |
 | `docker compose logs -f api` | tail the API logs |
 | `docker compose down` | stop, keep data |
 | `docker compose down -v` | stop and wipe all data |
+| `make reset` | wipe all data, then steps 2 to 4 again: a clean demo state |
 
 ### Where things listen
 
@@ -179,14 +221,19 @@ docker compose run --rm test pytest --cov=app --cov-report=term-missing
 Run `make help` to list every target (`up`, `migrate`, `seed`, `lint`, `fmt`,
 `psql`, `reset`).
 
-Target is ≥25 meaningful tests and ≥80% coverage; the suite stands at 548 tests
-and 98% coverage. It embeds with `FakeEmbeddings`, and a guard fixture fails any
-test that tries to reach the network. The hard cases are covered as they land:
-50 threads racing one slot, a repeated idempotency key producing one appointment
-and one billing row, the saga compensating a billing failure, a failed reschedule
-leaving the original slot untouched, every illegal jump in the visit flow, a
-replayed event changing nothing, an unpublished service never reaching search,
-and a patient's details never being findable through it.
+Target is ≥25 meaningful tests and ≥80% coverage; the suite stands at 804 tests
+(plus 2 live ones, skipped) and 98.65% coverage, and takes about two and a half
+minutes. It embeds with `FakeEmbeddings` and answers with `FakeLLM`, and a guard
+fixture fails any test that tries to reach the network. The hard cases are
+covered as they land: 50 threads racing one slot, a repeated idempotency key
+producing one appointment and one billing row, the saga compensating a billing
+failure, a failed reschedule leaving the original slot untouched, every illegal
+jump in the visit flow, a replayed event changing nothing, an unpublished
+service never reaching search or the assistant, a "diagnose me" question
+refused with the disclaimer, another patient's appointment never reaching a
+prompt, a question that tries to break out of its tags, gibberish and broken
+bodies never causing a 500, a report reply retried once then failed cleanly,
+and the order of a stream's events.
 
 ---
 
@@ -195,7 +242,7 @@ and a patient's details never being findable through it.
 | Method | Path | Purpose | Access |
 |---|---|---|---|
 | GET | `/health` | Liveness | Public |
-| GET | `/health/db` | Temporary: confirms the API can reach Postgres | Public |
+| GET | `/health/ready` | Readiness: checks Postgres, Redis, Kafka and Temporal, each with a deadline; 503 if any is down | Public |
 | GET | `/docs` | Swagger UI | Public |
 | POST | `/api/v1/auth/register` | Patient self-registration | Public |
 | POST | `/api/v1/auth/login` | Issue a JWT | Public |
@@ -267,7 +314,8 @@ app/
   celery/         reminders and the outbox relay task
   events/         event envelope and the transactional outbox
   kafka/          relay, producer, consumer, dedupe, event handlers
-  ai/             chunking, embedding providers, vector store, retrieval
+  ai/             chunking, embedding providers, vector store, retrieval,
+                  the LLM client and every versioned prompt
 migrations/       Alembic revisions
 tests/            unit/ and integration/
 docs/             design, events, runbook, ai-layer, prd
@@ -291,7 +339,7 @@ leak `password_hash` and patient data).
 | `docs/runbook.md` | Diagnosing a stuck booking, missing reminders, wrong analytics numbers and a silent consumer |
 | `docs/kafka-ui-demo.md` | Driving the event path from Kafka UI: a good event, a replay, three faulty events, and a transient outage |
 | `docs/retrieval-demo.md` | A 15-minute Week 4 demo: search, publish and find a service, re-index, withdraw, an embedding failure, the eval |
-| `docs/ai-layer.md` | Embeddings, chunking, the embedding provider, vector storage, re-indexing, `POST /search` with its threshold and filters, the retrieval eval, offline testing, the LLM provider, prompts, `POST /assistant/ask` with its transcripts, its streamed form with the booking-during-AI demonstration, and staff generation with its prompts and live output |
+| `docs/ai-layer.md` | Embeddings, chunking, the embedding provider, vector storage, re-indexing, `POST /search` with its threshold and filters, the retrieval eval, offline testing, the LLM provider and its timeouts, prompts, `POST /assistant/ask` with its transcripts, its streamed form with the booking-during-AI demonstration, staff generation with its prompts and live output, AI metrics and analytics, rate limiting, and the answer cache |
 | `docs/prd.md` | Requirements, milestones, and the requirement → implementation → test traceability table |
 | `NOTES.md` | Working log and weekly tracking tables |
 
@@ -356,17 +404,25 @@ hand-edit them.
 - **Week 4:** one enriched chunk per service, embedded inside the publish
   workflow with retries; re-indexing on re-publish; `POST /search` with a
   threshold chosen by an eval set.
+- **Week 5:** the patient assistant, which refuses medical advice with fixed
+  text and the disclaimer, recommends only published services with citations,
+  says "we don't offer that" when nothing matches, and answers preparation and
+  availability questions from the caller's own appointments and real open
+  slots. Its answers stream as server-sent events. Front desk and admin stream
+  appointment summaries, follow-up drafts and a validated utilisation report
+  whose figures match the analytics. Every AI call is recorded with ids,
+  tokens and latency, counted in Prometheus and `GET /analytics/ai`, limited
+  to ten a minute per user, and repeated questions are answered from a cache.
 
-548 tests at 98% coverage.
+804 tests at 98.65% coverage. A clean clone was run end to end from this
+README on Week 5 Day 5.
 
 **Known limitations:** the saga's compensation is covered as two halves plus a
 live demonstration rather than one end-to-end test; a booking whose workflow
 fails to start because Temporal is unreachable stays `REQUESTED` with nothing to
 retry it; overlapping provider *schedule* windows are not prevented, only the
-overlapping slots they would generate; booking accepts a slot in the past; check-in is
-accepted days early, recording a negative wait; search gives a near miss ("chest x-ray") a weak match instead of "we don't offer that".
-See `docs/prd.md` §7.
-
-**Week 5 so far:** `POST /assistant/ask`, which refuses medical advice with fixed text, answers navigation questions from the published services with citations, and answers preparation and availability questions from the caller's own appointments and real open slots. `POST /assistant/ask/stream` sends the same answer as server-sent events and records a dropped connection as `INTERRUPTED`. Front desk and admin can stream an appointment summary, a follow-up draft and a utilisation report whose numbers all come from the database; the report's commentary is validated, with one repair retry, and every run is saved to `generated_content`.
-
-**Not built yet:** AI analytics and metrics, rate limiting, and accepting or rejecting a generated draft (Week 5).
+overlapping slots they would generate; booking accepts a slot in the past;
+check-in is accepted days early, recording a negative wait; search gives a near
+miss ("chest x-ray") a weak match instead of "we don't offer that"; no route
+lists a provider's open slots; staff cannot yet accept or reject a generated
+draft (a SHOULD). See `docs/prd.md` §7.
