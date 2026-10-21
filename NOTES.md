@@ -1945,3 +1945,77 @@ generation (5.9) with `generated_content` (5.10).
 - Booking took 2.6-4.0 s to confirm under AI load, 0.45 s without; cause not
   measured.
 - Week 3's two (relay `attempts=1`, uncovered handler branches) still open.
+
+### Day 4 - 2026-10-21
+
+**Goal:** AI metrics and analytics (5.11), then rate limiting and answer
+caching (5.12).
+
+**Done**
+
+- 5.11: Prometheus AI metrics counted in `record_interaction()`:
+  interactions by intent and outcome, latency, tokens, refusals.
+- 5.11: `GET /analytics/ai`: outcomes, intents, average and p95 latency,
+  tokens, booking conversion, cache hits. Read from `ai_interactions`.
+- 5.12: 10 AI requests per user per minute across the five AI routes,
+  Redis `INCR`; 429 with `Retry-After`. Redis down: let through, logged,
+  counted.
+- 5.12: answer cache for replies holding nothing about the patient; the key
+  hashes everything the reply depends on. TTL 1 h, never extended.
+- `ai_interactions.cache_hit`, migration round-tripped.
+- Live on Groq: metrics equal the rows' sums; conversion 0 -> 1 after a
+  real booking; 11th request 429; Redis stopped, requests still answered;
+  cache hit 26 ms against 1,095 ms.
+- 749 -> 784 tests, 98.65% coverage.
+
+**Decisions**
+
+| Decision | Why |
+|---|---|
+| Metrics after the commit in `record_interaction()` | Every AI path ends there; counts match the table |
+| `/analytics/ai` from raw rows | p95 needs every latency |
+| Conversion per patient, 24 h window | Five questions and one booking is one conversion |
+| Rate limit lets requests through when Redis is down | It guards a budget, not safety |
+| Rate limit after the role check | A 403 never uses up a request |
+| Cache key hashes the services found and their text | Unpublish or edit needs no invalidation code |
+| Booking answers never cached | They hold the caller's appointments |
+
+**Cost time**
+
+- The runbook's refusal query said 0 after a refusal: a labelled series
+  appears at 1, so `increase()` had no earlier sample. Every series now
+  starts at zero.
+- Redis stopped added 3-4 s per AI request: Docker's DNS took 3.56 s to
+  fail the name `redis`, and the 2 s Redis timeout doesn't cover a lookup.
+  Documented, not fixed.
+- A deliberate break (caching FAILED replies) passed: `/ask` raises before
+  the store. Retested on a stream cut short.
+- Three test premises wrong: a duplicate test file name, `FakeLLM`
+  repeating its last reply, `done` after `error` on a stream.
+- Coverage misreported lines after black reformatted files mid-run;
+  re-ran.
+
+**Explain out loud**
+
+- FastAPI resolves dependencies in declaration order, before body
+  validation: the limit after `require_role` skips a 403 but counts a 422.
+- A live cache miss was correct: without its "?", the question found three
+  services, not four, so the key differed.
+
+**Carrying into Day 5**
+
+- Open the Day 4 PR against `week-5-assistant-day-3`.
+- 5.13: check the brief's test list against the suite.
+- 5.14: clean clone following only the README; `make reset` before the
+  demo.
+- 5.15: regenerate `docs/diagrams/erd-core-domain.svg` (no Week 5 tables,
+  no `cache_hit`); architecture diagram; README pass.
+- 5.16: demo script and rehearsal.
+
+**Open questions**
+
+- A 422 uses up one of the ten AI requests a minute. Acceptable?
+- Check-in is accepted days early, recording a negative wait (`prd.md` 7).
+  Fix now, or keep as a known gap?
+- Booking took 2.6-4.0 s to confirm under AI load; cause not measured.
+- Week 3's two (relay `attempts=1`, uncovered handler branches) still open.
