@@ -7,6 +7,7 @@ tested end to end with FakeLLM once /assistant/ask exists (task 5.4).
 """
 
 import hashlib
+import re
 from dataclasses import fields, replace
 from datetime import datetime
 from pathlib import Path
@@ -435,3 +436,70 @@ def test_the_repair_prompt_shows_the_model_its_reply_and_what_was_wrong() -> Non
     assert repair.messages[3].content.startswith(
         "Your reply could not be used: reply: Invalid JSON."
     )
+
+
+# --- rules every version must keep (task 5.13) ----------------------------
+#
+# The hash test stops a version being edited, but not a new version that
+# drops a rule. These read the system message each builder sends today, so
+# a V2 is checked as soon as a builder switches to it.
+
+ANSWER_PROMPTS = {
+    "navigation": lambda: build_navigation_prompt("q", [KNEE_XRAY], clinic=CLINIC),
+    "preparation": lambda: build_preparation_prompt(
+        "q", [MRI_APPOINTMENT], [KNEE_XRAY], clinic=CLINIC
+    ),
+}
+STAFF_PROMPTS = {
+    "summary": lambda: build_summary_prompt(FACTS, clinic=CLINIC),
+    "followup": lambda: build_followup_prompt(FACTS, clinic=CLINIC),
+    "report": lambda: build_report_prompt("{}", clinic=CLINIC),
+}
+EVERY_PROMPT = {
+    "safety": lambda: build_safety_prompt("q", clinic=CLINIC),
+    **ANSWER_PROMPTS,
+    **STAFF_PROMPTS,
+}
+
+
+@pytest.mark.parametrize("build", ANSWER_PROMPTS.values(), ids=list(ANSWER_PROMPTS))
+def test_every_answer_prompt_forbids_medical_advice_and_says_how_to_refuse(
+    build,
+) -> None:
+    """The safety check is the first guard and this is the second: a
+    medical question the check mislabels still reaches a model told to
+    refuse it."""
+    system = build().messages[0].content
+
+    assert "You are not a clinician." in system
+    assert "Never diagnose" in system
+    assert "suggest a treatment, medication or dose" in system
+    assert "say you cannot give medical advice" in system
+
+
+@pytest.mark.parametrize("build", STAFF_PROMPTS.values(), ids=list(STAFF_PROMPTS))
+def test_every_staff_prompt_keeps_to_logistics(build) -> None:
+    """A summary or follow-up goes to a patient once staff approve it, so
+    it must not talk about their health either."""
+    system = build().messages[0].content
+
+    # One sentence, so the words cannot come from different rules.
+    assert re.search(r"Never mention [^.]*symptoms, diagnoses[^.]*treatments", system)
+
+
+@pytest.mark.parametrize("build", EVERY_PROMPT.values(), ids=list(EVERY_PROMPT))
+def test_every_tagged_block_is_named_in_the_rule_that_says_it_is_data(
+    build,
+) -> None:
+    """A new block, say <slots>, added without naming it in that rule
+    would be text the model has not been told to distrust."""
+    system, user = build().messages
+    # Each block opens with its tag alone on a line.
+    tags = re.findall(r"^<(\w+)>$", user.content, re.MULTILINE)
+    data_rule = next(
+        line for line in system.content.splitlines() if "instructions" in line
+    )
+
+    assert tags
+    for tag in tags:
+        assert f"<{tag}> and </{tag}>" in data_rule

@@ -142,8 +142,12 @@ class Settings(BaseSettings):
     assistant_clinic_name: str = "MediNova"
     # Seconds httpx waits on any one step of a model call: connecting, or
     # the gap between two pieces of a reply. A per-step limit rather than a
-    # total, so a long reply that keeps arriving is never cut off.
-    ai_request_timeout_seconds: float = 60.0
+    # total, so a long reply that keeps arriving is never cut off. 20, not
+    # the earlier 60: normal replies arrive within about a second, so 20 s
+    # only cuts a stall, and with one retry a provider that stops answering
+    # costs the patient about 41 s before the 503 instead of 121 s
+    # (docs/ai-layer.md section 9).
+    ai_request_timeout_seconds: float = 20.0
     # AI requests each user may make per clock minute, across the five AI
     # routes together (app/services/rate_limit.py).
     ai_rate_limit_per_minute: int = 10

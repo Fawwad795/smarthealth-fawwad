@@ -83,6 +83,20 @@ behaviour, not "at the end".
   The default silences every `app.*` logger once a migration has run, and every
   log-assertion test then captures nothing.
 
+## Established in Week 5 — follow it
+
+- **`fake_llm_by_default`** joins the two Week 4 autouse fixtures. `FakeLLM` gives
+  each call the next scripted reply, the last repeating, and raises any that is
+  an `LLMError`; script the safety label first, then the answer.
+- **Stream tests read events with `tests/streaming.py`**; `BreaksMidStream` and
+  `StallsMidStream` misbehave part-way. TestClient cannot hang up, so disconnect
+  tests call the service's stream directly and close it.
+- **A filter test must give the excluded row every reason to appear except the
+  one being tested.** Day 5's open-slots test passed with the service filter
+  removed: its other provider offered nothing, so a join dropped them anyway.
+- **A no-PHI log test covers every route that handles the text**, the stream as
+  well as `/ask`, and checks the answer as well as the question.
+
 ## Never
 
 - Real network calls. Fakes behind the provider interfaces.

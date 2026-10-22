@@ -46,6 +46,11 @@ transaction that sets `booked_at`, so the count comes from there.
 than it acts on — three of the six move a number, the other three are there for
 anyone who subscribes later.
 
+The AI layer publishes no events. Each assistant question and staff generation
+is a row in `ai_interactions`, and `GET /analytics/ai` counts those rows
+directly, because its p95 latency needs every row in the range
+(`docs/design.md`, Week 5 decisions).
+
 ## Topics
 
 One topic per aggregate, not per event type: `app.appointments`, `app.visits`,

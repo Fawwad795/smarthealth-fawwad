@@ -2019,3 +2019,67 @@ caching (5.12).
   Fix now, or keep as a known gap?
 - Booking took 2.6-4.0 s to confirm under AI load; cause not measured.
 - Week 3's two (relay `attempts=1`, uncovered handler branches) still open.
+
+### Day 5 - 2026-10-22
+
+**Goal:** Tests against the brief's list (5.13), hardening and a clean-clone
+run (5.14), final docs (5.15) and the demo script (5.16).
+
+**Done**
+
+- 5.13: suite checked against the brief's six test areas; 20 new cases:
+  prompt rules a V2 must keep, broken bodies, one word, gibberish, tag
+  injection with PHI, logs on both routes.
+- 5.14: clean clone from the README alone, three times; README fixed (Groq
+  key, accounts, `/health/ready`, Docker-only secret, stale counts).
+- 5.14: `AI_REQUEST_TIMEOUT_SECONDS` 60 -> 20; a silent provider ends in a
+  503 after 41 s, measured.
+- `GET /services/{id}/slots`: public, published only, open future slots
+  with the ids a booking needs. Found missing by the clean clone.
+- 5.15: cost and latency, failure modes in `ai-layer.md`; NFR-12 to 15;
+  ERD, module breakdown, two SVGs; runbook 6; Week 5 rules.
+- 5.16: `docs/demo.md`; every command run word for word on a fresh stack,
+  144 s including the reset.
+- 784 -> 813 tests, 98.66% coverage.
+
+**Decisions**
+
+| Decision | Why |
+|---|---|
+| A 422 still counts toward the AI limit | Bad input in a loop is slowed too |
+| Early check-in stays a known gap | Part A, not a MUST |
+| Timeout 20 s per step | Replies come within a second; 41 s to a 503, not 121 s |
+| Slots listed per service, public | A patient finds the service first; rows hold the booking ids |
+| Demo reset migrates before `up` | Beat's first relay can run before the tables exist |
+
+**Cost time**
+
+- `name: app` in the compose file: a clone would have reused, then wiped,
+  the dev volumes. `COMPOSE_PROJECT_NAME` kept it apart.
+- Groq's free tier answered 429 on the eleventh question in seven seconds:
+  8,000 tokens a minute for the whole clinic.
+- One summary stalled 31.6 s at Groq; ten more took under a second.
+- My slots test passed with the service filter removed: its other provider
+  offered nothing, so the join dropped them anyway.
+- One fresh stack in three dead-lettered a relay run before the migration;
+  the report then mentioned a failed job.
+- Booking under AI load measured 0.67-1.56 s to `CONFIRMED`; Day 3's 2.6-4.0 s
+  did not come back.
+
+**Explain out loud**
+
+- The report's department figures count slots taking place in the range;
+  the analytics count bookings made in it. The demo uses the coming week.
+- Reports slowed booking as much as questions did, so the cost is the API
+  serving concurrent requests, not embedding alone.
+
+**Carrying into the review**
+
+- Open the Day 5 PR against `week-5-assistant-day-4`.
+- Weekly self-check; reset with `docs/demo.md` section 0; give the demo.
+
+**Open questions**
+
+- Staff accept/reject of generated drafts (a SHOULD) is not built. Acceptable?
+- Fix the startup race with a one-shot migration service, or keep it documented?
+- Week 3's two (relay `attempts=1`, uncovered handler branches) still open.
