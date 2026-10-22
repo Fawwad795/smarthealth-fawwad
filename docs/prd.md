@@ -168,6 +168,13 @@ assistant. API only — no UI. No clinical data anywhere.
   Reports, which embed nothing, slowed it as much as questions did, so the
   cost is the API serving concurrent requests, not embedding alone. Day 3's
   2.6 to 4.0 s did not come back.
+- **A fresh stack can start with one dead-lettered job.** Celery Beat starts
+  with the other services and runs the outbox relay every 5 s, so on a fresh
+  database its first run can come before `alembic upgrade head` has made the
+  tables. That run lands in `failed_jobs`, and the analytics then show one
+  failed job. It happened on one of three fresh starts on Week 5 Day 5. Running
+  the migration before `docker compose up -d` avoids it (`docs/demo.md`
+  section 0); a one-shot migration service the workers wait for would fix it.
 - **While Redis is stopped, every AI request waits 3 to 4 s** for Docker's DNS
   to fail the name `redis`, which the 2 s Redis timeout does not cover. The
   request is still answered. `docs/ai-layer.md` section 16.
