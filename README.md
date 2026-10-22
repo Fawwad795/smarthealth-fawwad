@@ -339,6 +339,7 @@ leak `password_hash` and patient data).
 | `docs/events.md` | Every event: envelope, catalogue, topics, the outbox, and how a replay changes nothing |
 | `docs/runbook.md` | Diagnosing a stuck booking, missing reminders, wrong analytics numbers, a silent consumer, a failed publish, and an assistant answering 503 |
 | `docs/kafka-ui-demo.md` | Driving the event path from Kafka UI: a good event, a replay, three faulty events, and a transient outage |
+| `docs/demo.md` | The final 20-minute demo: every command in order, with its expected output and what to say |
 | `docs/retrieval-demo.md` | A 15-minute Week 4 demo: search, publish and find a service, re-index, withdraw, an embedding failure, the eval |
 | `docs/ai-layer.md` | Embeddings, chunking, the embedding provider, vector storage, re-indexing, `POST /search` with its threshold and filters, the retrieval eval, offline testing, the LLM provider and its timeouts, prompts, `POST /assistant/ask` with its transcripts, its streamed form with the booking-during-AI demonstration, staff generation with its prompts and live output, AI metrics and analytics, rate limiting, the answer cache, what each request costs and how long it takes, and every failure mode |
 | `docs/prd.md` | Requirements, milestones, and the requirement → implementation → test traceability table |
