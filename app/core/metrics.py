@@ -81,6 +81,71 @@ events_failed = Counter(
 )
 
 
+# --- AI metrics (task 5.11) ---------------------------------------------
+#
+# Updated in one place, record_interaction(), which every assistant question
+# and staff generation ends in. Every label is an enum value, so the set of
+# label combinations is fixed. Never a user id, and never the question: each
+# new value would be a new metric kept forever, and the question is the
+# patient's own words.
+#
+# A failure is outcome="FAILED", in the same way an HTTP error is a status
+# label on http_requests rather than a counter of its own.
+
+ai_interactions = Counter(
+    "ai_interactions",
+    "AI interactions finished, by intent and outcome.",
+    ["intent", "outcome"],
+)
+
+ai_interaction_duration = Histogram(
+    "ai_interaction_duration_seconds",
+    "How long each AI interaction took, from the request to the last of the answer.",
+    ["intent"],
+    # The default buckets stop at 10 s, and a streamed report can take
+    # longer. Above the top bucket Prometheus only knows "more than", so
+    # these reach 60 s, the provider timeout.
+    buckets=(0.25, 0.5, 1, 2, 4, 8, 15, 30, 60),
+)
+
+ai_tokens = Counter(
+    "ai_tokens",
+    "Tokens sent to the model (input) and received from it (output).",
+    ["direction"],
+)
+
+# The same refusals are in ai_interactions under outcome="REFUSED". This one
+# is kept separate because the brief asks for a refusal counter by name.
+ai_refusals = Counter(
+    "ai_refusals",
+    "Questions refused as requests for medical advice.",
+    ["intent"],
+)
+
+# The rate limit (task 5.12). Neither request reaches the model or writes an
+# ai_interactions row, so these counters are the only record of them.
+ai_rate_limited = Counter(
+    "ai_rate_limited",
+    "AI requests refused with a 429 for going over the per-user limit.",
+)
+
+ai_rate_limit_skipped = Counter(
+    "ai_rate_limit_skipped",
+    "AI requests let through unchecked because Redis could not be reached.",
+)
+
+# The answer cache (task 5.12): hit, miss, or error when Redis could not be
+# reached and the question was answered as a miss.
+ai_answer_cache = Counter(
+    "ai_answer_cache",
+    "Answer cache lookups, by result.",
+    ["result"],
+)
+# Every result starts at zero, so increase() sees the first of each.
+for _result in ("hit", "miss", "error"):
+    ai_answer_cache.labels(_result)
+
+
 def endpoint_label(request: Any) -> str:
     """The route *template* for a request, e.g. /api/v1/appointments/{id}.
 

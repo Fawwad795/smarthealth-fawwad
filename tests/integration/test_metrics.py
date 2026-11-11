@@ -62,6 +62,24 @@ def test_metrics_page_declares_the_domain_counters(client: TestClient) -> None:
         assert name in body
 
 
+def test_the_ai_series_are_on_the_page_at_zero_before_any_interaction(
+    client: TestClient,
+) -> None:
+    """A series must exist at zero before its first increment, or
+    Prometheus's increase() misses that first refusal.
+
+    Checked on a combination no test ever records (staff generation is
+    never refused), so its zero is the starting value, not a leftover.
+    """
+    body = client.get(METRICS_PATH).text
+
+    assert (
+        'ai_interactions_total{intent="STAFF_GENERATION",outcome="REFUSED"} 0.0' in body
+    )
+    assert 'ai_refusals_total{intent="none"}' in body
+    assert 'ai_tokens_total{direction="output"}' in body
+
+
 def test_requests_are_labelled_by_route_not_by_url(client: TestClient) -> None:
     """Two ids on one route produce one metric, not two.
 

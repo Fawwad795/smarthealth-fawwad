@@ -1752,3 +1752,334 @@ back to the rules.
 - No ruling on the three open questions (local model, `/search` PHI scoping,
   near misses); the current approach stands. Demo service 16 unpublished and
   renamed after; 12 seed services published, eval unchanged.
+
+---
+
+## Week 5 - AI Assistant, Streaming & Demo
+
+### Day 1 - 2026-10-18
+
+**Goal:** Build what `/assistant/ask` needs: the LLM provider (5.1), versioned
+prompts (5.2) and `ai_interactions` (5.7).
+
+**Done**
+
+- 5.1: `LLMProvider` (`complete()`, `stream()`), an httpx client for Groq or
+  OpenAI, `FakeLLM`, and the `fake_llm_by_default` fixture.
+- Default model `qwen/qwen3.8-27b`; Groq had dropped `llama-3.1-8b-instant`.
+- 5.2: safety, navigation and preparation prompts, fixed refusal and "we
+  don't offer that" replies; versions frozen by a hash test.
+- Live on Groq: 16/16 synthetic questions labelled right, both injections
+  included. "Chest x-ray" now gets "does not offer".
+- 5.7: `ai_interactions` (ids, labels, counts), migration round-tripped,
+  `record_interaction()`.
+- `docs/ai-layer.md` sections 9-11; Week 5 decisions in `design.md`.
+- 548 -> 625 tests (2 live, skipped), 98.30% coverage.
+
+**Decisions**
+
+| Decision | Why |
+|---|---|
+| httpx client, not an SDK | Already a dependency; one class for Groq and OpenAI |
+| Refusal is fixed text; code adds the disclaimer | Never depends on model wording |
+| No question or answer text in `ai_interactions` | "Store ids, not patient text" |
+| `outcome` enum, not a `refused` flag | An interaction ends one way |
+| `STAFF_GENERATION` intent added now | Avoids a constraint migration in 5.9 |
+
+**Cost time**
+
+- `.env` had no Groq key: Compose passed the comment after `LLM_API_KEY=` as
+  the key, so every call got 401.
+- Groq sends a stream's token counts twice; only the live test showed it.
+- The docs test failed on its first run: `NO_MATCH_V1` was quoted, never named.
+
+**Explain out loud**
+
+- A stream retries only before its first piece: after that, a retry sends the
+  start of the answer twice.
+- `aclosing()` closes Groq's connection the moment the patient disconnects,
+  not when the garbage collector gets to it.
+
+**Carrying into Day 2**
+
+- 5.6 input checks, 5.4 refusal (a `None` label refuses), 5.3 `/ask` without
+  streaming.
+- `/ask` embeds (CPU) and calls the model (async): embed in
+  `asyncio.to_thread`.
+- Restart `api` so it loads the new key and model.
+
+**Open questions**
+
+- `ai_interactions` stores no question or answer text, though the task names
+  both. Acceptable?
+- Week 3's two (relay `attempts=1`, uncovered handler branches) still open.
+
+### Day 2 - 2026-10-20
+
+**Goal:** `/assistant/ask` end to end without streaming: input checks (5.6),
+refusal (5.4), the route (5.3), answers from the patient's own appointments
+(5.5).
+
+**Done**
+
+- 5.6: `AskRequest`; empty, over 1000 characters or letterless is a 422
+  before any AI work. Gibberish scores 0.069-0.138, under the threshold.
+- 5.4: `check_safety()`; `medical_advice` or no label gets the fixed refusal
+  and the disclaimer. Safety call capped at 16 tokens.
+- 5.3: `POST /assistant/ask`, patients only, with citations. Every question
+  writes an `ai_interactions` row, failures included.
+- 5.5: `PROMPT_PREP_V2`: own upcoming appointments, plus the services found
+  with their next three open times. Scoped on `patients.user_id` in SQL.
+- `FakeLLM` scripts a reply per call; `tests/indexing.py` shared.
+- Live on Groq: "diagnose me" refused; recommendation, preparation, open
+  times and PHI scoping as expected. Transcripts in `ai-layer.md` 12.
+- 625 -> 686 tests, 98.40% coverage.
+
+**Decisions**
+
+| Decision | Why |
+|---|---|
+| Retrieval before the safety check | Every path needs the services |
+| `commit()` before each model call | An open transaction holds a pooled connection |
+| `other` answered like navigation | The threshold decides; no new prompt |
+| `PROMPT_PREP_V2` for preparation and availability | One prompt for "my appointment" and "a service" |
+| Booking questions skip "we don't offer that" | "What should I bring tomorrow?" names no service |
+| `retrieved_ids` gains `slots` | Availability answers checkable against their slots |
+
+**Cost time**
+
+- Open-transaction test saw `[True, True]`: both model calls held a
+  connection until `commit()` went in.
+- Slot ids recorded once per service: one dermatologist offers four. Found
+  live, not by the tests.
+- A heredoc turned `\n` escapes into newlines in `prompts.py`; back to the
+  Edit tool for code.
+- A comment said `commit()` expires loaded values; `SessionLocal` sets
+  `expire_on_commit=False`.
+
+**Explain out loud**
+
+- The route is `async def`; embedding and the database run in
+  `asyncio.to_thread`. With six questions in flight, `/health` took 13 ms.
+- PHI scoping is the SQL `WHERE`, from the token; the prompt's "the
+  patient's own" enforces nothing.
+
+**Carrying into Day 3**
+
+- 5.8 SSE for `/ask`: tokens, citations, `done`; record an interrupted
+  answer.
+- Demonstrate booking during a long AI call (DoD).
+- Then 5.9 staff generation.
+
+**Open questions**
+
+- Resolved: `ai_interactions` stores no question or answer text (approved on
+  Day 2).
+- Week 3's two (relay `attempts=1`, uncovered handler branches) still open.
+
+### Day 3 - 2026-10-20
+
+**Goal:** Stream `/ask` (5.8) and show booking isn't blocked, then staff
+generation (5.9) with `generated_content` (5.10).
+
+**Done**
+
+- 5.8: `POST /assistant/ask/stream`: provider pieces as `token` events, then
+  `citations`, `done`; `error` if the model fails after the 200.
+- `/ask` unchanged; both share `_prepare()`. A dropped connection is recorded
+  `INTERRUPTED`. `SSEResponse` in `app/core/sse.py`.
+- Booking during AI: 99 ms alone, 101 ms with five streamed answers, 228 ms
+  while they embedded, 137 ms with five reports generating.
+- 5.9: summary, follow-up and utilisation report routes, front desk and
+  admin, streamed. The model writes report commentary only: no digits, one
+  repair retry.
+- 5.10: `generated_content` with prompt version, model and its
+  `ai_interactions` row; every run saved, interrupted and failed included.
+- Live on Groq: a summary, two follow-ups and a report valid first time; its
+  figures equal `GET /analytics/summary`.
+- 686 -> 749 tests, 99% coverage.
+
+**Decisions**
+
+| Decision | Why |
+|---|---|
+| Separate `/ask/stream`; `/ask` kept | One response type per route; Swagger can't show a stream |
+| Retrieval and safety check before the stream | Their failures stay JSON errors |
+| `SSEResponse` closes its generator | Starlette 0.41 never does after a disconnect |
+| Final write shielded | A disconnect cancels the request, and the write with it |
+| No digits in report commentary | A number the model never writes can't be wrong |
+| Department figures from `slots` | `analytics_daily` has no department |
+| 5.10 built with 5.9 | "Still persist what was generated" needs the table |
+
+**Cost time**
+
+- An interrupted answer was recorded 106 s late, at a reload. Two throwaway
+  apps showed why: Starlette leaves a generator paused at a `yield` unclosed.
+- `answer_chars` missed the piece in hand: counted after the `yield`, where
+  a disconnect lands. Found by a test.
+- The scope CHECK let a report with a null `report_end` through: a CHECK
+  passes on null. Caught reading the migration.
+- Git Bash `date` per line (~80 ms) made the first stream timing useless;
+  re-timed in Python.
+
+**Explain out loud**
+
+- A disconnect reaches a stream two ways: `GeneratorExit` at a `yield`
+  (`SSEResponse` closes it), or a cancellation while it waits on Groq (the
+  shield).
+- FastAPI 0.115 closes `get_db` before the stream body runs; the final write
+  reuses the closed session, which SQLAlchemy 2.0 allows.
+
+**Carrying into Day 4**
+
+- 5.11 AI analytics (booking conversion, refusal counter) and Prometheus AI
+  metrics.
+- 5.12 Redis rate limiting and answer caching.
+- Regenerate `docs/diagrams/erd-core-domain.svg`; `make reset` before the
+  demo (appointment 9's negative wait is in the dev analytics).
+
+**Open questions**
+
+- Check-in is accepted days early, recording a negative wait (`prd.md` 7).
+  Fix now, or keep as a known gap?
+- Booking took 2.6-4.0 s to confirm under AI load, 0.45 s without; cause not
+  measured.
+- Week 3's two (relay `attempts=1`, uncovered handler branches) still open.
+
+### Day 4 - 2026-10-21
+
+**Goal:** AI metrics and analytics (5.11), then rate limiting and answer
+caching (5.12).
+
+**Done**
+
+- 5.11: Prometheus AI metrics counted in `record_interaction()`:
+  interactions by intent and outcome, latency, tokens, refusals.
+- 5.11: `GET /analytics/ai`: outcomes, intents, average and p95 latency,
+  tokens, booking conversion, cache hits. Read from `ai_interactions`.
+- 5.12: 10 AI requests per user per minute across the five AI routes,
+  Redis `INCR`; 429 with `Retry-After`. Redis down: let through, logged,
+  counted.
+- 5.12: answer cache for replies holding nothing about the patient; the key
+  hashes everything the reply depends on. TTL 1 h, never extended.
+- `ai_interactions.cache_hit`, migration round-tripped.
+- Live on Groq: metrics equal the rows' sums; conversion 0 -> 1 after a
+  real booking; 11th request 429; Redis stopped, requests still answered;
+  cache hit 26 ms against 1,095 ms.
+- 749 -> 784 tests, 98.65% coverage.
+
+**Decisions**
+
+| Decision | Why |
+|---|---|
+| Metrics after the commit in `record_interaction()` | Every AI path ends there; counts match the table |
+| `/analytics/ai` from raw rows | p95 needs every latency |
+| Conversion per patient, 24 h window | Five questions and one booking is one conversion |
+| Rate limit lets requests through when Redis is down | It guards a budget, not safety |
+| Rate limit after the role check | A 403 never uses up a request |
+| Cache key hashes the services found and their text | Unpublish or edit needs no invalidation code |
+| Booking answers never cached | They hold the caller's appointments |
+
+**Cost time**
+
+- The runbook's refusal query said 0 after a refusal: a labelled series
+  appears at 1, so `increase()` had no earlier sample. Every series now
+  starts at zero.
+- Redis stopped added 3-4 s per AI request: Docker's DNS took 3.56 s to
+  fail the name `redis`, and the 2 s Redis timeout doesn't cover a lookup.
+  Documented, not fixed.
+- A deliberate break (caching FAILED replies) passed: `/ask` raises before
+  the store. Retested on a stream cut short.
+- Three test premises wrong: a duplicate test file name, `FakeLLM`
+  repeating its last reply, `done` after `error` on a stream.
+- Coverage misreported lines after black reformatted files mid-run;
+  re-ran.
+
+**Explain out loud**
+
+- FastAPI resolves dependencies in declaration order, before body
+  validation: the limit after `require_role` skips a 403 but counts a 422.
+- A live cache miss was correct: without its "?", the question found three
+  services, not four, so the key differed.
+
+**Carrying into Day 5**
+
+- Open the Day 4 PR against `week-5-assistant-day-3`.
+- 5.13: check the brief's test list against the suite.
+- 5.14: clean clone following only the README; `make reset` before the
+  demo.
+- 5.15: regenerate `docs/diagrams/erd-core-domain.svg` (no Week 5 tables,
+  no `cache_hit`); architecture diagram; README pass.
+- 5.16: demo script and rehearsal.
+
+**Open questions**
+
+- A 422 uses up one of the ten AI requests a minute. Acceptable?
+- Check-in is accepted days early, recording a negative wait (`prd.md` 7).
+  Fix now, or keep as a known gap?
+- Booking took 2.6-4.0 s to confirm under AI load; cause not measured.
+- Week 3's two (relay `attempts=1`, uncovered handler branches) still open.
+
+### Day 5 - 2026-10-22
+
+**Goal:** Tests against the brief's list (5.13), hardening and a clean-clone
+run (5.14), final docs (5.15) and the demo script (5.16).
+
+**Done**
+
+- 5.13: suite checked against the brief's six test areas; 20 new cases:
+  prompt rules a V2 must keep, broken bodies, one word, gibberish, tag
+  injection with PHI, logs on both routes.
+- 5.14: clean clone from the README alone, three times; README fixed (Groq
+  key, accounts, `/health/ready`, Docker-only secret, stale counts).
+- 5.14: `AI_REQUEST_TIMEOUT_SECONDS` 60 -> 20; a silent provider ends in a
+  503 after 41 s, measured.
+- `GET /services/{id}/slots`: public, published only, open future slots
+  with the ids a booking needs. Found missing by the clean clone.
+- 5.15: cost and latency, failure modes in `ai-layer.md`; NFR-12 to 15;
+  ERD, module breakdown, two SVGs; runbook 6; Week 5 rules.
+- 5.16: `docs/demo.md`; every command run word for word on a fresh stack,
+  144 s including the reset.
+- 784 -> 813 tests, 98.66% coverage.
+
+**Decisions**
+
+| Decision | Why |
+|---|---|
+| A 422 still counts toward the AI limit | Bad input in a loop is slowed too |
+| Early check-in stays a known gap | Part A, not a MUST |
+| Timeout 20 s per step | Replies come within a second; 41 s to a 503, not 121 s |
+| Slots listed per service, public | A patient finds the service first; rows hold the booking ids |
+| Demo reset migrates before `up` | Beat's first relay can run before the tables exist |
+
+**Cost time**
+
+- `name: app` in the compose file: a clone would have reused, then wiped,
+  the dev volumes. `COMPOSE_PROJECT_NAME` kept it apart.
+- Groq's free tier answered 429 on the eleventh question in seven seconds:
+  8,000 tokens a minute for the whole clinic.
+- One summary stalled 31.6 s at Groq; ten more took under a second.
+- My slots test passed with the service filter removed: its other provider
+  offered nothing, so the join dropped them anyway.
+- One fresh stack in three dead-lettered a relay run before the migration;
+  the report then mentioned a failed job.
+- Booking under AI load measured 0.67-1.56 s to `CONFIRMED`; Day 3's 2.6-4.0 s
+  did not come back.
+
+**Explain out loud**
+
+- The report's department figures count slots taking place in the range;
+  the analytics count bookings made in it. The demo uses the coming week.
+- Reports slowed booking as much as questions did, so the cost is the API
+  serving concurrent requests, not embedding alone.
+
+**Carrying into the review**
+
+- Open the Day 5 PR against `week-5-assistant-day-4`.
+- Weekly self-check; reset with `docs/demo.md` section 0; give the demo.
+
+**Open questions**
+
+- Staff accept/reject of generated drafts (a SHOULD) is not built. Acceptable?
+- Fix the startup race with a one-shot migration service, or keep it documented?
+- Week 3's two (relay `attempts=1`, uncovered handler branches) still open.

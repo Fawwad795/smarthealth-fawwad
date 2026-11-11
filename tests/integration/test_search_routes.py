@@ -26,11 +26,11 @@ from app.ai.embeddings import (
     TransientEmbeddingError,
 )
 from app.ai.retrieval import get_query_embeddings
-from app.ai.vector_store import PgVectorStore, VectorRecord
 from app.core.config import settings
 from app.main import app
-from app.models import ContentChunk, Department, Patient, Service
-from app.models.enums import ContentSourceType, ServiceStatus
+from app.models import Department, Patient
+from app.models.enums import ServiceStatus
+from tests.indexing import index_service
 
 THRESHOLD = 0.3
 
@@ -59,48 +59,6 @@ def fake_search(use_provider: Callable[[EmbeddingProvider], None]) -> None:
     use_provider(FakeEmbeddings())
 
 
-def _indexed(
-    db: Session,
-    department: Department,
-    name: str,
-    text: str,
-    *,
-    status: ServiceStatus = ServiceStatus.PUBLISHED,
-) -> Service:
-    """A service with one chunk of `text` and its fake vector. The vector is
-    published only if the service is, as the publish workflow leaves it."""
-    service = Service(department_id=department.id, name=name, status=status)
-    db.add(service)
-    db.flush()
-    chunk = ContentChunk(
-        source_type=ContentSourceType.SERVICE,
-        source_id=service.id,
-        chunk_index=0,
-        text=text,
-        token_count=len(text) // 4,
-        text_hash="0" * 64,
-    )
-    db.add(chunk)
-    db.flush()
-    fake = FakeEmbeddings()
-    store = PgVectorStore(db)
-    store.store_service_vectors(
-        service.id,
-        [
-            VectorRecord(
-                chunk_id=chunk.id,
-                embedding=fake.embed([text])[0],
-                model=fake.model,
-                department=department.name,
-                specialties=["Orthopedics"],
-            )
-        ],
-        [chunk.id],
-    )
-    store.set_published(service.id, status == ServiceStatus.PUBLISHED)
-    return service
-
-
 def _search(client: TestClient, headers: dict, **body: object):
     return client.post("/api/v1/search", headers=headers, json=body)
 
@@ -112,9 +70,9 @@ def test_search_returns_matching_services_most_similar_first(
     patient_auth_headers: dict,
     fake_search: None,
 ) -> None:
-    knee = _indexed(db_session, department, "Knee X-Ray", KNEE_TEXT)
-    _indexed(db_session, department, "Skin Check", SKIN_TEXT)
-    ankle = _indexed(
+    knee = index_service(db_session, department, "Knee X-Ray", KNEE_TEXT)
+    index_service(db_session, department, "Skin Check", SKIN_TEXT)
+    ankle = index_service(
         db_session, department, "Ankle X-Ray", "Orthopaedics: Ankle X-Ray."
     )
 
@@ -159,8 +117,8 @@ def test_search_never_returns_a_service_that_is_not_published(
     """Same text as a published service, so it would score the same. Only
     the published one comes back: a draft or withdrawn service is never
     recommended."""
-    published = _indexed(db_session, department, "Knee X-Ray", KNEE_TEXT)
-    _indexed(db_session, department, "Knee X-Ray (old)", KNEE_TEXT, status=status)
+    published = index_service(db_session, department, "Knee X-Ray", KNEE_TEXT)
+    index_service(db_session, department, "Knee X-Ray (old)", KNEE_TEXT, status=status)
 
     response = _search(client, patient_auth_headers, query="knee x-ray")
 
@@ -175,7 +133,7 @@ def test_search_with_nothing_above_the_threshold_says_we_dont_offer_it(
     fake_search: None,
 ) -> None:
     """Weak matches are not shown: an empty list and a message, not noise."""
-    _indexed(db_session, department, "Knee X-Ray", KNEE_TEXT)
+    index_service(db_session, department, "Knee X-Ray", KNEE_TEXT)
 
     response = _search(client, patient_auth_headers, query="hair transplant")
 
@@ -194,7 +152,7 @@ def test_search_ignores_a_threshold_sent_by_the_client(
     """The threshold is server configuration. "hair transplant" shares no
     word with the knee text, so it scores 0: a client threshold of 0 would
     return it, and the server's must not."""
-    _indexed(db_session, department, "Knee X-Ray", KNEE_TEXT)
+    index_service(db_session, department, "Knee X-Ray", KNEE_TEXT)
 
     response = _search(
         client, patient_auth_headers, query="hair transplant", min_similarity=0.0
@@ -213,7 +171,7 @@ def test_search_returns_at_most_top_k(
     fake_search: None,
 ) -> None:
     for part in ("Knee", "Ankle", "Wrist"):
-        _indexed(db_session, department, f"{part} X-Ray", f"{part} X-Ray.")
+        index_service(db_session, department, f"{part} X-Ray", f"{part} X-Ray.")
 
     response = _search(client, patient_auth_headers, query="x-ray", top_k=2)
 
@@ -228,7 +186,7 @@ def test_search_returns_five_by_default(
     fake_search: None,
 ) -> None:
     for part in ("Knee", "Ankle", "Wrist", "Hip", "Elbow", "Spine"):
-        _indexed(db_session, department, f"{part} X-Ray", f"{part} X-Ray.")
+        index_service(db_session, department, f"{part} X-Ray", f"{part} X-Ray.")
 
     response = _search(client, patient_auth_headers, query="x-ray")
 
@@ -351,7 +309,7 @@ def test_a_patients_details_cannot_be_found_through_search(
     nothing of theirs is in the response."""
     patient.contact = {"name": "Zebulon Quixote", "phone": "+1-555-0100"}
     db_session.flush()
-    _indexed(db_session, department, "Knee X-Ray", KNEE_TEXT)
+    index_service(db_session, department, "Knee X-Ray", KNEE_TEXT)
 
     response = _search(client, patient_auth_headers, query="Zebulon Quixote 555 0100")
 
@@ -370,7 +328,7 @@ def test_search_logs_result_ids_but_never_the_query(
 ) -> None:
     """A query is the patient's own words and can name a condition or a
     person. The log line carries only the ids of what came back."""
-    knee = _indexed(db_session, department, "Knee X-Ray", KNEE_TEXT)
+    knee = index_service(db_session, department, "Knee X-Ray", KNEE_TEXT)
     caplog.set_level(logging.INFO, logger="app.ai.retrieval")
 
     _search(client, patient_auth_headers, query="knee x-ray for Zebulon")

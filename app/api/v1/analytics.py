@@ -7,7 +7,8 @@ check.
 Two endpoints rather than six. A dashboard wants the summary in one call,
 and the only metric that is genuinely a series over time is appointments
 booked; six routes returning one number each would be more surface for
-the same information.
+the same information. The AI analytics (task 5.11) are a third summary
+of the same kind.
 """
 
 from typing import Annotated
@@ -20,12 +21,14 @@ from app.db.session import get_db
 from app.models import User
 from app.models.enums import UserRole
 from app.schemas.analytics import (
+    AIAnalyticsResponse,
     AnalyticsSummaryResponse,
     AppointmentsSeriesResponse,
     DateRange,
     ReconciliationResponse,
 )
 from app.schemas.errors import error_responses
+from app.services import ai_analytics as ai_analytics_service
 from app.services import analytics as analytics_service
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
@@ -88,6 +91,31 @@ def get_appointments_series(
             "buckets": buckets,
         }
     )
+
+
+@router.get(
+    "/ai",
+    response_model=AIAnalyticsResponse,
+    summary="AI usage for a date range: outcomes, intents, latency, tokens, booking conversion",
+    responses=error_responses(
+        {
+            status.HTTP_403_FORBIDDEN: "Analytics are staff-only.",
+        }
+    ),
+)
+def get_ai_summary(
+    params: Annotated[DateRange, Query()],
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(*_ANALYTICS_ROLES)),
+) -> AIAnalyticsResponse:
+    """The AI analytics for a date range (task 5.11). FRONT_DESK/ADMIN only.
+
+    Counts only, never a question, an answer or a patient id. Defaults to
+    the last 30 days. 422 on an invalid or oversized range, 403 for any
+    other role.
+    """
+    summary = ai_analytics_service.summarise_ai(db, params.start_date, params.end_date)
+    return AIAnalyticsResponse.model_validate(summary)
 
 
 @router.get(

@@ -1,5 +1,6 @@
-"""Service routes: admin manages services, staff can read them, and one
-public route lets anyone browse the published catalogue.
+"""Service routes: admin manages services, staff can read them, and two
+public routes let anyone browse the published catalogue and a published
+service's open slots.
 
 Every service created here is DRAFT and stays DRAFT -- status and
 published_at are never accepted from a request body. Week 2's Temporal
@@ -7,13 +8,14 @@ publish workflow is the only path to PUBLISHED; letting a PATCH set
 status directly would let a client skip validation and chunking entirely.
 """
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import require_role
 from app.core.pagination import PaginationParams, pagination_params
 from app.db.session import get_db
 from app.models.enums import UserRole
+from app.schemas.open_slot import OpenSlotListResponse
 from app.schemas.service import (
     ServiceCreate,
     ServiceListResponse,
@@ -27,6 +29,7 @@ from app.schemas.service_search import (
     service_search_params,
 )
 from app.schemas.errors import error_responses
+from app.services import open_slots as open_slots_service
 from app.services import service_search as service_search_service
 from app.services import service as service_service
 from app.services import service_publish
@@ -141,6 +144,37 @@ def get_service(
     """
     service = service_service.get_service(db, service_id)
     return ServiceResponse.model_validate(service)
+
+
+@router.get(
+    "/{service_id}/slots",
+    response_model=OpenSlotListResponse,
+    summary="List a published service's open slots (public)",
+    responses=error_responses(
+        {status.HTTP_404_NOT_FOUND: "SERVICE_NOT_FOUND -- missing or not published."}
+    ),
+)
+def list_open_slots(
+    service_id: int,
+    provider_id: int | None = Query(default=None),
+    pagination: PaginationParams = Depends(pagination_params),
+    db: Session = Depends(get_db),
+) -> OpenSlotListResponse:
+    """List the AVAILABLE, future slots of the providers who offer a
+    published service, earliest first, optionally for one provider.
+    Public, like /services/search: a patient picks a time, then books it.
+
+    404 if the service doesn't exist or isn't PUBLISHED.
+    """
+    items, total = open_slots_service.list_open_slots(
+        db, service_id, provider_id, pagination
+    )
+    return OpenSlotListResponse(
+        items=items,
+        total=total,
+        limit=pagination.limit,
+        offset=pagination.offset,
+    )
 
 
 @router.patch(

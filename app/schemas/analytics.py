@@ -1,4 +1,4 @@
-"""Analytics schemas: the shared date range, and the two response shapes."""
+"""Analytics schemas: the shared date range, and the response shapes."""
 
 from datetime import UTC, date, datetime, timedelta
 
@@ -85,6 +85,47 @@ class AnalyticsSummaryResponse(BaseModel):
     cancellation_rate: float | None
     avg_wait_seconds: float | None
     failed_jobs: int
+
+
+class BookingConversion(BaseModel):
+    """Patients who asked the assistant a question in the range, and how
+    many of them booked an appointment within window_hours of one.
+
+    rate is null when nobody asked, for the same reason as
+    cancellation_rate above.
+    """
+
+    window_hours: int
+    patients_asked: int
+    patients_booked: int
+    rate: float | None
+
+
+class AIAnalyticsResponse(BaseModel):
+    """AI usage for one date range (task 5.11), counted from ai_interactions.
+
+    by_outcome has a key for every InteractionOutcome, and by_intent one for
+    every AssistantIntent plus "none" (no label from the safety check), each
+    0 if it never occurred. questions_asked is every interaction except
+    staff generations; cache_hits, the questions answered from the answer
+    cache with no model call. The latencies run from the request to the
+    last of the answer, and are null when there were no interactions.
+    """
+
+    start_date: date
+    end_date: date
+    interactions: int
+    questions_asked: int
+    staff_generations: int
+    cache_hits: int
+    by_outcome: dict[str, int]
+    by_intent: dict[str, int]
+    avg_latency_ms: float | None
+    p95_latency_ms: float | None
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    booking_conversion: BookingConversion
 
 
 class FieldDrift(BaseModel):

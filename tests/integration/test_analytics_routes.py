@@ -16,9 +16,10 @@ from app.services.analytics import increment_daily
 
 SUMMARY = "/api/v1/analytics/summary"
 SERIES = "/api/v1/analytics/appointments"
+AI = "/api/v1/analytics/ai"
 
 
-@pytest.mark.parametrize("path", [SUMMARY, SERIES])
+@pytest.mark.parametrize("path", [SUMMARY, SERIES, AI])
 def test_a_patient_may_not_read_the_analytics(
     client: TestClient, patient_auth_headers: dict[str, str], path: str
 ) -> None:
@@ -31,7 +32,7 @@ def test_a_patient_may_not_read_the_analytics(
     assert response.json()["error"]["code"] == "FORBIDDEN"
 
 
-@pytest.mark.parametrize("path", [SUMMARY, SERIES])
+@pytest.mark.parametrize("path", [SUMMARY, SERIES, AI])
 def test_the_analytics_require_a_token(client: TestClient, path: str) -> None:
     response = client.get(path)
 

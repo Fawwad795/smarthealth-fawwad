@@ -11,15 +11,24 @@ class AppError(Exception):
     handler instead, and never reaches the client with this much detail.
     """
 
-    def __init__(self, status_code: int, code: str, message: str) -> None:
+    def __init__(
+        self,
+        status_code: int,
+        code: str,
+        message: str,
+        headers: dict[str, str] | None = None,
+    ) -> None:
         """Build an expected failure.
 
         `status_code` is the HTTP status the client should receive, `code`
         a stable machine-readable string a client can branch on, and
         `message` human-readable text that is always safe to show -- it
         must never carry a stack trace, DB error or PHI (rule 8.9).
+
+        `headers` are added to the response, such as a 429's Retry-After.
         """
         self.status_code = status_code
         self.code = code
         self.message = message
+        self.headers = headers
         super().__init__(message)

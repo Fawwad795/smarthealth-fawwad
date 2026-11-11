@@ -106,3 +106,13 @@ provider** — generating the whole answer then chunking it is fake streaming an
 explicitly called out as a mistake. Never block the event loop: async clients, or
 `await asyncio.to_thread(...)` for a sync SDK. Handle client disconnect without
 hanging, and still persist what was generated.
+
+## Established in Week 5 — follow it
+
+- **A streamed route is a separate route** (`/ask/stream` beside `/ask`), so each
+  returns one response type and Swagger keeps a JSON form to show.
+- **Two routes are public**: `GET /services/search` and `GET /services/{id}/slots`.
+  A service that is not PUBLISHED is a 404 identical to a missing one.
+- **AI routes take the rate limit as a dependency declared after the role
+  check.** FastAPI resolves dependencies in order, before the body, so a 403
+  costs nothing and a 422 costs one request.

@@ -123,6 +123,37 @@ class Settings(BaseSettings):
     # assistant's question limit.
     ai_max_question_chars: int = 1000
 
+    # --- LLM (Week 5) ---
+    # Which LLMProvider app/ai/llm.py builds. "groq" and "openai" take the
+    # same request format at different addresses. "fake" is the tests'
+    # stand-in and makes no call. Anthropic is not offered: its API has a
+    # different shape and would need a second client.
+    llm_provider: Literal["groq", "openai", "fake"] = "groq"
+    # SecretStr for the same reason as embedding_api_key.
+    llm_api_key: SecretStr = SecretStr("")
+    # Chosen on Week 5 Day 1 from the chat models Groq offers, once
+    # llama-3.1-8b-instant had gone. It answers without a hidden reasoning
+    # pass, so every token of max_completion_tokens goes to the answer
+    # (docs/ai-layer.md section 9).
+    llm_model: str = "qwen/qwen3.8-27b"
+    # The name the assistant gives the clinic in its prompts and fixed
+    # replies. A setting, not a read of the clinics table: the assistant
+    # speaks for the organisation, and a clinics row is one site of it.
+    assistant_clinic_name: str = "MediNova"
+    # Seconds httpx waits on any one step of a model call: connecting, or
+    # the gap between two pieces of a reply. A per-step limit rather than a
+    # total, so a long reply that keeps arriving is never cut off. 20, not
+    # the earlier 60: normal replies arrive within about a second, so 20 s
+    # only cuts a stall, and with one retry a provider that stops answering
+    # costs the patient about 41 s before the 503 instead of 121 s
+    # (docs/ai-layer.md section 9).
+    ai_request_timeout_seconds: float = 20.0
+    # AI requests each user may make per clock minute, across the five AI
+    # routes together (app/services/rate_limit.py).
+    ai_rate_limit_per_minute: int = 10
+    # How long a cached assistant reply is kept (app/services/answer_cache.py).
+    ai_answer_cache_ttl_seconds: int = 3600
+
 
 # Imported everywhere as: from app.core.config import settings
 settings = Settings()

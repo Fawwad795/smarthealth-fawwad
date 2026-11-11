@@ -23,6 +23,7 @@ but __all__ also states the package's public surface and gives one list to
 check against.
 """
 
+from app.models.ai_interaction import AIInteraction
 from app.models.analytics_daily import AnalyticsDaily
 from app.models.appointment import Appointment
 from app.models.appointment_status_history import AppointmentStatusHistory
@@ -32,6 +33,7 @@ from app.models.clinic import Clinic
 from app.models.content_chunk import ContentChunk
 from app.models.department import Department
 from app.models.failed_job import FailedJob
+from app.models.generated_content import GeneratedContent
 from app.models.notification import Notification
 from app.models.outbox_event import OutboxEvent
 from app.models.patient import Patient
@@ -48,6 +50,7 @@ from app.models.visit import Visit
 from app.models.waitlist import Waitlist
 
 __all__ = [
+    "AIInteraction",
     "AnalyticsDaily",
     "Appointment",
     "AppointmentStatusHistory",
@@ -57,6 +60,7 @@ __all__ = [
     "ContentChunk",
     "Department",
     "FailedJob",
+    "GeneratedContent",
     "Notification",
     "OutboxEvent",
     "Patient",

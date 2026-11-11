@@ -224,6 +224,17 @@ def fake_embeddings_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "embedding_provider", "fake")
 
 
+@pytest.fixture(autouse=True)
+def fake_llm_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every test talks to FakeLLM unless it asks for another provider.
+
+    The same reason as fake_embeddings_by_default: the test container reads
+    the developer's .env, which names Groq. A test that needs the real
+    provider sets llm_provider itself, which runs after this.
+    """
+    monkeypatch.setattr(settings, "llm_provider", "fake")
+
+
 # --- Domain fixtures -------------------------------------------------------
 # A slot needs a provider, which needs a user, a department and a specialty,
 # which needs a clinic. These are fixtures rather than a make_provider()
@@ -397,6 +408,10 @@ def client(
     def _get_test_redis() -> redis.Redis:
         return test_redis_client
 
+    # Each test starts with an empty Redis, as it starts with an empty
+    # database: an answer one test cached must not answer the next one's
+    # question without its model being called.
+    test_redis_client.flushdb()
     app.dependency_overrides[get_db] = _get_test_db
     app.dependency_overrides[get_redis] = _get_test_redis
     with TestClient(app) as test_client:

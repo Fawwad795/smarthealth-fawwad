@@ -134,3 +134,34 @@ fail and must be rotated.
   `from None`: the httpx cause chain exceeded Temporal's failure size limit.
 - **Never log the search query**; log the result ids. A route that embeds is a plain
   `def`, not `async def`: local embedding is CPU work and would stall the event loop.
+
+## Established in Week 5 — follow it
+
+- **The refusal and "we don't offer that" are fixed text, and the code adds the
+  disclaimer to every assistant reply.** The top-weighted behaviour never depends
+  on a model's wording. A safety reply with no readable label refuses.
+- **Prompts are frozen by version** (`test_prompts.py` hashes them and checks
+  `ai-layer.md` quotes them). Rewording means a V2 beside the V1. A V2 must keep
+  the "never diagnose" rule and name every tagged block in its data rule; the
+  same file checks what each builder sends.
+- **Patient text and context go between tags**, with `<` and `>` turned into the
+  look-alikes `‹` `›` so nothing can close a tag. Staff-written text too.
+- **`ai_interactions` holds ids, labels and counts, never question or answer
+  text.** Every path records a row, failures and disconnects included.
+- **A route that calls the model is `async def`**, with embedding and database
+  work in `asyncio.to_thread`, and it commits before each model call so no
+  transaction holds a pooled connection while the model works.
+- **Streams use `SSEResponse`** (`app/core/sse.py`): Starlette never closes a
+  generator after a disconnect. The final write runs shielded. A stream retries
+  only before its first piece. Retrieval and the safety check run before the 200,
+  so their failures stay JSON errors.
+- **Report figures are read by the code; the model writes commentary with no
+  digits**, validated, with one repair retry, then a clean failure.
+- **The rate limit is a dependency after `require_role`** and lets requests
+  through when Redis is down. **The answer cache key hashes everything the reply
+  depends on**, never stores a reply holding patient data, and never extends a
+  TTL.
+- **`AI_REQUEST_TIMEOUT_SECONDS` is 20 per step, with one retry**: a provider
+  that stops answering ends in a 503 after 41 s. Groq's free tier (8,000 tokens a
+  minute, 1,000 requests a day) is the clinic's real capacity, not the app's
+  per-user limit.

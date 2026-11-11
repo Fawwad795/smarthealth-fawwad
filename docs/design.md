@@ -16,8 +16,9 @@ How SmartHealth is put together, and why. Updated as work lands.
 
 ### 1.1 ERD — core domain and chunk vectors
 
-Eighteen entities. The ten Week 1 shapes, everything the scheduling saga and
-visit lifecycle attach to them, and Week 4's chunk vectors.
+Twenty entities. The ten Week 1 shapes, everything the scheduling saga and
+visit lifecycle attach to them, Week 4's chunk vectors, and Week 5's AI
+records.
 
 ```mermaid
 erDiagram
@@ -45,6 +46,10 @@ erDiagram
     PATIENT ||--o{ WAITLIST : "waits on"
     CONTENT_CHUNK ||--o| CHUNK_EMBEDDING : "embedded as"
     SERVICE ||--o{ CHUNK_EMBEDDING : "described by"
+    USER ||--o{ AI_INTERACTION : "asks or generates"
+    AI_INTERACTION ||--o| GENERATED_CONTENT : "produced"
+    APPOINTMENT ||--o{ GENERATED_CONTENT : "written about"
+    USER ||--o{ GENERATED_CONTENT : "created"
 
     CLINIC {
         bigint id PK
@@ -228,6 +233,40 @@ erDiagram
         timestamptz created_at
         timestamptz updated_at
     }
+
+    AI_INTERACTION {
+        bigint id PK
+        bigint user_id FK "NOT NULL"
+        text correlation_id "indexed"
+        text intent "nullable"
+        text outcome
+        jsonb retrieved_ids "ids only"
+        text model
+        text safety_prompt_version
+        text prompt_version
+        int input_tokens
+        int output_tokens
+        int latency_ms
+        int answer_chars
+        boolean cache_hit
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    GENERATED_CONTENT {
+        bigint id PK
+        text kind
+        bigint appointment_id FK "summary and follow-up only"
+        date report_start "report only"
+        date report_end "report only"
+        jsonb content
+        text model
+        text prompt_version
+        bigint created_by FK "NOT NULL"
+        bigint interaction_id FK "UNIQUE"
+        timestamptz created_at
+        timestamptz updated_at
+    }
 ```
 
 Exported copies of this and every other diagram here live in `docs/diagrams/`.
@@ -312,6 +351,21 @@ shared `department_id` — a department groups people and offerings, it does not
 certify who performs what. Added Day 3, ahead of Week 2's eligibility check and
 task 1.8's `has_available_slots` search filter, both of which need the real
 answer.
+
+**AIInteraction** — one assistant question or staff generation: who asked, the
+intent and outcome, the ids retrieval found, the model and prompt versions,
+tokens, latency, and whether the cache answered. It is *not* a transcript. It
+holds no question or answer text, because the question is the patient's own
+words; a wrong answer is traced from its ids and versions instead.
+
+**GeneratedContent** — the text one staff generation produced (a summary, a
+follow-up or a report), with its prompt version, model and the
+`ai_interactions` row of that run. Every run is saved, interrupted and failed
+included, so staff can review it. It has no accepted or rejected status yet
+(`docs/prd.md` section 7).
+
+The tables the saga, the event pipeline and search added are described with
+the parts that use them: section 6, `docs/events.md` and `docs/ai-layer.md`.
 
 ---
 
@@ -506,6 +560,52 @@ migrating rows that had already been created without it.
 | The seed catalogue has 12 services, four per department, including close pairs such as Knee X-Ray and Knee MRI Scan (task 4.10) | With 3 services, every query's right answer was in the top 5, so the eval's top-5 hit rate could only read 100%. The close pairs are where search can pick the wrong service | `make reset` publishes 12 services one at a time: about 50 s |
 | `RETRIEVAL_MIN_SIMILARITY` is 0.31, chosen from the eval set (task 4.10) | Unrelated not-offered queries scored at most 0.298 and every offered query's service at least 0.332, so any value between gets 31 of the 34 queries right. 0.31 leans towards finding, because a patient told a real service is not offered cannot book it | Three not-offered queries that ask for a kind of service the clinic offers, such as "chest x-ray", score above it and get a weak match instead of "we don't offer that". The value holds for `all-MiniLM-L6-v2` only |
 
+### Week 5
+
+| Decision | Why | Tradeoff |
+|---|---|---|
+| A thin httpx client for the model, rather than a vendor SDK or LangChain (task 5.1) | httpx was already a dependency. Groq takes OpenAI's request format, so one class serves both, and the embedding provider's error split and `MockTransport` tests carry over | The stream is parsed by hand. No Anthropic: its format differs |
+| Default model `qwen/qwen3.8-27b` (task 5.1) | `llama-3.1-8b-instant` was gone. Of Groq's four chat models, qwen was fastest to its first words (0.09 s) and spends no tokens reasoning (`docs/ai-layer.md` section 9) | Chosen from one question, run once per model |
+| The refusal and "we don't offer that" are fixed text, and the code adds the disclaimer to every reply (task 5.2) | The behaviour the brief weights highest never depends on a model's wording, and the disclaimer is never missing or doubled | A refusal cannot adapt to the question, and routes only to what retrieval found |
+| Prompt versions are frozen, held by a hash test and a docs-quote test (task 5.2) | Each answer's row names its version, which must keep meaning the same words | Rewording a prompt means a new version and a new hash |
+| `ai_interactions` stores no question or answer text (task 5.7) | The brief says no PHI and "Store ids, not patient text". The question is the patient's own words; the answer can repeat them and holds appointment times | A wrong answer can be explained from the row's ids, versions and model, but not replayed |
+| An `outcome` enum in place of Appendix B's `refused` boolean (task 5.7) | An interaction ends one way, and flags could say two; status enums over booleans is the Week 1 rule | Analytics read `outcome = 'REFUSED'` |
+| `correlation_id`, `safety_prompt_version` and `answer_chars` added to Appendix B's columns (task 5.7) | The brief requires the correlation ID; a question passes two prompts; `answer_chars` shows how far an interrupted answer got | Three more columns |
+| `/assistant/ask` runs retrieval before the safety check (task 5.3) | Every path needs the services: an answer is grounded in them, a refusal names them. The database work then ends before any model call | A question that is then refused still costs an embedding |
+| `/assistant/ask` is `async def`; embedding and the database run in `asyncio.to_thread`, and the transaction ends before the model call (task 5.3) | The seconds spent waiting on the model hold neither the event loop nor a pooled connection, so booking is never starved | One session is used from two threads, one after the other |
+| `PROMPT_PREP_V2` shows the caller's appointments and the services found, with open times, for preparation and availability alike; V1 kept, frozen (task 5.5) | One prompt covers "my appointment" and "a service" questions without the code guessing which was meant | V1 is in the code though no route uses it |
+| Appointments are read only for preparation and availability questions, filtered on `patients.user_id` from the token (task 5.5) | PHI is read only when the question needs it, and nothing in the question can widen the filter | A navigation question that mentions "my appointment" is answered from the services |
+| A booking question with nothing found still goes to the model (task 5.5) | "What should I bring tomorrow?" names no service; "we don't offer that" would be wrong | One model call even when both lists are empty |
+| `retrieved_ids` gains `slots` (task 5.5) | An availability answer can be checked against the slots it was shown | Slot ids point at rows whose status has moved on since |
+| `/assistant/ask` is for patients only (task 5.3) | It is the patient assistant: booking conversion is per patient, and task 5.5 scopes appointments to the caller | Front desk cannot ask it on a patient's behalf |
+| A question is refused on `medical_advice` or when the reply names no label (task 5.4) | A reply the code cannot read shows nothing about whether the question is safe | A formatting slip by the model refuses a safe question |
+| `STAFF_GENERATION` is an intent but never a safety label (task 5.7) | The brief's analytics list it beside the other intents, so the column accepts it now rather than through a constraint migration in task 5.9 | One enum mixes the model's labels with a code-only value; `parse_intent()` rejects it |
+| A separate `POST /assistant/ask/stream`, with `/ask` kept as it was (task 5.8) | Each route returns one type. `/ask` still serves Swagger, which cannot show a stream as it arrives, and its tests | Two routes to document; both share `_prepare()`, so their answers cannot drift apart |
+| Retrieval and the safety check run before the stream starts (task 5.8) | Their failures stay ordinary JSON errors, and no text is sent before a refusal is decided | The 200 waits 0.6 to 1.1 s; a failure after it can only be an `error` event |
+| `SSEResponse` closes its generator when the response ends (task 5.8) | Starlette 0.41 never closes it after a disconnect, so an interrupted answer was recorded 106 s late, at the next reload | Every stream must use `SSEResponse` rather than Starlette's `StreamingResponse` |
+| A stream's final write runs in `anyio.CancelScope(shield=True)` (task 5.8) | A disconnect cancels the request, and anyio would cancel the write recording it too | The cancellation waits for one insert |
+| A stream's final write reuses the request's session after `get_db` has closed it (task 5.8) | FastAPI 0.115 closes yield dependencies before the stream starts; SQLAlchemy 2.0 lets a closed session be used again, and the tests' session override keeps working | Depends on that SQLAlchemy behaviour; checked live with `pg_stat_activity` |
+| Every number in a utilisation report is read by the code; the model writes only commentary, and a digit in it fails validation (task 5.9) | The brief: "never let the model invent figures". A number the model never writes cannot be wrong | The commentary cannot quote a figure, and a wrong comparison in words still passes |
+| The report's analytics figures are `summarise_range()` through `AnalyticsSummaryResponse` (task 5.9) | The same function and schema as `GET /analytics/summary`, so "its numbers match analytics" holds by construction | Total patients and failed jobs come along, though they say little about utilisation |
+| Department utilisation is counted from `slots` (task 5.9) | `analytics_daily` has no department; adding one would mean a consumer change and a reconciliation for it | A count on each request, with no aggregate or reconciliation behind it |
+| The repair retry shows the model its own reply and the problem (task 5.9) | The model can fix the reply rather than start again. The problem text is written by the code, so no model text is echoed | A repaired report costs two calls' tokens |
+| `generated_content` links its `ai_interactions` row rather than repeating the outcome; every run saves both, interrupted and failed included (task 5.10) | One record of outcome, tokens and latency, and the brief's "still persist what was generated" | Two commits per run; reading an outcome needs a join |
+| Appendix B's `report_scope` is `report_start` and `report_end`, with a check constraint per kind (task 5.10) | Dates that can be queried, and no row can mix an appointment with a range | Two columns where the appendix names one |
+| No model call before a generation stream starts (task 5.9) | There is no patient text, so no safety check to run first | A provider that is down shows as an `error` event after a 200 |
+| Staff generation has its own model dependency, failing as `GENERATION_UNAVAILABLE` (task 5.9) | A staff member's 503 names generation, not the patient assistant | Two near-identical dependencies |
+| AI metrics counted in `record_interaction()`, after its commit, with every series started at zero (task 5.11) | Every AI path ends there, so none is missed, and the metrics count the same interactions as the table. Without the zero start, `increase()` missed the first refusal | Model calls are not counted on their own: a provider failure that a retry recovered shows nowhere |
+| `GET /analytics/ai` counts from `ai_interactions` on each request, not from an aggregate table (task 5.11) | The p95 latency needs every latency in the range, which a stored sum and count cannot give | Slower as the table grows; the range is capped at 366 days and `created_at` is indexed |
+| Booking conversion is per patient: of those who asked a question, how many booked within 24 hours after one (task 5.11) | A patient who asks five questions and books once is one conversion, not five | The 24-hour window is a judgment, and a booking is credited to the assistant whether or not the answer led to it |
+| The AI rate limit is a Redis counter per user per clock minute, one count across the five AI routes (task 5.12) | One `INCR` per request, as the brief suggests. One count, because the limit protects one model budget | A fixed window: up to twice the limit across a minute boundary |
+| With Redis down, AI requests go ahead, logged and counted (task 5.12) | The limit guards a budget; refusing all AI requests would take the assistant down with Redis | No limit during the outage, and each request waits 3 to 4 s for the failed lookup |
+| The limit is a dependency declared after the role check (task 5.12) | FastAPI resolves dependencies in order, so a 403 never uses up a request | It runs before the body is checked, so a 422 does |
+| The answer cache key hashes everything the reply depends on, the services found included (task 5.12) | Unpublishing or editing a service, or a new prompt version, needs no invalidation code: the key changes and the old entry is never found | Each lookup still embeds the question; a question whose retrieval differs misses |
+| Only replies holding nothing about the patient are cached, and shared by every patient (task 5.12) | A preparation answer holds the caller's appointments and must never reach another patient | Booking questions always call the model; reply text sits in Redis for the TTL |
+| A hit never extends the TTL, and a store never overwrites (`SET NX`) (task 5.12) | A popular reply is written afresh every hour, never served indefinitely | A popular question costs one model call an hour |
+| `cache_hit` is a boolean column on `ai_interactions` (task 5.12) | A fact about a finished interaction, with no states to move through; the status-enum rule is for rows that change | A migration for one column |
+| `AI_REQUEST_TIMEOUT_SECONDS` lowered from 60 to 20 (task 5.14) | Normal replies arrive within a second, so 20 s cuts only a stall. A provider that stops answering now costs a patient 41 s before the 503, measured, instead of 121 s | A reasoning model that thinks silently for over 20 s would be cut off and retried |
+| `GET /services/{id}/slots` lists a published service's open slots, public (task 5.14) | The clean-clone run found no way to get a slot id except psql. Per service, because a patient finds the service first, and each row then holds every id `POST /appointments` needs. Public, like the catalogue search | Anyone can see when providers are free. No date filter: pages run in start-time order |
+
 **Enum member names and values are kept identical** (`AVAILABLE = "AVAILABLE"`).
 SQLAlchemy persists a Python enum's `.name`, while a `str`-based enum serialises
 its `.value` through Pydantic — so if the two differ, the database holds one
@@ -606,32 +706,56 @@ reconciliation was clean with no `--repair`.
 
 ## 4. Open questions
 
-- Confirm a single clinic is sufficient for Week 1 — assumed yes.
-- Confirm treating slots as the schedule (generated from templates) rather than
-  computing availability on the fly is the expected shape.
+- Resolved: one clinic was enough for all five weeks, and slots generated
+  from templates stayed the shape of availability throughout.
+- Should staff accept or reject a generated draft before it is used? A SHOULD,
+  not built: every draft is saved and reviewable, with no status.
+- Should check-in be refused well before the appointment? It is accepted days
+  early today, which records a negative wait (`docs/prd.md` section 7).
 
 ---
 
 ## 5. Module breakdown
 
 ```
-api/v1/    auth, departments, services (+ public /search), providers,
-           provider_schedules (+ generate-slots). Parse input, call a
-           service, shape the response — no business logic, no SQL.
-services/  Business rules: uniqueness checks, role/ownership checks,
-           slot generation. One module per api/v1 router, same name.
+api/v1/    One router per resource: auth, departments, services (+ public
+           /search and /{id}/slots), providers, provider_schedules,
+           appointments, waitlist, visits, analytics, search, assistant,
+           generation. Parse input, call a service, shape the response.
+           No business logic, no SQL.
+services/  Business rules: one module per CRUD router, plus booking and its
+           saga entry point
+           (appointment_scheduling, slot, idempotency, billing, waitlist,
+           visit), publishing (service_publish), the catalogue
+           (service_search, open_slots), analytics, and the AI features
+           (assistant, generation, ai_interaction, ai_analytics,
+           rate_limit, answer_cache).
+ai/        Everything that talks to a model: chunking, embeddings,
+           vector_store, retrieval, the LLM client (llm) and every
+           versioned prompt (prompts).
+temporal/  The publish workflow and scheduling saga, their activities,
+           the connection the API uses to start and query them, and the
+           worker.
+events/    The event envelope and record_event(), which writes to the
+           outbox. Imports no broker client.
+kafka/     Everything that talks to Kafka: relay, producer, consumer,
+           dedupe, handlers.
+celery/    Reminders and the periodic outbox relay task.
 models/    SQLAlchemy ORM. Database shape only.
 schemas/   Pydantic request/response. No ORM object ever leaves an endpoint;
            writable schemas omit any field only a workflow may set (e.g.
            Service.status).
 core/      config, security (bcrypt + JWT), dependencies (get_current_user,
            require_role, ensure_patient_self_or_staff), exceptions +
-           error_handlers (one JSON error shape), pagination.
+           error_handlers (one JSON error shape), pagination, logging with
+           correlation ids, metrics, health checks, Redis, and SSEResponse.
 ```
 
-Every router endpoint is admin/staff-gated with `require_role` except
-`GET /services/search`, which is deliberately public — a prospective patient
-browsing before they register is the point of task 1.8.
+Access is checked in each route with `require_role`, plus
+`ensure_patient_self_or_staff` where a patient may read their own rows. Two
+routes are public: `GET /services/search` and `GET /services/{id}/slots`. A
+patient can browse the catalogue and see when a service can be booked before
+registering.
 
 ## 6. Publish workflow and scheduling saga
 
